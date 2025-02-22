@@ -4,6 +4,7 @@ import time, datetime
 import threading
 import math
 from FuzbAIAgent_Example import *
+from FuzbAIAgent_Example import PlayerAgent
 import random
 
 class FuzbAISim:
@@ -193,6 +194,7 @@ class FuzbAISim:
     def loadSimulator(self, printJointInfo = False):
         print("Loading simulator...")
         physicsClient = p.connect(p.GUI) #or p.DIRECT for non-graphical version
+        #physicsClient = p.connect(p.DIRECT) #or p.DIRECT for non-graphical version
 
         p.configureDebugVisualizer(p.COV_ENABLE_WIREFRAME,0)
         p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS,1)
