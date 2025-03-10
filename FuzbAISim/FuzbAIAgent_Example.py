@@ -17,7 +17,7 @@ GAMMA = 0.99                    # Discount factor for future rewards
 EPSILON = 0.9                   # Initial exploration rate
 EPSILON_DECAY = 0.995           # Rate at which exploration decays
 MIN_EPSILON = 0.01              # Minimum exploration rate
-BATCH_SIZE = 32                 # Batch size for training
+BATCH_SIZE = 128                 # Batch size for training
 MEMORY_SIZE = 10000             # Replay memory size
 
 POSITION_BINS = 10
@@ -53,9 +53,10 @@ class DQN(nn.Module):
 class RLAgent:
     """Reinforcement Learning agent using DQN for multiple players."""
     def __init__(self):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.actions = ['move_left', 'move_right', 'kick']
         self.memory = deque(maxlen=MEMORY_SIZE)
-        self.models = {i: DQN(4, len(self.actions)) for i in range(8)}
+        self.models = {i: DQN(4, len(self.actions)).to(self.device) for i in range(8)}
         self.optimizers = {i: optim.Adam(self.models[i].parameters(), lr=ALPHA) for i in range(8)}
         self.criterion = nn.MSELoss()
         self.epsilon = EPSILON
@@ -72,7 +73,7 @@ class RLAgent:
         """Choose an action using epsilon-greedy policy for each rod."""
         if random.random() < self.epsilon:
             return random.randint(0, len(self.actions) - 1)
-        state_tensor = torch.FloatTensor(state)
+        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         with torch.no_grad():
             return torch.argmax(self.models[rod_idx](state_tensor)).item()
 
@@ -93,12 +94,10 @@ class RLAgent:
                 continue
 
             _, states, actions, rewards, next_states = zip(*rod_batch)
-            #states = torch.FloatTensor(states)
-            states = torch.from_numpy(np.array(states)).float()
-            actions = torch.LongTensor(actions).unsqueeze(1)
-            rewards = torch.FloatTensor(rewards)
-            #next_states = torch.FloatTensor(next_states)
-            next_states = torch.from_numpy(np.array(next_states)).float()
+            states = torch.from_numpy(np.array(states)).float().to(self.device)
+            actions = torch.LongTensor(actions).unsqueeze(1).to(self.device)
+            rewards = torch.FloatTensor(rewards).to(self.device)
+            next_states = torch.from_numpy(np.array(next_states)).float().to(self.device)
 
             current_q = self.models[rod_idx](states).gather(1, actions).squeeze()
             max_next_q = self.models[rod_idx](next_states).max(1)[0]
