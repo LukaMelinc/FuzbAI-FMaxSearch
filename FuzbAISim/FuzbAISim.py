@@ -4,6 +4,7 @@ import time, datetime
 import threading
 import math
 from FuzbAIAgent_Example import *
+from FuzbAIAgent_Example import RLAgent
 import random
 
 class FuzbAISim:
@@ -47,8 +48,8 @@ class FuzbAISim:
         self.travels = [190, 356, 180, 116, 116, 180, 356, 190]
         self.redIndices = [0, 1, 3, 5]
 
-        self.p1 = PlayerAgent()
-        self.p2 = PlayerAgent()
+        self.p1 = RLAgent()
+        self.p2 = RLAgent()
 
         # Camera delay settings
         self.simulatedDelay = 0.040
