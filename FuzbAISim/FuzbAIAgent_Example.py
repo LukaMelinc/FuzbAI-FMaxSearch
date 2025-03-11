@@ -3,151 +3,340 @@ import json
 import time
 import math
 import random
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from collections import deque
 
 HOST_ADDRESS = '127.0.0.1:23336'
 
-# DQN Hyperparameters
-ALPHA = 0.001                   # Learning rate
-GAMMA = 0.99                    # Discount factor for future rewards
-EPSILON = 0.9                   # Initial exploration rate
-EPSILON_DECAY = 0.995           # Rate at which exploration decays
-MIN_EPSILON = 0.01              # Minimum exploration rate
-BATCH_SIZE = 128                 # Batch size for training
-MEMORY_SIZE = 10000             # Replay memory size
-
-POSITION_BINS = 10
-VELOCITY_BINS = 10
-
 def get_camera_state():
-    """Fetch the current camera state from the simulator."""
     cam_url = f"http://{HOST_ADDRESS}/Camera/State"
-    response = requests.get(cam_url)
+    response = requests.get(cam_url)    
     return response.json()
 
 def send_motor_commands(cmds):
-    """Send motor commands to the simulator."""
     motors_url = f"http://{HOST_ADDRESS}/Motors/SendCommand?blue=False"
-    requests.post(motors_url, json=cmds)
+    response = requests.post(motors_url, json=cmds)
 
-class DQN(nn.Module):
-    """Deep Q-Network model."""
-    def __init__(self, input_dim, output_dim):
-        super(DQN, self).__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(input_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Linear(128, output_dim)
-        )
-
-    def forward(self, x):
-        """Forward pass to predict Q-values."""
-        return self.fc(x)
-
-class RLAgent:
-    """Reinforcement Learning agent using DQN for multiple players."""
+# Main player agent class
+class PlayerAgent():
     def __init__(self):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.actions = ['move_left', 'move_right', 'kick']
-        self.memory = deque(maxlen=MEMORY_SIZE)
-        self.models = {i: DQN(4, len(self.actions)).to(self.device) for i in range(8)}
-        self.optimizers = {i: optim.Adam(self.models[i].parameters(), lr=ALPHA) for i in range(8)}
-        self.criterion = nn.MSELoss()
-        self.epsilon = EPSILON
+        # Load field geometry from json
+        # origin in top-left corner, x towards right, y towards down (as seen in the simulator)   
+        f = open('geometry.json')
+        self.geometry = json.load(f)
+        f.close()
+        
+        # Geometry contents:
+        # - field: field dimensions (in mm)
+        # - rods: array of player rod information
+        #         * id: 1 to 8 (1 is the red goalie)
+        #         * team: red or blue
+        #         * position: x-axis position of the rod
+        #         * travel: travel range (in mm) of the rod
+        #         * players: number of players on the rod
+        #         * first_offset: y-axis position of the first player center
+        #         * spacing: spacing between players on the rod
 
-    def get_state(self, cam_data, rod_idx):
-        """Extract and normalize state for each rod from camera data."""
-        bx = cam_data['ball_x'] / 1210
-        by = cam_data['ball_y'] / 700
-        vx = (cam_data['ball_vx'] + 1) / 2
-        vy = (cam_data['ball_vy'] + 1) / 2
-        return np.array([bx, by, vx, vy], dtype=np.float32)
-
-    def choose_action(self, state, rod_idx):
-        """Choose an action using epsilon-greedy policy for each rod."""
-        if random.random() < self.epsilon:
-            return random.randint(0, len(self.actions) - 1)
-        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        with torch.no_grad():
-            return torch.argmax(self.models[rod_idx](state_tensor)).item()
-
-    def remember(self, rod_idx, state, action, reward, next_state):
-        """Store experience in replay memory."""
-        self.memory.append((rod_idx, state, action, reward, next_state))
-
-    def learn(self):
-        """Train the model using a batch of experiences for each rod."""
-        if len(self.memory) < BATCH_SIZE:
-            return
-
-        batch = random.sample(self.memory, BATCH_SIZE)
-
-        for rod_idx in range(8):
-            rod_batch = [b for b in batch if b[0] == rod_idx]
-            if not rod_batch:
-                continue
-
-            _, states, actions, rewards, next_states = zip(*rod_batch)
-            states = torch.from_numpy(np.array(states)).float().to(self.device)
-            actions = torch.LongTensor(actions).unsqueeze(1).to(self.device)
-            rewards = torch.FloatTensor(rewards).to(self.device)
-            next_states = torch.from_numpy(np.array(next_states)).float().to(self.device)
-
-            current_q = self.models[rod_idx](states).gather(1, actions).squeeze()
-            max_next_q = self.models[rod_idx](next_states).max(1)[0]
-            expected_q = rewards + GAMMA * max_next_q
-
-            loss = self.criterion(current_q, expected_q.detach())
-            self.optimizers[rod_idx].zero_grad()
-            loss.backward()
-            self.optimizers[rod_idx].step()
-
-        self.epsilon = max(MIN_EPSILON, self.epsilon * EPSILON_DECAY)
+        self.demo_state = 0
+        self.demo_t = 0
 
     def process_data(self, camera):
-        """Process camera data and return motor commands for each rod."""
+        # Rod 0 = drive 1
+        # Rod 1 = drive 2
+        # Rod 3 = drive 3
+        # Rod 5 = drive 4
+        playerMapping = [1, 2, -1, 3, -1, 4, -1, -1]        
+
+        # Process camera data
+        CD0 = camera["camData"][0]
+        CD1 = camera["camData"][1]        
+        # Input data in each of the CD0/CD1:
+        #  * ball_x, ball_y: position of the ball (in mm)
+        #  * ball_vx, ball_vy: velocity of the ball (in m/s)
+        #  * ball_size: area of the ball in the captured image (in pixels)
+        #  * rod_position_calib: calibrated position of the rod (in interval [0,1])
+        #  * rod_angle: calibrated angle of the rod (in interval [-32,+32])
+
+        # ToDo: combine data from CD0 and CD1
+        # In case the ball is obstructed by the player or the rod, the quality of the ball position/velocity information will be reduced
+        # System reports the visible area of the ball via the parameters CD0["ball_size"] and CD1["ball_size"] - the value of those can be used to 
+        # combine information
+
+        # Ball position
+        bx = CD0["ball_x"]
+        by = CD0["ball_y"]
+
+        # Ball velocity
+        vx = CD0["ball_vx"]
+        vy = CD0["ball_vy"]
+        #print(bx, by, vx, vy)
+
         commands = []
+        for i in range(8): # index i indicates the rod number (0 = red goalie...)
+            # Rod i geometry
+            rg = self.geometry["rods"][i]
 
-        for rod_idx in range(8):
-            state = self.get_state(camera['camData'][0], rod_idx)
-            action_idx = self.choose_action(state, rod_idx)
+            # The opponent
+            if playerMapping[i] < 0:
+                continue
 
-            reward = 0
-            if state[0] > 0.8:
-                reward = 10
-            elif state[0] < 0.2:
-                reward = -10
+            # If ball inside the field...
+            if (by > 0 and by < self.geometry["field"]["dimension_y"]):            
+                
+                for ip in range(rg["players"]):                
+                    # Determine the position of all player figures
+                    pos = rg["travel"] * CD0["rod_position_calib"][i]       # Current rod offset in mm            
+                    p_pos = rg["first_offset"] + pos + ip * rg["spacing"]   # y-position of the ip-th player on the rod
 
-            next_state = self.get_state(camera['camData'][0], rod_idx)
-            self.remember(rod_idx, state, action_idx, reward, next_state)
+                
+            if i == 0: # The logic below for the goalie only
+                if self.demo_state == 0:
+                    if time.time() - self.demo_t < 5:
+                        # Translational move                    
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": 0.0,      # Normal position
+                                "rotationVelocity": 0.2,            # Reduced rotational speed
+                                "translationTargetPosition": 0.5 + math.sin(time.time() - self.demo_t) * 0.5,
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
 
-            action = self.actions[action_idx]
-            cmd = {
-                'driveID': rod_idx + 1,
-                'rotationTargetPosition': 0.5 if action == 'kick' else 0,
-                'rotationVelocity': 1,
-                'translationTargetPosition': 0.4 if action == 'move_left' else 0.6,
-                'translationVelocity': 1.0
-            }
-            commands.append(cmd)
+                    else:
+                        self.demo_t = time.time()
+                        self.demo_state = 1
 
-        self.learn()
+                        # Start the ball kick - pull the legs back
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": 0.5,      # Legs back...
+                                "rotationVelocity": 1,              # Max rotation speed
+                                "translationTargetPosition": 0.5,   # Mid motion
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
+
+                elif self.demo_state == 1:
+                    if time.time() - self.demo_t > 0.05:
+                        self.demo_t = time.time()                    
+                        self.demo_state = 2
+
+                        # Kick!
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": -0.5,     # Forward kick
+                                "rotationVelocity": 1,              # Max rotation speed
+                                "translationTargetPosition": 0.5,   # Mid motion
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
+                    
+                elif self.demo_state == 2:
+                    if time.time() - self.demo_t > 0.2:
+                        self.demo_t = time.time()                    
+                        self.demo_state = 0
+
+                        # Back to normal position!
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": 0,        # Normal position
+                                "rotationVelocity": 0.2,            # Reduced speed
+                                "translationTargetPosition": 0.5,   # Mid motion
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
+
+            if i == 1: # The logic below for the goalie only
+                if self.demo_state == 0:
+                    if time.time() - self.demo_t < 5:
+                        # Translational move                    
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": 0.0,      # Normal position
+                                "rotationVelocity": 0.2,            # Reduced rotational speed
+                                "translationTargetPosition": 0.5 + math.sin(time.time() - self.demo_t) * 0.5,
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
+
+                    else:
+                        self.demo_t = time.time()
+                        self.demo_state = 1
+
+                        # Start the ball kick - pull the legs back
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": 0.5,      # Legs back...
+                                "rotationVelocity": 1,              # Max rotation speed
+                                "translationTargetPosition": 0.5,   # Mid motion
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
+
+                elif self.demo_state == 1:
+                    if time.time() - self.demo_t > 0.05:
+                        self.demo_t = time.time()                    
+                        self.demo_state = 2
+
+                        # Kick!
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": -0.5,     # Forward kick
+                                "rotationVelocity": 1,              # Max rotation speed
+                                "translationTargetPosition": 0.5,   # Mid motion
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
+                    
+                elif self.demo_state == 2:
+                    if time.time() - self.demo_t > 0.2:
+                        self.demo_t = time.time()                    
+                        self.demo_state = 0
+
+                        # Back to normal position!
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": 0,        # Normal position
+                                "rotationVelocity": 0.2,            # Reduced speed
+                                "translationTargetPosition": 0.5,   # Mid motion
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
+            
+            if i == 3: # The logic below for the goalie only
+                if self.demo_state == 0:
+                    if time.time() - self.demo_t < 5:
+                        # Translational move                    
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": 0.0,      # Normal position
+                                "rotationVelocity": 0.2,            # Reduced rotational speed
+                                "translationTargetPosition": 0.5 + math.sin(time.time() - self.demo_t) * 0.5,
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
+
+                    else:
+                        self.demo_t = time.time()
+                        self.demo_state = 1
+
+                        # Start the ball kick - pull the legs back
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": 0.5,      # Legs back...
+                                "rotationVelocity": 1,              # Max rotation speed
+                                "translationTargetPosition": 0.5,   # Mid motion
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
+
+                elif self.demo_state == 1:
+                    if time.time() - self.demo_t > 0.05:
+                        self.demo_t = time.time()                    
+                        self.demo_state = 2
+
+                        # Kick!
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": -0.5,     # Forward kick
+                                "rotationVelocity": 1,              # Max rotation speed
+                                "translationTargetPosition": 0.5,   # Mid motion
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
+                    
+                elif self.demo_state == 2:
+                    if time.time() - self.demo_t > 0.2:
+                        self.demo_t = time.time()                    
+                        self.demo_state = 0
+
+                        # Back to normal position!
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": 0,        # Normal position
+                                "rotationVelocity": 0.2,            # Reduced speed
+                                "translationTargetPosition": 0.5,   # Mid motion
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
+
+            if i == 5: # The logic below for the goalie only
+                if self.demo_state == 0:
+                    if time.time() - self.demo_t < 1:
+                        # Translational move                    
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": 0.0,      # Normal position
+                                "rotationVelocity": 0.2,            # Reduced rotational speed
+                                "translationTargetPosition": 0.5 + math.sin(time.time() - self.demo_t) * 0.5,
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
+
+                    else:
+                        self.demo_t = time.time()
+                        self.demo_state = 1
+
+                        # Start the ball kick - pull the legs back
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": 0.5,      # Legs back...
+                                "rotationVelocity": 1,              # Max rotation speed
+                                "translationTargetPosition": 0.5,   # Mid motion
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
+
+                elif self.demo_state == 1:
+                    if time.time() - self.demo_t > 0.05:
+                        self.demo_t = time.time()                    
+                        self.demo_state = 2
+
+                        # Kick!
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": -0.5,     # Forward kick
+                                "rotationVelocity": 1,              # Max rotation speed
+                                "translationTargetPosition": 0.5,   # Mid motion
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
+                    
+                elif self.demo_state == 2:
+                    if time.time() - self.demo_t > 0.2:
+                        self.demo_t = time.time()                    
+                        self.demo_state = 0
+
+                        # Back to normal position!
+                        cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": 0,        # Normal position
+                                "rotationVelocity": 0.2,            # Reduced speed
+                                "translationTargetPosition": 0.5,   # Mid motion
+                                "translationVelocity": 1.0 }        # Max translational speed
+                        # Request the motion
+                        commands.append(cmd)
+        
         return commands
 
 if __name__ == "__main__":
-    agent = RLAgent()
+    # Instantiate the agent
+    agent = PlayerAgent()
 
-    try:
-        while True:
-            time.sleep(0.02)
-            cam_data = get_camera_state()
-            motor_cmds = agent.process_data(cam_data)
-            send_motor_commands({'commands': motor_cmds})
-    except KeyboardInterrupt:
-        print("Training interrupted.")
+    while True:
+        time.sleep(0.02)
+
+        # Get camera data
+        camData = get_camera_state()    
+
+        CD0 = camData["camData"][0]
+        CD1 = camData["camData"][1]        
+
+        bx = CD0["ball_x"]
+        by = CD0["ball_y"]
+
+        #print(f"Ball: {bx} / {by}")
+
+        # Process the camera data and return motor commands
+        motorData = agent.process_data(camData)
+
+        # Send the motor commands
+        send_motor_commands({'commands': motorData })

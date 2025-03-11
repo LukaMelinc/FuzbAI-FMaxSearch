@@ -3,8 +3,8 @@ import pybullet_data
 import time, datetime
 import threading
 import math
-from FuzbAIAgent_Example import RLAgent
-from FuzbAIAgent_Example import *
+from FuzbAIAgent_Example import PlayerAgent
+from FuzbAIAgent_Tone import RLAgent
 import random
 
 class FuzbAISim:
@@ -49,7 +49,7 @@ class FuzbAISim:
         self.redIndices = [0, 1, 3, 5]
 
         self.p1 = RLAgent()
-        self.p2 = RLAgent()
+        self.p2 = PlayerAgent()
 
         # Camera delay settings
         self.simulatedDelay = 0.040
@@ -194,7 +194,6 @@ class FuzbAISim:
     def loadSimulator(self, printJointInfo = False):
         print("Loading simulator...")
         physicsClient = p.connect(p.GUI) #or p.DIRECT for non-graphical version
-        #physicsClient = p.connect(p.DIRECT) #or p.DIRECT for non-graphical version
 
         p.configureDebugVisualizer(p.COV_ENABLE_WIREFRAME,0)
         p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS,1)
