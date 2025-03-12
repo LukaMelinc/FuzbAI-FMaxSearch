@@ -1,1 +1,0 @@
-Repository for university competition FuzbAI (University of Ljubljana, Faculty of Electrical Engineering)
