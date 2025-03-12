@@ -140,11 +140,11 @@ class RLAgent:
             if abs(next_state[1] - state[1]) > movement_threshold:
                 reward += 1
 
-            reward = 0
-            if state[0] > 0.8:
-                reward = 10
-            elif state[0] < 0.2:
-                reward = -10
+            # reward = 0
+            # if state[0] > 0.8:
+            #     reward = 10
+            # elif state[0] < 0.2:
+            #     reward = -10
 
 
             action = self.actions[action_idx]
@@ -162,12 +162,20 @@ class RLAgent:
 
 if __name__ == "__main__":
     agent = RLAgent()
-
+    episode = 0
+    save_interval = 100
+ 
     try:
         while True:
+            episode += 1
             time.sleep(0.02)
             cam_data = get_camera_state()
             motor_cmds = agent.process_data(cam_data)
             send_motor_commands({'commands': motor_cmds})
+
+            if episode % save_interval == 0:
+                agent.save_model("./") #TODO
+
+
     except KeyboardInterrupt:
         print("Training interrupted.")
