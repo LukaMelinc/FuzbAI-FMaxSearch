@@ -1,4 +1,13 @@
+import requests
+import json
+import time
+import math
 import random
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+from collections import deque
 
 HOST_ADDRESS = '127.0.0.1:23336'
 
@@ -11,20 +20,103 @@ def send_motor_commands(cmds):
     motors_url = f"http://{HOST_ADDRESS}/Motors/SendCommand?blue=False"
     response = requests.post(motors_url, json=cmds)
 
-class BallControlAgent(RLAgent):
-    """
-    RL Agent for training ball control for each rod.
-    This agent specializes in stopping the ball within a designated area for each rod.
-    """
-    def __init__(self):
-        super().__init__()
-        # Define separate reward functions for each rod
-        self.rod_reward_functions = {
-            0: self.reward_rod_0,
-            1: self.reward_rod_1,
-            2: self.reward_rod_2,
-            3: self.reward_rod_3,
-        }
+# Neural Network for DQL
+class DQN(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(DQN, self).__init__()
+        self.fc1 = nn.Linear(input_dim, 128)
+        self.fc2 = nn.Linear(128, 128)
+        self.fc3 = nn.Linear(128, output_dim)
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        return self.fc3(x)
+
+class BallControlAgent:
+    def __init__(self, state_size=4, action_size=4, gamma=0.99, epsilon=1.0, epsilon_min=0.1, epsilon_decay=0.995, lr=0.001, batch_size=64):
+        self.state_size = state_size
+        self.action_size = action_size
+        self.gamma = gamma
+        self.epsilon = epsilon
+        self.epsilon_min = epsilon_min
+        self.epsilon_decay = epsilon_decay
+        self.lr = lr
+        self.batch_size = batch_size
+
+        self.learn_step_counter = 0
+
+        # Experience Replay Memory
+        self.memory = deque(maxlen=2000)
+
+        # Initialize networks
+        self.model = DQN(state_size, action_size)
+        self.target_model = DQN(state_size, action_size)
+        self.update_target_model()
+
+        self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
+        self.criterion = nn.MSELoss()
+
+        self.actions = ['kick', 'move_left', 'move_right', 'idle']
+
+    def update_target_model(self):
+        self.target_model.load_state_dict(self.model.state_dict())
+
+    def remember(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
+
+    def choose_action(self, state):
+        if np.random.rand() <= self.epsilon:
+            return random.randrange(self.action_size)
+        state = torch.FloatTensor(state).unsqueeze(0)
+        q_values = self.model(state)
+        return torch.argmax(q_values).item()
+
+    def learn(self):
+        if len(self.memory) < self.batch_size:
+            return  # Not enough samples
+        
+        self.learn_step_counter += 1
+        if self.learn_step_counter % 10 != 0:
+            return  # Only learn every 10 steps
+
+        # Sample mini-batch from memory
+        batch = random.sample(self.memory, self.batch_size)
+        states, actions, rewards, next_states, dones = zip(*batch)
+
+        states = torch.FloatTensor(states)
+        next_states = torch.FloatTensor(next_states)
+        actions = torch.LongTensor(actions).unsqueeze(1)
+        rewards = torch.FloatTensor(rewards).unsqueeze(1)
+        dones = torch.FloatTensor(dones).unsqueeze(1)
+
+        # Current Q-values
+        q_values = self.model(states).gather(1, actions)
+
+        # Max Q-values from target model
+        next_q_values = self.target_model(next_states).max(1)[0].detach().unsqueeze(1)
+
+        # Target Q-values
+        target_q_values = rewards + (self.gamma * next_q_values * (1 - dones))
+
+        # Compute loss
+        loss = self.criterion(q_values, target_q_values)
+
+        # Backpropagation
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        # Decay epsilon
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+
+    def save_model(self, filename):
+        torch.save(self.model.state_dict(), filename)
+
+    def load_model(self, filename):
+        self.model.load_state_dict(torch.load(filename))
+        self.update_target_model()
 
     def data_process(self, camera):
         CD0 = camera["camData"][0]
@@ -50,7 +142,7 @@ class BallControlAgent(RLAgent):
         """
 
         camera = get_camera_state()
-        _, _, vx, vy, flag = data_process(camera)
+        _, _, vx, vy, flag = self.data_process(camera)
 
         
 
@@ -68,7 +160,7 @@ class BallControlAgent(RLAgent):
         """
 
         camera = get_camera_state()
-        _, _, vx, vy, flag = data_process(camera)
+        _, _, vx, vy, flag = self.data_process(camera)
 
         if self.is_ball_in_target_area(next_state, rod_idx=1) and flag:
             return 100
@@ -84,7 +176,7 @@ class BallControlAgent(RLAgent):
         """
 
         camera = get_camera_state()
-        _, _, vx, vy, flag = data_process(camera)
+        _, _, vx, vy, flag = self.data_process(camera)
 
         if self.is_ball_in_target_area(next_state, rod_idx=2) and flag:
             return 100
@@ -100,7 +192,7 @@ class BallControlAgent(RLAgent):
 
 
         camera = get_camera_state()
-        _, _, vx, vy, flag = data_process(camera)
+        _, _, vx, vy, flag = self.data_process(camera)
 
         if self.is_ball_in_target_area(next_state, rod_idx=3) and flag:
             return 100
@@ -139,27 +231,30 @@ class BallControlAgent(RLAgent):
         This function handles the main logic for interacting with the environment.
         """
         commands = []
-        rod_idx = random.choice([0, 1, 2, 3])  # Randomly select a rod to train
+        rod_idx = random.choice([0, 1, 2, 3])
 
-        # Get the current state for the selected rod
-        state = self.get_state(camera['camData'][0], rod_idx)
+        # Get state
+        bx, by, vx, vy, _ = self.data_process(camera)
+        state = np.array([bx, by, vx, vy])
 
-        # Choose an action based on the current state
-        action_idx = self.choose_action(state, rod_idx)
+        # Choose action
+        action_idx = self.choose_action(state)
 
-        # Get the next state after taking the action
-        next_state = self.get_state(camera['camData'][0], rod_idx)
+        # Define dummy next state for simplicity
+        next_state = state  # You can refine this based on your environment
 
-        # Calculate the reward for the action taken
+        # Calculate reward
         reward = self.calculate_reward(state, next_state, action_idx, rod_idx)
 
-        # Store the experience in the replay memory
-        self.remember(rod_idx, state, action_idx, reward, next_state)
+        # Check if the episode is done (define your own condition)
+        done = reward == 100
 
-        # Map the action index to the actual action
+        # Store experience
+        self.remember(state, action_idx, reward, next_state, done)
+
+        # Define action
         action = self.actions[action_idx]
 
-        # Create a command for the motor based on the chosen action
         cmd = {
             'driveID': rod_idx + 1,
             'rotationTargetPosition': 0.5 if action == 'kick' else 0,
@@ -168,6 +263,7 @@ class BallControlAgent(RLAgent):
             'translationVelocity': 1.0
         }
         commands.append(cmd)
+        
 
         # Train the model using the collected experiences
         self.learn()

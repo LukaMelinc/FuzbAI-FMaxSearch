@@ -4,7 +4,7 @@ import time, datetime
 import threading
 import math
 from FuzbAIAgent_Example import PlayerAgent
-from FuzbAIAgent_Tone import RLAgent
+from Zadrzi import BallControlAgent
 import random
 
 class FuzbAISim:
@@ -48,7 +48,7 @@ class FuzbAISim:
         self.travels = [190, 356, 180, 116, 116, 180, 356, 190]
         self.redIndices = [0, 1, 3, 5]
 
-        self.p1 = RLAgent()
+        self.p1 = PlayerAgent()
         self.p2 = PlayerAgent()
 
         # Camera delay settings
@@ -182,7 +182,7 @@ class FuzbAISim:
         zone3 = (0.5, 0.7)      # Območje meta žoge - za palco 2
         zone4 = (0.2, 0.5)      # Območje meta žoge - za palco 1
 
-        zone_list = [zone1, zone2, zone3, zone4]
+        zone_list = [zone1, zone2, zone3, zone4] # zone1, zone2, zone3, zone4
         x_range = random.choice(zone_list)
 
         custom_x = random.uniform(*x_range)
