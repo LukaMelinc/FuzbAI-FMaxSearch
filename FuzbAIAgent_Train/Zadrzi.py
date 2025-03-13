@@ -46,6 +46,8 @@ class BallControlAgent:
         self.batch_size = batch_size
 
         self.learn_step_counter = 0
+        self.last_reward = None
+        self.total_reward = 0
 
         # Experience Replay Memory
         self.memory = deque(maxlen=2000)
@@ -262,6 +264,10 @@ class BallControlAgent:
 
         # Calculate reward
         reward = self.calculate_reward(camera, state, next_state, action_values, rod_idx)
+        self.last_reward = reward
+        self.total_reward += reward
+
+        print(f"Earned reward: {reward}, Total accumulated reward: {self.total_reward}")
 
         # Check if the episode is done
         done = reward == 100
@@ -312,6 +318,7 @@ if __name__ == "__main__":
             # Save the model at regular intervals
             if episode % save_interval == 0:
                 agent.save_model("ball_control_model.pth")
+                print(f"Model Saved!")
 
     except KeyboardInterrupt:
         print("Training interrupted. Saving last model...")
