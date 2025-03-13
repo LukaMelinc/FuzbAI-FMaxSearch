@@ -23,7 +23,7 @@ def send_motor_commands(cmds):
 
 # Neural Network for DQL
 class DQN(nn.Module):
-    def __init__(self, input_dim, output_dim):
+    def __init__(self, input_dim, output_dim = 4):
         super(DQN, self).__init__()
         self.fc1 = nn.Linear(input_dim, 128)
         self.fc2 = nn.Linear(128, 128)
@@ -32,7 +32,7 @@ class DQN(nn.Module):
     def forward(self, x):
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
-        return self.fc3(x)
+        return torch.tanh(self.fc3(x))  # Ensure output is between -1 and 1
 
 class BallControlAgent:
     def __init__(self, state_size=4, action_size=4, gamma=0.99, epsilon=1.0, epsilon_min=0.1, epsilon_decay=0.995, lr=0.001, batch_size=64):
@@ -76,17 +76,22 @@ class BallControlAgent:
     def remember(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
 
+
     def choose_action(self, state):
-        if np.random.rand() <= self.epsilon:
-            return random.randrange(self.action_size)
         state = torch.FloatTensor(state).unsqueeze(0)
-        q_values = self.model(state)
-        return torch.argmax(q_values).item()
+        if np.random.rand() <= self.epsilon:
+            # Random continuous actions for exploration in range [-1, 1]
+            return np.random.uniform(-1, 1, 4)
+        else:
+            # NN decides continuous actions
+            with torch.no_grad():
+                return self.model(state).squeeze(0).numpy()
+
 
     def learn(self):
         if len(self.memory) < self.batch_size:
             return  # Not enough samples
-        
+
         self.learn_step_counter += 1
         if self.learn_step_counter % 10 != 0:
             return  # Only learn every 10 steps
@@ -96,21 +101,21 @@ class BallControlAgent:
         states, actions, rewards, next_states, dones = zip(*batch)
 
         states = torch.FloatTensor(states)
-        next_states = torch.FloatTensor(next_states)
-        actions = torch.LongTensor(actions).unsqueeze(1)
+        actions = torch.FloatTensor(actions)
         rewards = torch.FloatTensor(rewards).unsqueeze(1)
+        next_states = torch.FloatTensor(next_states)
         dones = torch.FloatTensor(dones).unsqueeze(1)
 
         # Current Q-values
-        q_values = self.model(states).gather(1, actions)
+        q_values = self.model(states)
 
-        # Max Q-values from target model
-        next_q_values = self.target_model(next_states).max(1)[0].detach().unsqueeze(1)
+        # Predicted Q-values for the next state
+        next_q_values = self.target_model(next_states).detach()
 
         # Target Q-values
-        target_q_values = rewards + (self.gamma * next_q_values * (1 - dones))
+        target_q_values = rewards + (self.gamma * next_q_values.max(1)[0].unsqueeze(1) * (1 - dones))
 
-        # Compute loss
+        # Compute loss using MSE
         loss = self.criterion(q_values, target_q_values)
 
         # Backpropagation
@@ -121,6 +126,7 @@ class BallControlAgent:
         # Decay epsilon
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
+
 
     def save_model(self, filename):
         torch.save(self.model.state_dict(), filename)
@@ -216,10 +222,10 @@ class BallControlAgent:
         # Reach of each rod is +-50mm
         # Red rods are at postions 80, 230, 530, 830 
         target_areas = {
-            0: (40, 120),  # Example target area for rod 0
-            1: (190, 270 ),  # Example target area for rod 1
-            2: (490, 570),  # Example target area for rod 2
-            3: (790, 870),  # Example target area for rod 3
+            0: (0.040, 0.120),  # Example target area for rod 0
+            1: (0.190, 0.270),  # Example target area for rod 1
+            2: (0.490, 0.570),  # Example target area for rod 2
+            3: (0.790, 0.870),  # Example target area for rod 3
         }
         lower_bound, upper_bound = target_areas[rod_idx]
         return lower_bound <= state[0] <= upper_bound
@@ -242,39 +248,34 @@ class BallControlAgent:
         bx, by, vx, vy, _ = self.data_process(camera)
         state = np.array([bx, by, vx, vy])
 
-        # RL decides the action
-        action_idx = self.choose_action(state)
+        # Predict continuous action values in range [-1, 1]
+        action_values = self.choose_action(state)
+
+        # Scale actions appropriately (no longer constrained to [0, 1])
+        rotation_target = action_values[0]  # Already in [-1, 1]
+        rotation_velocity = (action_values[1] + 1) * 1.0  # Convert [-1, 1] to [0, 2]
+        translation_target = (action_values[2] + 1) * 0.5  # Convert [-1, 1] to [0, 1]
+        translation_velocity = (action_values[3] + 1) * 1.0  # Convert [-1, 1] to [0, 2]
 
         # Next state (for now, assume it remains the same)
         next_state = state
 
-        # ✅ Pass camera data to reward calculation
-        reward = self.calculate_reward(camera, state, next_state, action_idx, rod_idx)
+        # Calculate reward
+        reward = self.calculate_reward(camera, state, next_state, action_values, rod_idx)
 
-        # Episode completion condition
+        # Check if the episode is done
         done = reward == 100
 
         # Store experience
-        self.remember(state, action_idx, reward, next_state, done)
-
-        # Define dynamic actions
-        action_map = {
-            0: {"rotationTargetPosition": 0.5, "translationTargetPosition": 0.5},  # kick
-            1: {"rotationTargetPosition": 0.0, "translationTargetPosition": max(0.0, bx / 1000)},  # move_left
-            2: {"rotationTargetPosition": 0.0, "translationTargetPosition": min(1.0, bx / 1000)},  # move_right
-            3: {"rotationTargetPosition": 0.0, "translationTargetPosition": 0.5},  # idle in the middle
-        }
-
-        # Get the mapped action parameters
-        action_params = action_map.get(action_idx, {"rotationTargetPosition": 0, "translationTargetPosition": 0.5})
+        self.remember(state, action_values, reward, next_state, done)
 
         # Dynamic motor command
         cmd = {
             'driveID': rod_idx + 1,
-            'rotationTargetPosition': action_params["rotationTargetPosition"],
-            'rotationVelocity': 1,
-            'translationTargetPosition': action_params["translationTargetPosition"],
-            'translationVelocity': 1.0
+            'rotationTargetPosition': rotation_target,
+            'rotationVelocity': rotation_velocity,
+            'translationTargetPosition': translation_target,
+            'translationVelocity': translation_velocity
         }
 
         commands.append(cmd)
@@ -283,6 +284,8 @@ class BallControlAgent:
         self.learn()
 
         return commands
+
+
 
 
 

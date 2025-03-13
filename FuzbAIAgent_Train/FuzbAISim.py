@@ -23,6 +23,7 @@ class FuzbAISim:
         self.ballVel = None
 
         self.scoreDisp = None # Text used for score display
+        self.roundDisp = None # Text used for round count display
 
         # Text used for player status display
         self.playerStatusDisp1 = None
@@ -74,6 +75,8 @@ class FuzbAISim:
 
         self.motorCommandsExternal1 = []
         self.motorCommandsExternal2 = []
+
+        self.round = 0 # Štetje rund učenja
 
     def getCameraDict(self, player = 1):
         ball_x, ball_y = 1000*self.ballPos[0] - 115, 730 - 1000*self.ballPos[1]
@@ -130,6 +133,15 @@ class FuzbAISim:
             p.removeUserDebugItem(self.scoreDisp)
 
         self.scoreDisp = p.addUserDebugText(f"Score {self.score[0]}:{self.score[1]}", [-0.1, -0.5, 0.1],
+                                            textColorRGB=[0, 0, 0],
+                                            textSize=2,
+                                            parentObjectUniqueId=self.mizaId)
+    
+    def showRound(self):    
+        if self.roundDisp is not None:
+            p.removeUserDebugItem(self.roundDisp)
+
+        self.roundDisp = p.addUserDebugText(f"Round #{self.round+1}", [-0.1, -0.55, 0.1],
                                             textColorRGB=[0, 0, 0],
                                             textSize=2,
                                             parentObjectUniqueId=self.mizaId)
@@ -227,6 +239,8 @@ class FuzbAISim:
         p.resetBaseVelocity(self.ball, linearVelocity=velocity, angularVelocity=[0, 0, 0])
 
         print(f"Ball thrown towards {direction} with velocity: {velocity}")
+
+        self.showRound()
         #self.nudgeBall() # izniči efekt zgornje kode
 
 
@@ -347,6 +361,7 @@ class FuzbAISim:
         print(f'\n*********************************\nStarting main loop\n*********************************\n')
 
         self.showScore()
+        self.showRound()
         #self.nudgeBall()
         self.ResetBallToLocation()
         self.showPlayerStatus()
@@ -373,11 +388,7 @@ class FuzbAISim:
                             print(f'Red scored goal ({self.score[0]}:{self.score[1]})')
 
                         self.showScore()
-
-                    # # Reset the ball  
-                    # print("Dropping ball at start location")   
-                    # p.resetBasePositionAndOrientation(self.ball, self.defaultBallPos, p.getQuaternionFromEuler([0,0,0]))          
-                    # self.nudgeBall()
+                        self.showRound()
 
                     # Safe drop coordinates within table limits
                     self.ResetBallToLocation()
@@ -389,18 +400,10 @@ class FuzbAISim:
                 if math.sqrt(self.ballVel[0][0]**2 + self.ballVel[0][1]**2) > 0.05:
                     ball_moving = self.t
 
-                # if self.t - ball_moving > 3:
-                #     # Ball is not moving - move it to a random location
-                #     print("Ball stationary, dropping to a random location")    
-                #     ball_moving = self.t
-                    
-                #     p.resetBasePositionAndOrientation(self.ball, [0.718 + 0.6*random.random(), 0.71 - random.random()*0.7, 0.3], p.getQuaternionFromEuler([0,0,0]))
-                #     self.nudgeBall()
-
                 if self.t - ball_moving > 3:
                     self.ResetBallToLocation()
-
-
+                    self.round += 1
+                    print("Round:", self.round)
 
 
                 angles = []
