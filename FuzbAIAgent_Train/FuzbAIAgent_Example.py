@@ -35,7 +35,7 @@ class PlayerAgent():
         #         * first_offset: y-axis position of the first player center
         #         * spacing: spacing between players on the rod
 
-        self.demo_state = 0
+        self.demo_state = -1 # 0
         self.demo_t = 0
 
     def process_data(self, camera):
@@ -88,6 +88,17 @@ class PlayerAgent():
 
                 
             if i == 0: # The logic below for the goalie only
+
+                if self.demo_state == 1:
+                    cmd = {
+                                "driveID": playerMapping[i],
+                                "rotationTargetPosition": -1,      # Normal position
+                                "rotationVelocity": 0.2,            # Reduced rotational speed
+                                "translationTargetPosition": 0.0,
+                                "translationVelocity": 0.0 }        # Max translational speed
+                        # Request the motion
+                    commands.append(cmd)
+
                 if self.demo_state == 0:
                     if time.time() - self.demo_t < 5:
                         # Translational move                    

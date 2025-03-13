@@ -77,6 +77,7 @@ class FuzbAISim:
         self.motorCommandsExternal2 = []
 
         self.round = 0 # Štetje rund učenja
+        self.save_interval = 100
 
     def getCameraDict(self, player = 1):
         ball_x, ball_y = 1000*self.ballPos[0] - 115, 730 - 1000*self.ballPos[1]
@@ -401,6 +402,11 @@ class FuzbAISim:
                     ball_moving = self.t
 
                 if self.t - ball_moving > 3:
+                    
+                    # Save the model at regular intervals
+                    if self.round % self.save_interval == 0:
+                        self.p1.save_model("ball_control_model.pth")
+
                     self.ResetBallToLocation()
                     self.round += 1
                     print("Round:", self.round)
