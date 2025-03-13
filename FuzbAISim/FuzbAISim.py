@@ -4,7 +4,7 @@ import time, datetime
 import threading
 import math
 from FuzbAIAgent_Example import PlayerAgent
-from FuzbAIAgent_Tone import RLAgent
+from Zadrzi import BallControlAgent
 import random
 
 class FuzbAISim:
@@ -48,7 +48,7 @@ class FuzbAISim:
         self.travels = [190, 356, 180, 116, 116, 180, 356, 190]
         self.redIndices = [0, 1, 3, 5]
 
-        self.p1 = RLAgent()
+        self.p1 = PlayerAgent()
         self.p2 = PlayerAgent()
 
         # Camera delay settings
@@ -172,6 +172,63 @@ class FuzbAISim:
         velocityNoise = 0.1
         p.resetBaseVelocity(self.ball, linearVelocity=[random.random()*velocityNoise,random.random()*velocityNoise,0])
 
+
+    ### --- Function for spawning ball at specified location --- ###
+    def ResetBallToLocation(self):
+        # Randomize the drop position within specified ranges
+        y_range=(0.1, 0.6)      # Cela širina igrišča skorej
+        zone1 = (1.0, 1.2)      # Območje meta žoge - za palco 4
+        zone2 = (0.7, 1.0)      # Območje meta žoge - za palco 3
+        zone3 = (0.5, 0.7)      # Območje meta žoge - za palco 2
+        zone4 = (0.2, 0.5)      # Območje meta žoge - za palco 1
+
+        zone_list = [zone1, zone2, zone3, zone4] # zone1, zone2, zone3, zone4
+        x_range = random.choice(zone_list)
+
+        custom_x = random.uniform(*x_range)
+        custom_y = random.uniform(*y_range)
+        custom_z = 0.2  # Ensure it's above the table to avoid collision
+
+        custom_ball_pos = [custom_x, custom_y, custom_z]
+
+        # Reset the ball to the randomized safe location
+        print(f"Dropping ball at position: {custom_ball_pos}")
+        p.resetBasePositionAndOrientation(self.ball, custom_ball_pos, p.getQuaternionFromEuler([0, 0, 0]))
+
+        # Random speed within the defined range
+        speed_range=(0.5, 1.0)
+        speed = random.uniform(*speed_range)
+
+        # Select a random string from the list
+        directions_list = ['left', 'diagonal-left-up', 'diagonal-left-down'] # vnesi željene smeri 
+        direction = random.choice(directions_list)
+
+        # Define direction vectors (random da ne dobiš zmeraj 45deg)
+        rnd_vector_x = random.uniform(0.1, 1)
+        rnd_vector_y = random.uniform(0.1, 1)
+        direction_vectors = {
+            'left': [-rnd_vector_x, 0.0, 0.0],
+            'right': [rnd_vector_x, 0.0, 0.0],
+            'up': [0.0, rnd_vector_y, 0.0],
+            'down': [0.0, -rnd_vector_y, 0.0],
+            'diagonal-right-up': [rnd_vector_x, rnd_vector_y, 0.0],
+            'diagonal-left-up': [-rnd_vector_x, rnd_vector_y, 0.0],
+            'diagonal-right-down': [rnd_vector_x, -rnd_vector_y, 0.0],
+            'diagonal-left-down': [-rnd_vector_x, -rnd_vector_y, 0.0],
+        }
+
+        # Select direction vector and normalize it
+        velocity_vector = direction_vectors.get(direction, [1.0, 0.0, 0.0])
+        norm = (velocity_vector[0]**2 + velocity_vector[1]**2) ** 0.5
+        velocity = [v / norm * speed for v in velocity_vector]
+
+        # Apply velocity to the ball
+        p.resetBaseVelocity(self.ball, linearVelocity=velocity, angularVelocity=[0, 0, 0])
+
+        print(f"Ball thrown towards {direction} with velocity: {velocity}")
+        #self.nudgeBall() # izniči efekt zgornje kode
+
+
     def applyMotorDeadband(self, i, newPos):    
         motionDiff = newPos - self.prevRefPositions[i]
 
@@ -289,7 +346,8 @@ class FuzbAISim:
         print(f'\n*********************************\nStarting main loop\n*********************************\n')
 
         self.showScore()
-        self.nudgeBall()
+        #self.nudgeBall()
+        self.ResetBallToLocation()
         self.showPlayerStatus()
 
         prev_key_t = 0
@@ -315,23 +373,34 @@ class FuzbAISim:
 
                         self.showScore()
 
-                    # Reset the ball  
-                    print("Dropping ball at start location")   
-                    p.resetBasePositionAndOrientation(self.ball, self.defaultBallPos, p.getQuaternionFromEuler([0,0,0]))          
-                    self.nudgeBall()
+                    # # Reset the ball  
+                    # print("Dropping ball at start location")   
+                    # p.resetBasePositionAndOrientation(self.ball, self.defaultBallPos, p.getQuaternionFromEuler([0,0,0]))          
+                    # self.nudgeBall()
+
+                    # Safe drop coordinates within table limits
+                    self.ResetBallToLocation()
                 
+
+
                 self.t = time.time() - t0
 
                 if math.sqrt(self.ballVel[0][0]**2 + self.ballVel[0][1]**2) > 0.05:
                     ball_moving = self.t
 
-                if self.t - ball_moving > 3:
-                    # Ball is not moving - move it to a random location
-                    print("Ball stationary, dropping to a random location")    
-                    ball_moving = self.t
+                # if self.t - ball_moving > 3:
+                #     # Ball is not moving - move it to a random location
+                #     print("Ball stationary, dropping to a random location")    
+                #     ball_moving = self.t
                     
-                    p.resetBasePositionAndOrientation(self.ball, [0.718 + 0.6*random.random(), 0.71 - random.random()*0.7, 0.3], p.getQuaternionFromEuler([0,0,0]))
-                    self.nudgeBall()
+                #     p.resetBasePositionAndOrientation(self.ball, [0.718 + 0.6*random.random(), 0.71 - random.random()*0.7, 0.3], p.getQuaternionFromEuler([0,0,0]))
+                #     self.nudgeBall()
+
+                if self.t - ball_moving > 3:
+                    self.ResetBallToLocation()
+
+
+
 
                 angles = []
                 rodPoses = []     
@@ -406,7 +475,8 @@ class FuzbAISim:
                     for k, v in keys.items():        
                         if (k == 65309 and (v & p.KEY_WAS_TRIGGERED)): # 65309 == enter
                             # Move the ball over the table
-                            p.resetBasePositionAndOrientation(self.ball, self.defaultBallPos, p.getQuaternionFromEuler([0,0,0]))
+                            #p.resetBasePositionAndOrientation(self.ball, self.defaultBallPos, p.getQuaternionFromEuler([0,0,0]))
+                            self.ResetBallToLocation()
                         if (k == 32): # Esc
                             running = False 
                             break            
