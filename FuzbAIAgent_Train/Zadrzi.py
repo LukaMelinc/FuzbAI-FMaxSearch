@@ -224,13 +224,12 @@ class BallControlAgent:
         lower_bound, upper_bound = target_areas[rod_idx]
         return lower_bound <= state[0] <= upper_bound
 
-    def calculate_reward(self, state, next_state, action, rod_idx):
+    def calculate_reward(self, data, state, next_state, action, rod_idx):
         """
         Calculate reward using the specific reward function for the rod.
         """
-        # Ensure that the method is called with self
         reward_function = self.rod_reward_functions[rod_idx]
-        return reward_function(state, next_state, action)
+        return reward_function(data, state, next_state, action)
 
     def process_data(self, camera):
         """
@@ -249,8 +248,8 @@ class BallControlAgent:
         # Next state (for now, assume it remains the same)
         next_state = state
 
-        # Reward calculation
-        reward = self.calculate_reward(state, next_state, action_idx, rod_idx)
+        # ✅ Pass camera data to reward calculation
+        reward = self.calculate_reward(camera, state, next_state, action_idx, rod_idx)
 
         # Episode completion condition
         done = reward == 100
@@ -279,12 +278,12 @@ class BallControlAgent:
         }
 
         commands.append(cmd)
-        
 
         # Train the model
         self.learn()
 
         return commands
+
 
 
 if __name__ == "__main__":

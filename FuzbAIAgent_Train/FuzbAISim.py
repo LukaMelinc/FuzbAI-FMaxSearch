@@ -49,7 +49,7 @@ class FuzbAISim:
         self.travels = [190, 356, 180, 116, 116, 180, 356, 190]
         self.redIndices = [0, 1, 3, 5]
 
-        self.p1 = PlayerAgent()
+        self.p1 = BallControlAgent()
         self.p2 = PlayerAgent()
 
         # Camera delay settings
