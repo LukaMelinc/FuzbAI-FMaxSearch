@@ -152,6 +152,21 @@ class BallControlAgent:
 
         return bx, by, vx, vy, flag
 
+    def opponent_data(self, camera):
+        CD0 = camera["camData"][0]
+        CD1 = camera["camData"][1]
+
+        
+        postions = []
+        rotations = []
+
+        for i in range(8):
+
+            position[i] = CD0["rod_position_calib"][i]
+            position[i] = CD0["rod_angle"][i]
+
+
+        return positions, rotations
 
 
 
