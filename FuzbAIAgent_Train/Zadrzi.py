@@ -35,7 +35,7 @@ class DQN(nn.Module):
         return torch.tanh(self.fc3(x))  # Ensure output is between -1 and 1
 
 class BallControlAgent:
-    def __init__(self, state_size=4, action_size=4, gamma=0.99, epsilon=1.0, epsilon_min=0.1, epsilon_decay=0.995, lr=0.001, batch_size=64):
+    def __init__(self, state_size=20, action_size=4, gamma=0.99, epsilon=1.0, epsilon_min=0.1, epsilon_decay=0.995, lr=0.001, batch_size=64):
         self.state_size = state_size
         self.action_size = action_size
         self.gamma = gamma
@@ -78,7 +78,7 @@ class BallControlAgent:
     def remember(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
 
-
+    # Inputing the data to the model
     def choose_action(self, state):
         state = torch.FloatTensor(state).unsqueeze(0)
         if np.random.rand() <= self.epsilon:
@@ -154,17 +154,21 @@ class BallControlAgent:
 
     def opponent_data(self, camera):
         CD0 = camera["camData"][0]
-        CD1 = camera["camData"][1]
+        #CD1 = camera["camData"][1]
 
         
-        postions = []
+        positions = []
         rotations = []
 
         for i in range(8):
 
-            position[i] = CD0["rod_position_calib"][i]
-            position[i] = CD0["rod_angle"][i]
+            positions.append(CD0["rod_position_calib"][i])
+            positions.append(CD0["rod_angle"][i])
 
+
+        # VZEL VSE POZICIJE IN ROTACIJA SKUPAJ, NAKONCU NAJ BI MODEL SAM UGOTOVIL???
+        #opp_pos = [positions[i] for i in [2, 4, 6, 7]]
+        #opp_rot = [rotations[i] for i in [2, 4, 6, 7]]
 
         return positions, rotations
 
@@ -259,11 +263,16 @@ class BallControlAgent:
         Process data and return dynamically decided commands.
         """
         commands = []
+
+        # A JE TOLE PROU??? da je kr random?
         rod_idx = random.choice([0, 1, 2, 3])  # Randomly select a rod to train
 
         # Get state from camera
-        bx, by, vx, vy, _ = self.data_process(camera)
-        state = np.array([bx, by, vx, vy])
+        bx, by, vx, vy, _ = self.data_process(camera)       # Pozicija in hitrost zogice (4)
+        #my_pos, my_rot = self.my_data(camera)
+        opp_pos, opp_rpt = self.opponent_data(camera)       # Pozicije in rotacije vseh rodov (8 + 8)
+
+        state = np.concatenate([[bx, by, vx, vy], opp_pos, opp_rpt])    # vse skupaj 20
 
         # Predict continuous action values in range [-1, 1]
         action_values = self.choose_action(state)
@@ -286,6 +295,7 @@ class BallControlAgent:
 
         # Check if the episode is done
         done = reward == 100
+
 
         # Store experience
         self.remember(state, action_values, reward, next_state, done)
