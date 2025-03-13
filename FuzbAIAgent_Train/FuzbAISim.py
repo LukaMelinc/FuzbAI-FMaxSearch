@@ -4,8 +4,9 @@ import time, datetime
 import threading
 import math
 from FuzbAIAgent_Example import PlayerAgent
-from FuzbAIAgent_Tone import RLAgent
+from Zadrzi import BallControlAgent
 import random
+import traceback
 
 class FuzbAISim:
     def __init__(self):
@@ -48,7 +49,7 @@ class FuzbAISim:
         self.travels = [190, 356, 180, 116, 116, 180, 356, 190]
         self.redIndices = [0, 1, 3, 5]
 
-        self.p1 = RLAgent()
+        self.p1 = BallControlAgent()
         self.p2 = PlayerAgent()
 
         # Camera delay settings
@@ -182,7 +183,7 @@ class FuzbAISim:
         zone3 = (0.5, 0.7)      # Območje meta žoge - za palco 2
         zone4 = (0.2, 0.5)      # Območje meta žoge - za palco 1
 
-        zone_list = [zone1, zone2, zone3, zone4]
+        zone_list = [zone1, zone2, zone3, zone4] # zone1, zone2, zone3, zone4
         x_range = random.choice(zone_list)
 
         custom_x = random.uniform(*x_range)
@@ -441,6 +442,7 @@ class FuzbAISim:
                             p.setJointMotorControl2(self.mizaId, jId_lin, controlMode=p.POSITION_CONTROL, targetPosition=refPos, force=13.303989530423438, maxVelocity=linVel*m["translationVelocity"], positionGain=0.19343157707177333, velocityGain=3.9227062400839023)
                     except:
                         print("Exception in agent 1")
+                        traceback.print_exc()
 
                     try:                                               
                         if self.status_player2 == 0:             
