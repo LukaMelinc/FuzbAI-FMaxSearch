@@ -4,7 +4,7 @@ import time, datetime
 import threading
 import math
 from FuzbAIAgent_Example import PlayerAgent
-from Zadrzi import BallControlAgent
+from strel import ShootingAgent
 import random
 import traceback
 

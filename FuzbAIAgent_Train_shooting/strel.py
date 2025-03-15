@@ -10,17 +10,6 @@ import numpy as np
 from collections import deque
 
 
-"""
-
-Only the rod with 5 and 3 players should be trained to kick ball towards the goal.
-
-For training the agent, the ball should be initialized at the positions of 
-red rods 3 and 4 with slight speed or stationary.
-
-Rods 1 and 2 are not supposed to be trained for shooting.
-
-"""
-
 HOST_ADDRESS = '127.0.0.1:23336'
 
 def get_camera_state():
@@ -32,9 +21,10 @@ def send_motor_commands(cmds):
     motors_url = f"http://{HOST_ADDRESS}/Motors/SendCommand?blue=False"
     response = requests.post(motors_url, json=cmds)
 
+
 # Neural Network for DQL
 class DQN(nn.Module):
-    def __init__(self, input_dim, output_dim):
+    def __init__(self, input_dim, output_dim = 4):
         super(DQN, self).__init__()
         self.fc1 = nn.Linear(input_dim, 128)
         self.fc2 = nn.Linear(128, 128)
@@ -43,7 +33,7 @@ class DQN(nn.Module):
     def forward(self, x):
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
-        return self.fc3(x)
+        return torch.tanh(self.fc3(x))  # Ensure output is between -1 and 1
 
 class ShootingAgent:
     def __init__(self, state_size=20, action_size=4, gamma=0.99, epsilon=1.0, epsilon_min=0.1, epsilon_decay=0.995, lr=0.001, batch_size=64):
@@ -72,9 +62,50 @@ class ShootingAgent:
         self.criterion = nn.MSELoss()
 
         self.actions = ['kick', 'move_left', 'move_right', 'idle']
-        
-        
 
+        # Preberi json file
+        f = open('geometry.json')
+        self.geometry = json.load(f)
+        f.close()
+
+    # Preračunaj koordinate in kote igralcev na mizi
+    def calculate_player_positions_and_angles(self, camera):
+        field = self.geometry["field"]
+        rods = self.geometry["rods"]
+        
+        player_positions = []
+        
+        # Process each rod
+        for rod in rods:
+            rod_id = rod["id"]
+            team = rod["team"]
+            rod_x = rod["position"]
+            travel_range = rod["travel"]
+            num_players = rod["players"]
+            first_offset = rod["first_offset"]
+            spacing = rod["spacing"]
+
+            # Get corresponding camera data for the rod
+            cam_data = camera["camData"][0] if rod_id <= 4 else camera["camData"][1]
+            rod_position_calib = cam_data["rod_position_calib"]
+            rod_angle = cam_data["rod_angle"]
+
+            # Calculate the actual y position based on calibration
+            rod_y_base = (rod_position_calib * travel_range)
+
+            # Calculate positions for each player on the rod
+            for i in range(num_players):
+                player_y = rod_y_base + first_offset + i * spacing
+                player_positions.append({
+                    "rod_id": rod_id,
+                    "team": team,
+                    "position": (rod_x, player_y),
+                    "angle": rod_angle
+                })
+        
+        return player_positions
+        
+    
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
 
@@ -82,11 +113,14 @@ class ShootingAgent:
         self.memory.append((state, action, reward, next_state, done))
 
     def choose_action(self, state):
-        if np.random.rand() <= self.epsilon:
-            return random.randrange(self.action_size)
         state = torch.FloatTensor(state).unsqueeze(0)
-        q_values = self.model(state)
-        return torch.argmax(q_values).item()
+        if np.random.rand() <= self.epsilon:
+            # Random continuous actions for exploration in range [-1, 1]
+            return np.random.uniform(-1, 1, 4)
+        else:
+            # NN decides continuous actions
+            with torch.no_grad():
+                return self.model(state).squeeze(0).numpy()
 
     def learn(self):
         if len(self.memory) < self.batch_size:
@@ -150,86 +184,92 @@ class ShootingAgent:
 
 
     def opponent_data(self, camera):
-        CD0 = camera["camData"][0]
-        #CD1 = camera["camData"][1]
 
-        
+        # TODO: Če ostane čas mogoče kalmana za predikcijo žogice ;) ?
+
+        CD0 = camera["camData"][0]
+        CD1 = camera["camData"][1]
+
         positions = []
         rotations = []
 
-        for i in range(8):
+        # Preveri ali kamera 0 vidi žigico -> če ne uporabi drugo kamero
+        if CD0 is not None:
 
-            positions.append(CD0["rod_position_calib"][i])
-            positions.append(CD0["rod_angle"][i])
+            for i in range(8):
+                positions.append(CD0["rod_position_calib"][i])
+                positions.append(CD0["rod_angle"][i])
 
+            # VZEL VSE POZICIJE IN ROTACIJA SKUPAJ, NAKONCU NAJ BI MODEL SAM UGOTOVIL???
+            #opp_pos = [positions[i] for i in [2, 4, 6, 7]]
+            #opp_rot = [rotations[i] for i in [2, 4, 6, 7]]
 
-        # VZEL VSE POZICIJE IN ROTACIJA SKUPAJ, NAKONCU NAJ BI MODEL SAM UGOTOVIL???
-        #opp_pos = [positions[i] for i in [2, 4, 6, 7]]
-        #opp_rot = [rotations[i] for i in [2, 4, 6, 7]]
+        else:
+
+            for i in range(8):
+                positions.append(CD1["rod_position_calib"][i])
+                positions.append(CD1["rod_angle"][i])
+
+            # VZEL VSE POZICIJE IN ROTACIJA SKUPAJ, NAKONCU NAJ BI MODEL SAM UGOTOVIL???
+            #opp_pos = [positions[i] for i in [2, 4, 6, 7]]
+            #opp_rot = [rotations[i] for i in [2, 4, 6, 7]]
 
         return positions, rotations
 
+    def detect_collision(self, ball_pos, player_pos, ball_radius, player_radius):
+        distance = math.hypot(ball_pos[0] - player_pos[0], ball_pos[1] - player_pos[1])
+        return distance <= (ball_radius + player_radius)
 
-    def reward_shoot(self):
+
+    def calculate_shooting_reward(self, bx, by, vx, vy, collision_detected):
         """
-        Reward function for shooting the ball at oponent"s goal
-
-        Rewards the agent if the ball enters the goal area with high speed
+        Reward function for encouraging accurate, fast, and goal-directed shots.
         """
-
-        camera = get_camera_state()
-        bx, by, vx, vy, flag = self.data_process(camera)
-
-        goal_width = [250, 450]
-        goal_length = [1200, 1210]
-
-        if goal_width[0] <= by <= goal_width[1] and goal_length[0] <= bx <= goal_length[1]:
-            
-            speed_reward = math.sqrt(vx**2 + vy**2)
-            return 100 + speed_reward
-
-        elif bx < 1000 or bx > 1230:
-            return -50
+        reward = 0
         
+        # Parameters
+        goal_x_range = (1200, 1210)
+        goal_y_range = (250, 450)
+        
+        # 1. Collision Reward
+        if collision_detected:
+            reward += 10
         else:
-            return -1
+            reward -= 5  # Penalty for missing the ball
 
+        # 2. Direction Towards Goal
+        goal_center = (1205, 350)
+        ball_vector = np.array([vx, vy])
+        direction_vector = np.array([goal_center[0] - bx, goal_center[1] - by])
 
+        if np.linalg.norm(ball_vector) > 0:
+            cosine_similarity = np.dot(ball_vector, direction_vector) / (np.linalg.norm(ball_vector) * np.linalg.norm(direction_vector))
+            directional_reward = max(0, cosine_similarity) * 30  # Reward for direction towards the goal
+            reward += directional_reward
+        else:
+            reward -= 5  # Penalty for stationary ball
 
+        # 3. Speed Reward
+        ball_speed = np.linalg.norm(ball_vector)
+        reward += ball_speed * 5  # Scale the speed reward
 
-    """def is_ball_in_target_area(self, state, rod_idx):
-        
-        Check if the ball is in the target area for the given rod.
-        Each rod has a predefined target area where the ball should stop.
-        
+        # 4. Goal Reward
+        if goal_x_range[0] <= bx <= goal_x_range[1] and goal_y_range[0] <= by <= goal_y_range[1]:
+            reward += 100
+        elif bx < 1000 or bx > 1230:
+            reward -= 50  # Own goal or out of bounds
 
-        # Reward belt is +-40mm off the rod position
-        # Reach of each rod is +-50mm
-        # Red rods are at postions 80, 230, 530, 830 
-        target_areas = {
-            0: (40, 120),  # Example target area for rod 0
-            1: (190, 270 ),  # Example target area for rod 1
-            2: (490, 570),  # Example target area for rod 2
-            3: (790, 870),  # Example target area for rod 3
-        }
-        lower_bound, upper_bound = target_areas[rod_idx]
-        return lower_bound <= state[0] <= upper_bound"""
+        # 5. Small penalty for doing nothing effective
+        if ball_speed < 0.01:
+            reward -= 1
 
-    def calculate_reward(self, state, next_state, action, rod_idx):
-        """
-        Calculate reward using the specific reward function for the rod.
-        This function delegates the reward calculation to the rod-specific reward function.
-        """
-        return self.rod_reward_functions[rod_idx](state, next_state, action)
+        return reward
 
     def process_data(self, camera):
         """
         Process data and return dynamically decided commands.
         """
         commands = []
-
-        # A JE TOLE PROU??? da je kr random?
-        rod_idx = random.choice([0, 1, 2, 3])  # Randomly select a rod to train
 
         # Get state from camera
         bx, by, vx, vy, _ = self.data_process(camera)       # Pozicija in hitrost zogice (4)
@@ -279,9 +319,11 @@ class ShootingAgent:
         self.learn()
 
         return commands
-if __name__ == "__main__":
     
-    agent = BallControlAgent()
+
+if __name__ == "__main__":
+   
+    agent = ShootingAgent()
     episode = 0
     save_interval = 100
 
