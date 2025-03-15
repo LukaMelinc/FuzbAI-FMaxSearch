@@ -10,20 +10,21 @@ import numpy as np
 from collections import deque
 
 
-HOST_ADDRESS = '127.0.0.1:23336'
+HOST_ADDRESS = '127.0.0.1:23336'    # IP za povezavo
 
+### Pridobi trenutne podatke o igri
 def get_camera_state():
     cam_url = f"http://{HOST_ADDRESS}/Camera/State"
     response = requests.get(cam_url)    
     return response.json()
 
-
+### Pošlji ukaze na mizo
 def send_motor_commands(cmds):
     motors_url = f"http://{HOST_ADDRESS}/Motors/SendCommand?blue=False"
     response = requests.post(motors_url, json=cmds)
 
 
-# Neural Network for DQL
+### Nevronska mreža - DQL
 class DQN(nn.Module):
     def __init__(self, input_dim, output_dim ):
         super(DQN, self).__init__()
@@ -36,9 +37,10 @@ class DQN(nn.Module):
         x = torch.relu(self.fc2(x))
         return torch.tanh(self.fc3(x))  # Ensure output is between -1 and 1
 
-
+### Class agenta 007
 class ShootingAgent:
     def __init__(self, state_size=20, action_size=4, gamma=0.99, epsilon=1.0, epsilon_min=0.1, epsilon_decay=0.995, lr=0.001, batch_size=64):
+        # Podatki za NN
         self.state_size = state_size
         self.action_size = action_size
         self.gamma = gamma
@@ -53,41 +55,51 @@ class ShootingAgent:
         self.total_reward = 0
         self.team_color = "red"
 
-        # Load geometry
+        # Naloži json s podatki o mizi
         with open('geometry.json') as f:
             self.geometry = json.load(f)
 
-        # Experience Replay Memory
+        # Količina zapomnjenih iteracij
         self.memory = deque(maxlen=2000)
 
-        # Count red rods to determine action size (4 actions per rod)
+        # Število rdečih palic
         self.red_rods = [rod for rod in self.geometry["rods"] if rod["team"] == self.team_color]
         self.action_size = len(self.red_rods) * 4
 
-        # Initialize networks
+        # Init mreže
         self.model = DQN(state_size, action_size)
         self.target_model = DQN(state_size, action_size)
         self.update_target_model()
 
+        # Init optimizatorja
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         self.criterion = nn.MSELoss()
 
-        #self.actions = ['kick', 'move_left', 'move_right', 'idle']
 
-
+    ### Sinhronizacija uteži ciljne mreže z main mreže (DQN zahteva, ker ima dve mreži, Main in Target) 
+    """
+    1) Main (or Online) Network (self.model):
+        This network is actively trained and used to choose actions.
+    
+    2) Target Network (self.target_model):
+        This network provides stable Q-value targets during training.
+        It is not updated at every training step, which helps stabilize the learning process.
+    """
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
 
 
+    ### Shranjuje eksperimente v replay spominu za kontekst v prihodnosti kaj je vse že poskušal
     def remember(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
 
 
+    ### Povezano z epsilon-greedy strategy: ali bo eksperimentiralo ali uporabilo mrežo
     def choose_action(self, state):
 
         state = torch.FloatTensor(state).unsqueeze(0)
 
-        # random se odloči a bo uporabilo NN ali bo raziskoval
+        # Random se odloči ali bo uporabilo NN ali bo raziskoval
         if np.random.rand() <= self.epsilon:
             # Random continuous actions for exploration in range [-1, 1]
             return np.random.uniform(-1, 1, self.action_size)
@@ -97,6 +109,7 @@ class ShootingAgent:
                 return self.model(state).squeeze(0).numpy()
 
 
+    ### Učenje mreže
     def learn(self):
         if len(self.memory) < self.batch_size:
             return  # Not enough samples
@@ -136,16 +149,18 @@ class ShootingAgent:
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
-
+    ### Shrani model
     def save_model(self, filename):
         torch.save(self.model.state_dict(), filename)
 
 
+    ### Naloži model
     def load_model(self, filename):
         self.model.load_state_dict(torch.load(filename))
         self.update_target_model()
 
 
+    ### Procesiraj podatke s kamere: lokacija in hitrost premikanja žoge
     def data_process(self, camera):
         CD0 = camera["camData"][0]
         CD1 = camera["camData"][1]
@@ -161,6 +176,7 @@ class ShootingAgent:
         return bx, by, vx, vy, flag
 
 
+    ### Procesiraj podatke s kamere: pozicije in kot igralcev
     def field_data(self, camera):
 
         # TODO: Če ostane čas mogoče kalmana za predikcijo žogice ;) ?
@@ -195,12 +211,13 @@ class ShootingAgent:
         return positions, rotations
 
 
+    ### Zaznaj če se igralec dotika žoge
     def detect_collision(self, ball_pos, player_pos, ball_radius, player_radius):
         distance = math.hypot(ball_pos[0] - player_pos[0], ball_pos[1] - player_pos[1])         # Kva je tle player_pos, a position iz naslednje funkcije?
         return distance <= (ball_radius + player_radius)
 
 
-     # Preračunaj koordinate in kote igralcev na mizi
+    ### Preračunaj koordinate in kote igralcev na mizi - obe ekipi
     def calculate_player_positions_and_angles(self, camera):
 
         field = self.geometry["field"]
@@ -242,10 +259,9 @@ class ShootingAgent:
         return player_positions
 
 
+    ### Funkcija za reward-e
     def calculate_shooting_reward(self, bx, by, vx, vy, collision_detected):
-        """
-        Reward function for encouraging accurate, fast, and goal-directed shots.
-        """
+
         reward = 0
 
         # Parameters
@@ -258,7 +274,7 @@ class ShootingAgent:
         else:
             reward -= 5  # Penalty for missing the ball
 
-        # 2. Direction Towards Goal
+        # 2. Žoga gre v smer nasprotnikovega gola
         goal_center = (1205, 350)
         ball_vector = np.array([vx, vy])
         direction_vector = np.array([goal_center[0] - bx, goal_center[1] - by])
@@ -276,40 +292,39 @@ class ShootingAgent:
         else:
             reward -= 5  # Penalty for stationary ball
 
-        # 3. Speed Reward
+        # 3. Hitrejša žoga je boljša
         ball_speed = np.linalg.norm(ball_vector)
         reward += ball_speed * 5  # Scale the speed reward
 
-        # 4. Goal Reward
+        # 4. Zadel je gol
         if goal_x_range[0] <= bx <= goal_x_range[1] and goal_y_range[0] <= by <= goal_y_range[1]:
             reward += 100
         elif bx < 1000 or bx > 1230:
             reward -= 50  # Own goal or out of bounds
 
-        # 5. Small penalty for doing nothing effective
+        # 5. MAnjša kazen če ne dela nič
         if ball_speed < 0.01:
             reward -= 1
 
         return reward
 
 
+    ### Glavno procesiranje vseh podatkov 
     def process_data(self, camera):
-        """
-        Process data and return dynamically decided commands.
-        """
+
         commands = []
 
-        # Get state from camera
+        # Podatki s kamere
         bx, by, vx, vy, _ = self.data_process(camera)           # Pozicija in hitrost zogice (4)
         opp_pos, opp_rpt = self.field_data(camera)              # Pozicije in rotacije vseh rodov (8 + 8)
 
-        state = np.concatenate([[bx, by, vx, vy], opp_pos, opp_rpt])    # vse skupaj 20
+        state = np.concatenate([[bx, by, vx, vy], opp_pos, opp_rpt])    # vse skupaj 20 - Vhodni podatki za NN
 
-        # Predict continuous action values in range [-1, 1]
+        # Predikcija ukazov - Območje vrednosti: [-1, 1], število izhodnih vrednosti: 16
         action_values = self.choose_action(state)
         #print(action_values)
 
-        # Scale actions appropriately (no longer constrained to [0, 1])
+        # Skaliranje vrednosti
         rotation_target = action_values[0]                      # Already in [-1, 1]
         rotation_velocity = (action_values[1] + 1) * 1.0        # Convert [-1, 1] to [0, 2]
         translation_target = (action_values[2] + 1) * 0.5       # Convert [-1, 1] to [0, 1]
@@ -318,10 +333,10 @@ class ShootingAgent:
         # Next state (for now, assume it remains the same)
         next_state = state
 
-        player_data = self.calculate_player_positions_and_angles(camera) # računaj pozicije za vse igralce
-        ball_position = (bx, by)
+        player_data = self.calculate_player_positions_and_angles(camera)    # Računaj pozicije za vse igralce
+        ball_position = (bx, by)    # Pozicija žoge
 
-        # Check if collision occured
+        # Zaznavanje kolizije z žogo
         ball_collision = False
         for player in player_data:
             if self.team_color == player["team"]:   # preverjaj ali ima žogo le za rdečo ekipo
@@ -331,7 +346,7 @@ class ShootingAgent:
                     print(f"ball collision calculated")
                     break
 
-        # Calculate reward
+        # Računanje nagrade
         reward = self.calculate_shooting_reward(bx, by, vx, vy, ball_collision)
 
         self.last_reward = reward
@@ -340,20 +355,16 @@ class ShootingAgent:
         print(f"Earned reward: {reward}, Total accumulated reward: {self.total_reward}")
 
         # Check if the episode is done
-        done = reward == 100 # Zakaj?
+        done = reward == 100 
 
-        # Store experience
+        # Shrani iteracije
         self.remember(state, action_values, reward, next_state, done)
 
-        # Process motor commands for each rod
+        # Prodobi število ročk ene ekipe, itak vemo da je 4 ma..... ja
         red_rods = [rod for rod in self.geometry["rods"] if rod["team"] == self.team_color]
-        num_rods = len(red_rods)
+        #num_rods = len(red_rods)
 
-        # Ensure action_values match number of rods (4 values per rod)
-        if len(action_values) != num_rods * 4:
-            print("Mismatch in action values and rod count!")
-            return []
-
+        # Razporedi 16 ukazov po palicah (4 ukazi na palico)
         for idx, rod in enumerate(self.red_rods):
             base_idx = idx * 4
             rod_actions = action_values[base_idx:base_idx + 4]
@@ -380,18 +391,7 @@ class ShootingAgent:
 
             commands.append(cmd)
 
-        # # Dynamic motor command
-        # cmd = {
-        #     'driveID': rod_idx + 1,
-        #     'rotationTargetPosition': rotation_target,
-        #     'rotationVelocity': rotation_velocity,
-        #     'translationTargetPosition': translation_target,
-        #     'translationVelocity': translation_velocity
-        # }
-
-        # commands.append(cmd)
-
-        # Train the model
+        # Učenje modela
         self.learn()
 
         return commands
