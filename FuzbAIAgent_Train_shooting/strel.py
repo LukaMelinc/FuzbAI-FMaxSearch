@@ -46,7 +46,7 @@ class DQN(nn.Module):
         return self.fc3(x)
 
 class ShootingAgent:
-    def __init__(self, state_size=4, action_size=4, gamma=0.99, epsilon=1.0, epsilon_min=0.1, epsilon_decay=0.995, lr=0.001, batch_size=64):
+    def __init__(self, state_size=20, action_size=4, gamma=0.99, epsilon=1.0, epsilon_min=0.1, epsilon_decay=0.995, lr=0.001, batch_size=64):
         self.state_size = state_size
         self.action_size = action_size
         self.gamma = gamma
@@ -69,7 +69,7 @@ class ShootingAgent:
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         self.criterion = nn.MSELoss()
 
-        self.actions = ['kick', 'move_left', 'move_right', 'idle', 'pass']
+        self.actions = ['kick', 'move_left', 'move_right', 'idle']
         
         
 
@@ -142,7 +142,7 @@ class ShootingAgent:
         bx = CD0["ball_x"]
         by = CD0["ball_y"]
 
-        flag = 1 if vx < 1 and vy < 1 else 0        # TODO uredit enote hitrosti da bo meja ok
+        flag = 1 if vx < 0.05 and vy < 0.05 else 0        # TODO uredit enote hitrosti da bo meja ok
 
         return bx, by, vx, vy, flag
 
@@ -159,15 +159,15 @@ class ShootingAgent:
         camera = get_camera_state()
         bx, by, vx, vy, flag = self.data_process(camera)
 
-        goal_width = [250, 450]
-        goal_length = [1200, 1210]
+        goal_width = [0.25, 0.450]
+        goal_length = [1.2, 1.21]
 
         if goal_width[0] <= by <= goal_width[1] and goal_length[0] <= bx <= goal_length[1]:
             
             speed_reward = math.sqrt(vx**2 + vy**2)
             return 100 + speed_reward
 
-        elif bx < 1000 or bx > 1230:
+        elif bx < 0.1 or bx > 0.123:
             return -50
         
         else:
