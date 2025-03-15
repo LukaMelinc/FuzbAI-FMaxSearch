@@ -2,6 +2,23 @@ import time
 import random
 import torch
 from Agents_Training.podaja import DQN
+import requests
+import json
+import time
+import math
+import random
+import torch
+
+HOST_ADDRESS = '127.0.0.1:23336'
+
+def get_camera_state():
+    cam_url = f"http://{HOST_ADDRESS}/Camera/State"
+    response = requests.get(cam_url)    
+    return response.json()
+
+def send_motor_commands(cmds):
+    motors_url = f"http://{HOST_ADDRESS}/Motors/SendCommand?blue=False"
+    response = requests.post(motors_url, json=cmds)
 
 # Assuming you have already defined your agents like PassingAgent, ShootingAgent, DefendingAgent, etc.
 class PassingAgent:
@@ -180,7 +197,6 @@ class GameStateMachine:
             self.transition_to_state('SHOOTING')
         elif self.is_ball_in_defending_position(camera_data):
             self.transition_to_state('DEFENDING')
-        elif self.
         else:
             self.transition_to_state('IDLE')
 

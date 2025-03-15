@@ -1,4 +1,5 @@
 # Ignore compiled bytecode
 *.pyc
 *.zip
+*.pth
 FuzbAISimWrapper
