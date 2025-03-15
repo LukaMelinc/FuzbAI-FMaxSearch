@@ -68,42 +68,7 @@ class ShootingAgent:
         self.geometry = json.load(f)
         f.close()
 
-    # Preračunaj koordinate in kote igralcev na mizi
-    def calculate_player_positions_and_angles(self, camera):
-        field = self.geometry["field"]
-        rods = self.geometry["rods"]
-        
-        player_positions = []
-        
-        # Process each rod
-        for rod in rods:
-            rod_id = rod["id"]
-            team = rod["team"]
-            rod_x = rod["position"]
-            travel_range = rod["travel"]
-            num_players = rod["players"]
-            first_offset = rod["first_offset"]
-            spacing = rod["spacing"]
-
-            # Get corresponding camera data for the rod
-            cam_data = camera["camData"][0] if rod_id <= 4 else camera["camData"][1]
-            rod_position_calib = cam_data["rod_position_calib"]
-            rod_angle = cam_data["rod_angle"]
-
-            # Calculate the actual y position based on calibration
-            rod_y_base = (rod_position_calib * travel_range)
-
-            # Calculate positions for each player on the rod
-            for i in range(num_players):
-                player_y = rod_y_base + first_offset + i * spacing
-                player_positions.append({
-                    "rod_id": rod_id,
-                    "team": team,
-                    "position": (rod_x, player_y),
-                    "angle": rod_angle
-                })
-        
-        return player_positions
+   
         
     
     def update_target_model(self):
@@ -217,8 +182,48 @@ class ShootingAgent:
         return positions, rotations
 
     def detect_collision(self, ball_pos, player_pos, ball_radius, player_radius):
-        distance = math.hypot(ball_pos[0] - player_pos[0], ball_pos[1] - player_pos[1])
+        distance = math.hypot(ball_pos[0] - player_pos[0], ball_pos[1] - player_pos[1])         # Kva je tle player_pos, a position iz naslednje funkcije?
         return distance <= (ball_radius + player_radius)
+
+     # Preračunaj koordinate in kote igralcev na mizi
+    def calculate_player_positions_and_angles(self, camera):
+        field = self.geometry["field"]
+        rods = self.geometry["rods"]
+        
+        player_positions = []
+        
+        # Process each rod
+        for rod in rods:
+            rod_id = rod["id"]
+            team = rod["team"]
+            rod_x = rod["position"]
+            travel_range = rod["travel"]
+            num_players = rod["players"]
+            first_offset = rod["first_offset"]
+            spacing = rod["spacing"]
+
+            # Get corresponding camera data for the rod
+            cam_data = camera["camData"][0] if rod_id <= 4 else camera["camData"][1]
+            rod_position_calib = cam_data["rod_position_calib"]
+            rod_angle = cam_data["rod_angle"]
+
+
+            if isinstance(rod_position_calib, list):
+                rod_position_calib = rod_position_calib[0] 
+            # Calculate the actual y position based on calibration
+            rod_y_base = (rod_position_calib * travel_range)
+
+            # Calculate positions for each player on the rod
+            for i in range(num_players):
+                player_y = rod_y_base + first_offset + i * spacing
+                player_positions.append({
+                    "rod_id": rod_id,
+                    "team": team,
+                    "position": (rod_x, player_y),
+                    "angle": rod_angle
+                })
+        
+        return player_positions
 
 
     def calculate_shooting_reward(self, bx, by, vx, vy, collision_detected):
@@ -226,11 +231,11 @@ class ShootingAgent:
         Reward function for encouraging accurate, fast, and goal-directed shots.
         """
         reward = 0
-        
+
         # Parameters
         goal_x_range = (1200, 1210)
         goal_y_range = (250, 450)
-        
+
         # 1. Collision Reward
         if collision_detected:
             reward += 10
@@ -244,8 +249,14 @@ class ShootingAgent:
 
         if np.linalg.norm(ball_vector) > 0:
             cosine_similarity = np.dot(ball_vector, direction_vector) / (np.linalg.norm(ball_vector) * np.linalg.norm(direction_vector))
-            directional_reward = max(0, cosine_similarity) * 30  # Reward for direction towards the goal
-            reward += directional_reward
+
+            # Reward for direction towards the goal
+            if cosine_similarity > 0:
+                directional_reward = cosine_similarity * 30
+                reward += directional_reward
+            else:
+                # Penalty for moving away from the goal
+                reward -= 10  # Adjust the penalty value as needed
         else:
             reward -= 5  # Penalty for stationary ball
 
@@ -264,6 +275,7 @@ class ShootingAgent:
             reward -= 1
 
         return reward
+
 
     def process_data(self, camera):
         """
@@ -290,8 +302,24 @@ class ShootingAgent:
         # Next state (for now, assume it remains the same)
         next_state = state
 
+        player_data = self.calculate_player_positions_and_angles(camera)
+        ball_position = (bx, by)
+
+
+        # Check if collision occured
+        ball_collision = False
+        for player in player_data:
+            player_pos = player["position"]
+            if self.detect_collision(ball_position, player_pos, 0.017, 0.03):      # ball radius je 34mm -> pou tega je 0.017m, player radius sem dal na 3cm, v navodilih je napisan 4 cm
+                ball_collision = True
+                print(f"ball collision calculated")
+                break
+
         # Calculate reward
-        reward = self.calculate_reward(camera, state, next_state, action_values, rod_idx)
+        reward = self.calculate_shooting_reward(bx, by, vx, vy, ball_collision)
+
+
+
         self.last_reward = reward
         self.total_reward += reward
 

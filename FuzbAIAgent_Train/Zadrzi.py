@@ -148,7 +148,7 @@ class BallControlAgent:
         by = CD0["ball_y"]
         #print("Ball x, y: ", bx, by, "Ball vel:", vx, vy)
 
-        flag = 1 if vx < 1 and vy < 1 else 0
+        flag = 1 if vx < 0.01 and vy < 0.01 else 0
 
         return bx, by, vx, vy, flag
 
