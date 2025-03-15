@@ -46,7 +46,7 @@ class DQN(nn.Module):
         return self.fc3(x)
 
 class ShootingAgent:
-    def __init__(self, state_size=4, action_size=4, gamma=0.99, epsilon=1.0, epsilon_min=0.1, epsilon_decay=0.995, lr=0.001, batch_size=64):
+    def __init__(self, state_size=20, action_size=4, gamma=0.99, epsilon=1.0, epsilon_min=0.1, epsilon_decay=0.995, lr=0.001, batch_size=64):
         self.state_size = state_size
         self.action_size = action_size
         self.gamma = gamma
@@ -57,6 +57,8 @@ class ShootingAgent:
         self.batch_size = batch_size
 
         self.learn_step_counter = 0
+        self.last_reward = None
+        self.total_reward = 0
 
         # Experience Replay Memory
         self.memory = deque(maxlen=2000)
@@ -69,7 +71,7 @@ class ShootingAgent:
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         self.criterion = nn.MSELoss()
 
-        self.actions = ['kick', 'move_left', 'move_right', 'idle', 'pass']
+        self.actions = ['kick', 'move_left', 'move_right', 'idle']
         
         
 
@@ -142,14 +144,33 @@ class ShootingAgent:
         bx = CD0["ball_x"]
         by = CD0["ball_y"]
 
-        flag = 1 if vx < 1 and vy < 1 else 0        # TODO uredit enote hitrosti da bo meja ok
+        flag = 1 if vx < 0.01 and vy < 0.01 else 0        # TODO uredit enote hitrosti da bo meja ok
 
         return bx, by, vx, vy, flag
 
 
+    def opponent_data(self, camera):
+        CD0 = camera["camData"][0]
+        #CD1 = camera["camData"][1]
+
+        
+        positions = []
+        rotations = []
+
+        for i in range(8):
+
+            positions.append(CD0["rod_position_calib"][i])
+            positions.append(CD0["rod_angle"][i])
 
 
-    def reward_shoot():
+        # VZEL VSE POZICIJE IN ROTACIJA SKUPAJ, NAKONCU NAJ BI MODEL SAM UGOTOVIL???
+        #opp_pos = [positions[i] for i in [2, 4, 6, 7]]
+        #opp_rot = [rotations[i] for i in [2, 4, 6, 7]]
+
+        return positions, rotations
+
+
+    def reward_shoot(self):
         """
         Reward function for shooting the ball at oponent"s goal
 
@@ -176,14 +197,11 @@ class ShootingAgent:
 
 
 
-        
-
-
     """def is_ball_in_target_area(self, state, rod_idx):
-        """
+        
         Check if the ball is in the target area for the given rod.
         Each rod has a predefined target area where the ball should stop.
-        """
+        
 
         # Reward belt is +-40mm off the rod position
         # Reach of each rod is +-50mm
@@ -206,49 +224,61 @@ class ShootingAgent:
 
     def process_data(self, camera):
         """
-        Process data and return commands for the rod being trained.
-        This function handles the main logic for interacting with the environment.
+        Process data and return dynamically decided commands.
         """
         commands = []
-        rod_idx = random.choice([2, 3])
 
-        # Get state
-        bx, by, vx, vy, _ = self.data_process(camera)
-        state = np.array([bx, by, vx, vy])
+        # A JE TOLE PROU??? da je kr random?
+        rod_idx = random.choice([0, 1, 2, 3])  # Randomly select a rod to train
 
-        # Choose action
-        action_idx = self.choose_action(state)
+        # Get state from camera
+        bx, by, vx, vy, _ = self.data_process(camera)       # Pozicija in hitrost zogice (4)
+        #my_pos, my_rot = self.my_data(camera)
+        opp_pos, opp_rpt = self.opponent_data(camera)       # Pozicije in rotacije vseh rodov (8 + 8)
 
-        # Define dummy next state for simplicity
-        next_state = state  # You can refine this based on your environment
+        state = np.concatenate([[bx, by, vx, vy], opp_pos, opp_rpt])    # vse skupaj 20
+
+        # Predict continuous action values in range [-1, 1]
+        action_values = self.choose_action(state)
+
+        # Scale actions appropriately (no longer constrained to [0, 1])
+        rotation_target = action_values[0]  # Already in [-1, 1]
+        rotation_velocity = (action_values[1] + 1) * 1.0  # Convert [-1, 1] to [0, 2]
+        translation_target = (action_values[2] + 1) * 0.5  # Convert [-1, 1] to [0, 1]
+        translation_velocity = (action_values[3] + 1) * 1.0  # Convert [-1, 1] to [0, 2]
+
+        # Next state (for now, assume it remains the same)
+        next_state = state
 
         # Calculate reward
-        reward = self.calculate_reward(state, next_state, action_idx, rod_idx)
+        reward = self.calculate_reward(camera, state, next_state, action_values, rod_idx)
+        self.last_reward = reward
+        self.total_reward += reward
 
-        # Check if the episode is done (define your own condition)
+        print(f"Earned reward: {reward}, Total accumulated reward: {self.total_reward}")
+
+        # Check if the episode is done
         done = reward == 100
 
+
         # Store experience
-        self.remember(state, action_idx, reward, next_state, done)
+        self.remember(state, action_values, reward, next_state, done)
 
-        # Define action
-        action = self.actions[action_idx]
-
+        # Dynamic motor command
         cmd = {
             'driveID': rod_idx + 1,
-            'rotationTargetPosition': 0.5 if action == 'kick' else 0,
-            'rotationVelocity': 1,
-            'translationTargetPosition': 0.4 if action == 'move_left' else 0.6,
-            'translationVelocity': 1.0
+            'rotationTargetPosition': rotation_target,
+            'rotationVelocity': rotation_velocity,
+            'translationTargetPosition': translation_target,
+            'translationVelocity': translation_velocity
         }
-        commands.append(cmd)
-        
 
-        # Train the model using the collected experiences
+        commands.append(cmd)
+
+        # Train the model
         self.learn()
 
         return commands
-
 if __name__ == "__main__":
     
     agent = BallControlAgent()
