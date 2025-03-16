@@ -119,7 +119,6 @@ def calculate_player_positions_and_angles(camera, geometry):
 ##############################
 
 def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
-
     reward = 0
     goal_x_range = (1.200, 1.210)
     goal_y_range = (0.250, 0.450)
@@ -127,8 +126,10 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
     # 1. Collision Reward
     if collision_detected:
         reward += 10
+        print("Collision detected: +10")
     else:
         reward -= 5
+        print("No collision detected: -5")
 
     # 2. Direction towards the goal
     goal_center = (1.205, 0.350)
@@ -142,34 +143,47 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
         if cosine_similarity > 0:
             directional_reward = cosine_similarity * 30
             reward += directional_reward
+            print(f"Directional reward: +{directional_reward:.2f}")
         else:
             reward -= 10
+            print("Directional penalty: -10")
     else:
         reward -= 5
+        print("Ball not moving: -5")
 
     # 3. Speed
     ball_speed = np.linalg.norm(ball_vector)
     reward += ball_speed * 5
+    print(f"Speed reward: +{ball_speed * 5:.2f}")
 
     # 4. Check goal
     if goal_x_range[0] <= bx <= goal_x_range[1] and goal_y_range[0] <= by <= goal_y_range[1]:
         reward += 100
+        print("Goal scored: +100")
     elif bx < 1.000 or bx > 1.230:
-        reward -= 50  # Own goal or out of bounds
+        reward -= 50
+        print("Own goal or out of bounds: -50")
 
     # 5. Slight penalty if ball is basically still
     if ball_speed < 0.01:
         reward -= 1
+        print("Ball stationary penalty: -1")
 
     # 6. Slight penalty if a player is oriented in the air
     for player in player_data:
-            if player["team"] == "red":
-                if player["angle"] < 0.5:
-                    reward += 5
-                else:
-                    reward -= 2
+        if player["team"] == "red":
+            if player["angle"] < 0.5:
+                reward += 5
+                print("Player orientation reward: +5")
+            else:
+                reward -= 2
+                print("Player orientation penalty: -2")
 
+    print(f"Total reward: {reward}")
+    print(f"-------------------------------------------------------")
+    print(f"-------------------------------------------------------")
     return reward
+
 
 
 ##############################
