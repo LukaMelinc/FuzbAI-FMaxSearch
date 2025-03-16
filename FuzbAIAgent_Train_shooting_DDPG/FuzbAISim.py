@@ -245,6 +245,24 @@ class FuzbAISim:
         #self.nudgeBall() # izniči efekt zgornje kode
 
 
+
+    def placeBall(self, position, velocity=[0, 0, 0]):
+        """
+        Place the ball at a specific position with a specified velocity.
+
+        :param position: List or tuple of (x, y, z) coordinates for the ball's position.
+        :param velocity: List or tuple of (vx, vy, vz) for the ball's velocity. Default is [0, 0, 0].
+        """
+        # Set the ball's position
+        p.resetBasePositionAndOrientation(self.ball, position, p.getQuaternionFromEuler([0, 0, 0]))
+
+        # Set the ball's velocity
+        p.resetBaseVelocity(self.ball, linearVelocity=velocity, angularVelocity=[0, 0, 0])
+
+
+
+
+
     def applyMotorDeadband(self, i, newPos):    
         motionDiff = newPos - self.prevRefPositions[i]
 

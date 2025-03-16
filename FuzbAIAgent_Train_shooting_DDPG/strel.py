@@ -68,6 +68,11 @@ def players_data(camera):
 
 def detect_collision(ball_pos, player_pos, ball_radius=0.017, player_radius=0.03):
 
+    """
+    detects whether a collision ahs occured between a ball and a player based on their positions and radiuses.
+    Player_pos is a list of tuples representing player/s positions on the field
+    
+    """
     distance = math.hypot(ball_pos[0] - player_pos[0], ball_pos[1] - player_pos[1])
     return distance <= (ball_radius + player_radius)
 
@@ -119,21 +124,24 @@ def calculate_player_positions_and_angles(camera, geometry):
 ##############################
 
 def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
+
     reward = 0
     goal_x_range = (1.200, 1.210)
     goal_y_range = (0.250, 0.450)
 
+    goal_center = (1.205, 0.350)
+    ball_vector = np.array([vx, vy])
+
     # 1. Collision Reward
     if collision_detected:
         reward += 10
-        print("Collision detected: +10")
+        print("boom")
     else:
         reward -= 5
-        print("No collision detected: -5")
+        print("NO colision")
 
     # 2. Direction towards the goal
-    goal_center = (1.205, 0.350)
-    ball_vector = np.array([vx, vy])
+    
     direction_vector = np.array([goal_center[0] - bx, goal_center[1] - by])
 
     if np.linalg.norm(ball_vector) > 0:
@@ -143,47 +151,45 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
         if cosine_similarity > 0:
             directional_reward = cosine_similarity * 30
             reward += directional_reward
-            print(f"Directional reward: +{directional_reward:.2f}")
+            print(f"ball moving towards the goal, Reward: {directional_reward}")
         else:
             reward -= 10
-            print("Directional penalty: -10")
     else:
         reward -= 5
-        print("Ball not moving: -5")
 
     # 3. Speed
     ball_speed = np.linalg.norm(ball_vector)
     reward += ball_speed * 5
-    print(f"Speed reward: +{ball_speed * 5:.2f}")
+    print(f"Speed reward: {ball_speed}")
 
     # 4. Check goal
     if goal_x_range[0] <= bx <= goal_x_range[1] and goal_y_range[0] <= by <= goal_y_range[1]:
         reward += 100
-        print("Goal scored: +100")
+        print(f"Goal scored, reward +100")
     elif bx < 1.000 or bx > 1.230:
-        reward -= 50
-        print("Own goal or out of bounds: -50")
+        reward -= 50  # Own goal or out of bounds
+        print(f"Goal received, Reward -50")
 
     # 5. Slight penalty if ball is basically still
     if ball_speed < 0.01:
         reward -= 1
-        print("Ball stationary penalty: -1")
+        print(f"Slow ball spet penalty: -1")
 
     # 6. Slight penalty if a player is oriented in the air
     for player in player_data:
-        if player["team"] == "red":
-            if player["angle"] < 0.5:
-                reward += 5
-                print("Player orientation reward: +5")
-            else:
-                reward -= 2
-                print("Player orientation penalty: -2")
+            if player["team"] == "red":
+                if player["angle"] < 0.5 and player["angle"] > -0.5:
+                    reward += 5
+                    print("dol")
+                else:
+                    reward -= 2
+                    print("gor")
 
-    print(f"Total reward: {reward}")
-    print(f"-------------------------------------------------------")
-    print(f"-------------------------------------------------------")
+    print(reward)
+    print(bx)
+    print(by)
+    print("----------------------------------------------------")
     return reward
-
 
 
 ##############################
@@ -291,10 +297,52 @@ class ContinuousAgent:
         self.exploration_noise = 0.2  # Could be smaller. Tweak as needed.
 
         self.team_color="red"
+
+        self.model = self.actor
+        self.learn_step_counter = 0
+
         
         # Load geometry
         with open('geometry.json') as f:
             self.geometry = json.load(f)
+
+
+    def learn_from_batch(self, states, actions, rewards, next_states, dones):
+        # This is basically your 'learn()' steps, but taking arrays as arguments
+        # instead of sampling from self.memory. For instance:
+
+        states_t = torch.FloatTensor(states)
+        actions_t = torch.FloatTensor(actions)
+        rewards_t = torch.FloatTensor(rewards).unsqueeze(1)
+        next_states_t = torch.FloatTensor(next_states)
+        dones_t = torch.FloatTensor(dones).unsqueeze(1)
+
+        # 1) Critic update
+        current_Q = self.critic(states_t, actions_t)
+        with torch.no_grad():
+            next_actions = self.target_actor(next_states_t)
+            next_Q = self.target_critic(next_states_t, next_actions)
+            target_Q = rewards_t + (1.0 - dones_t) * self.gamma * next_Q
+        critic_loss = nn.MSELoss()(current_Q, target_Q)
+
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic_optimizer.step()
+
+        # 2) Actor update
+        actor_actions = self.actor(states_t)
+        actor_loss = -self.critic(states_t, actor_actions).mean()
+
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        self.actor_optimizer.step()
+
+        # 3) Soft update targets
+        self.soft_update(self.target_actor, self.actor, self.tau)
+        self.soft_update(self.target_critic, self.critic, self.tau)
+
+
+
 
     def choose_action(self, state):
         """
