@@ -69,6 +69,11 @@ def players_data(camera):
 
 def detect_collision(ball_pos, player_pos, ball_radius=0.017, player_radius=0.03):
 
+    """
+    detects whether a collision ahs occured between a ball and a player based on their positions and radiuses.
+    Player_pos is a list of tuples representing player/s positions on the field
+    
+    """
     distance = math.hypot(ball_pos[0] - player_pos[0], ball_pos[1] - player_pos[1])
     return distance <= (ball_radius + player_radius)
 
@@ -145,6 +150,7 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
         if cosine_similarity > 0:
             directional_reward = cosine_similarity * 30
             reward += directional_reward
+            print(f"ball moving towards the goal, Reward: {directional_reward}")
         else:
             reward -= 10
     else:
@@ -153,16 +159,19 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
     # 3. Speed
     ball_speed = np.linalg.norm(ball_vector)
     reward += ball_speed * 5
+    print(f"Speed reward: {ball_speed}")
 
     # 4. Check goal
     if goal_x_range[0] <= bx <= goal_x_range[1] and goal_y_range[0] <= by <= goal_y_range[1]:
         reward += 100
     elif bx < 1000 or bx > 1230:
         reward -= 50  # Own goal or out of bounds
+        print(f"Goal received, Reward -50")
 
     # 5. Slight penalty if ball is basically still
     if ball_speed < 0.01:
         reward -= 1
+        print(f"Slow ball spet penalty: -1")
 
     # 6. Slight penalty if a player is oriented in the air
     for player in player_data:
@@ -170,6 +179,10 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
             reward = 10 * (32 - abs(player["angle"]))
   
 
+    print(reward)
+    print(bx)
+    print(by)
+    print("----------------------------------------------------")
     return reward
 
 
