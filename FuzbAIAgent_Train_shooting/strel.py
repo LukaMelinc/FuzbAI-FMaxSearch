@@ -26,7 +26,7 @@ def send_motor_commands(cmds):
 
 ### Nevronska mreža - DQL
 class DQN(nn.Module):
-    def __init__(self, input_dim, output_dim ):
+    def __init__(self, input_dim, output_dim):
         super(DQN, self).__init__()
         self.fc1 = nn.Linear(input_dim, 128)
         self.fc2 = nn.Linear(128, 128)
@@ -39,7 +39,7 @@ class DQN(nn.Module):
 
 ### Class agenta 007
 class ShootingAgent:
-    def __init__(self, state_size=20, action_size=4, gamma=0.99, epsilon=1.0, epsilon_min=0.1, epsilon_decay=0.995, lr=0.001, batch_size=64):
+    def __init__(self, state_size=20, action_size=4, gamma=0.99, epsilon=0.50, epsilon_min=0.1, epsilon_decay=0.995, lr=0.001, batch_size=64):
         # Podatki za NN
         self.state_size = state_size
         self.action_size = action_size
@@ -113,7 +113,7 @@ class ShootingAgent:
     def learn(self):
         if len(self.memory) < self.batch_size:
             return  # Not enough samples
-        
+
         self.learn_step_counter += 1
         if self.learn_step_counter % 10 != 0:
             return  # Only learn every 10 steps
@@ -124,9 +124,13 @@ class ShootingAgent:
 
         states = torch.FloatTensor(states)
         next_states = torch.FloatTensor(next_states)
-        actions = torch.LongTensor(actions).unsqueeze(1)
+        #actions = torch.LongTensor(actions).unsqueeze(1)
+        actions = torch.LongTensor(actions).argmax(dim=1).unsqueeze(1)
         rewards = torch.FloatTensor(rewards).unsqueeze(1)
         dones = torch.FloatTensor(dones).unsqueeze(1)
+
+        if actions.ndim == 1:
+            actions = actions.unsqueeze(1)
 
         # Current Q-values
         q_values = self.model(states).gather(1, actions)
@@ -138,6 +142,46 @@ class ShootingAgent:
         target_q_values = rewards + (self.gamma * next_q_values * (1 - dones))
 
         # Compute loss
+        loss = self.criterion(q_values, target_q_values) # dela
+
+        # Ensure target_q_values matches q_values shape
+        # target_q_values = target_q_values.expand_as(q_values)
+        # loss = self.criterion(q_values, target_q_values)
+
+        # Backpropagation
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        # Decay epsilon
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+
+
+    ### Funkcija namenjena paralelnemu učenju    
+    def learn_from_batch(self, states, actions, rewards, next_states, dones):
+
+        self.learn_step_counter += 1
+        if self.learn_step_counter % 10 != 0:
+            return  # Only learn every 10 steps
+
+        # Optimize tensor conversion
+        states = torch.from_numpy(np.array(states)).float()
+        next_states = torch.from_numpy(np.array(next_states)).float()
+        actions = torch.from_numpy(np.array(actions)).long().unsqueeze(1)
+        rewards = torch.from_numpy(np.array(rewards)).float().unsqueeze(1)
+        dones = torch.from_numpy(np.array(dones)).float().unsqueeze(1)
+
+        # Predicted Q-values for current states
+        q_values = self.model(states).gather(1, actions)
+
+
+        # Target Q-values using target model for next states
+        next_q_values = self.target_model(next_states).detach().max(1)[0].unsqueeze(1)
+        target_q_values = rewards + (self.gamma * next_q_values * (1 - dones))
+
+        # Ensure target size matches
+        target_q_values = target_q_values.expand_as(q_values)
         loss = self.criterion(q_values, target_q_values)
 
         # Backpropagation
@@ -148,6 +192,7 @@ class ShootingAgent:
         # Decay epsilon
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
+
 
     ### Shrani model
     def save_model(self, filename):
@@ -192,7 +237,7 @@ class ShootingAgent:
 
             for i in range(8):
                 positions.append(CD0["rod_position_calib"][i])
-                positions.append(CD0["rod_angle"][i])
+                rotations.append(CD0["rod_angle"][i])
 
             # VZEL VSE POZICIJE IN ROTACIJA SKUPAJ, NAKONCU NAJ BI MODEL SAM UGOTOVIL???
             #opp_pos = [positions[i] for i in [2, 4, 6, 7]]
@@ -202,7 +247,7 @@ class ShootingAgent:
 
             for i in range(8):
                 positions.append(CD1["rod_position_calib"][i])
-                positions.append(CD1["rod_angle"][i])
+                rotations.append(CD1["rod_angle"][i])
 
             # VZEL VSE POZICIJE IN ROTACIJA SKUPAJ, NAKONCU NAJ BI MODEL SAM UGOTOVIL???
             #opp_pos = [positions[i] for i in [2, 4, 6, 7]]
@@ -236,9 +281,12 @@ class ShootingAgent:
             spacing = rod["spacing"]
 
             # Get corresponding camera data for the rod
-            cam_data = camera["camData"][0] if rod_id <= 4 else camera["camData"][1]
-            rod_position_calib = cam_data["rod_position_calib"]
-            rod_angle = cam_data["rod_angle"]
+            cam_data = camera["camData"][0] 
+            if cam_data is None:
+                cam_data = camera["camData"][1] 
+
+            rod_position_calib = cam_data["rod_position_calib"][rod_id - 1]
+            rod_angle = cam_data["rod_angle"][rod_id - 1]
 
 
             if isinstance(rod_position_calib, list):
@@ -362,7 +410,7 @@ class ShootingAgent:
 
         # Prodobi število ročk ene ekipe, itak vemo da je 4 ma..... ja
         red_rods = [rod for rod in self.geometry["rods"] if rod["team"] == self.team_color]
-        #num_rods = len(red_rods)
+        #num_rods = len(self.red_rods)
 
         # Razporedi 16 ukazov po palicah (4 ukazi na palico)
         for idx, rod in enumerate(self.red_rods):

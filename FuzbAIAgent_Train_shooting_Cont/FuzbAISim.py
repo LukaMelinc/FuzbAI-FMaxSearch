@@ -4,7 +4,7 @@ import time, datetime
 import threading
 import math
 from FuzbAIAgent_Example import PlayerAgent
-from strel import ShootingAgent
+from strel import ContinuousAgent
 import random
 import traceback
 
@@ -50,7 +50,7 @@ class FuzbAISim:
         self.travels = [190, 356, 180, 116, 116, 180, 356, 190]
         self.redIndices = [0, 1, 3, 5]
 
-        self.p1 = ShootingAgent()
+        self.p1 = ContinuousAgent()
         self.p2 = PlayerAgent()
 
         # Camera delay settings
@@ -239,7 +239,7 @@ class FuzbAISim:
         # Apply velocity to the ball
         p.resetBaseVelocity(self.ball, linearVelocity=velocity, angularVelocity=[0, 0, 0])
 
-        print(f"Ball thrown towards {direction} with velocity: {velocity}")
+        #print(f"Ball thrown towards {direction} with velocity: {velocity}")
 
         self.showRound()
         #self.nudgeBall() # izniči efekt zgornje kode
