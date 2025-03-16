@@ -4,7 +4,7 @@ import time, datetime
 import threading
 import math
 from FuzbAIAgent_Example import PlayerAgent
-from Zadrzi import BallControlAgent
+from strel import ContinuousAgent
 import random
 import traceback
 
@@ -50,7 +50,7 @@ class FuzbAISim:
         self.travels = [190, 356, 180, 116, 116, 180, 356, 190]
         self.redIndices = [0, 1, 3, 5]
 
-        self.p1 = BallControlAgent()
+        self.p1 = ContinuousAgent()
         self.p2 = PlayerAgent()
 
         # Camera delay settings
@@ -206,7 +206,7 @@ class FuzbAISim:
         custom_ball_pos = [custom_x, custom_y, custom_z]
 
         # Reset the ball to the randomized safe location
-        print(f"Dropping ball at position: {custom_ball_pos}")
+        #print(f"Dropping ball at position: {custom_ball_pos}")
         p.resetBasePositionAndOrientation(self.ball, custom_ball_pos, p.getQuaternionFromEuler([0, 0, 0]))
 
         # Random speed within the defined range
@@ -239,7 +239,7 @@ class FuzbAISim:
         # Apply velocity to the ball
         p.resetBaseVelocity(self.ball, linearVelocity=velocity, angularVelocity=[0, 0, 0])
 
-        print(f"Ball thrown towards {direction} with velocity: {velocity}")
+        #print(f"Ball thrown towards {direction} with velocity: {velocity}")
 
         self.showRound()
         #self.nudgeBall() # izniči efekt zgornje kode
@@ -266,7 +266,8 @@ class FuzbAISim:
 
     def loadSimulator(self, printJointInfo = False):
         print("Loading simulator...")
-        physicsClient = p.connect(p.GUI) #or p.DIRECT for non-graphical version
+        physicsClient = p.connect(p.GUI)    # graphical version
+        #physicsClient = p.connect(p.DIRECT) # non-graphical version
 
         p.configureDebugVisualizer(p.COV_ENABLE_WIREFRAME,0)
         p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS,1)

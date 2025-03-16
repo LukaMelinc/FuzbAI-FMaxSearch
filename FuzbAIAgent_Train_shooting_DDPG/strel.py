@@ -31,7 +31,7 @@ def send_motor_commands(cmds):
 # 2) Helper Functions (unchanged or minimal edits)
 ##############################
 
-def data_process(camera):
+def ball_data(camera):
 
     CD0 = camera["camData"][0]
     if not CD0:
@@ -48,7 +48,7 @@ def data_process(camera):
     return bx, by, vx, vy, flag
 
 
-def field_data(camera):
+def player_data(camera):
 
     CD0 = camera["camData"][0]
     CD1 = camera["camData"][1]
@@ -118,7 +118,7 @@ def calculate_player_positions_and_angles(camera, geometry):
 # 3) Reward Function (unchanged)
 ##############################
 
-def calculate_shooting_reward(bx, by, vx, vy, collision_detected):
+def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
 
     reward = 0
     goal_x_range = (1.200, 1.210)
@@ -160,6 +160,14 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected):
     # 5. Slight penalty if ball is basically still
     if ball_speed < 0.01:
         reward -= 1
+
+    # 6. Slight penalty if a player is oriented in the air
+    for player in player_data:
+            if player["team"] == "red":
+                if player["angle"] < 0.5:
+                    reward += 5
+                else:
+                    reward -= 2
 
     return reward
 
@@ -211,7 +219,7 @@ class ReplayBuffer:
     """
     Simple replay buffer for storing transitions.
     """
-    def __init__(self, max_size=20000):
+    def __init__(self, max_size=2000):
         self.buffer = deque(maxlen=max_size)
 
     def add(self, state, action, reward, next_state, done):
@@ -377,8 +385,8 @@ class ContinuousAgent:
         - Returns commands to send to environment
         """
         # 1) Build the state vector
-        bx, by, vx, vy, _ = data_process(camera)  # 4 values
-        opp_pos, opp_rpt = field_data(camera)     # positions & angles -> 8 + 8 = 16
+        bx, by, vx, vy, _ = ball_data(camera)  # 4 values
+        opp_pos, opp_rpt = player_data(camera)     # positions & angles -> 8 + 8 = 16
         # Combine into one vector (20 dims if your code is consistent)
         state = np.concatenate([[bx, by, vx, vy], opp_pos, opp_rpt])
 
@@ -401,7 +409,8 @@ class ContinuousAgent:
                     break
 
         # 5) Reward
-        reward = calculate_shooting_reward(bx, by, vx, vy, ball_collision)
+        reward = calculate_shooting_reward(bx, by, vx, vy, ball_collision, player_data)
+        print("Reward", reward)
 
         # 6) Check if done
         #    We'll say 'done' if we scored a goal (reward=100),
@@ -433,9 +442,10 @@ class ContinuousAgent:
                 'translationTargetPosition': translation_target,
                 'translationVelocity': translation_velocity
             }
-            #print(cmd)
+            
             commands.append(cmd)
 
+        #print(commands)
         return commands
 
 
