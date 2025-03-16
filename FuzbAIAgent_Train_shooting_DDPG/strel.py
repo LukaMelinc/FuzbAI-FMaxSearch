@@ -127,8 +127,10 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
     # 1. Collision Reward
     if collision_detected:
         reward += 10
+        print("boom")
     else:
         reward -= 5
+        print("NO colision")
 
     # 2. Direction towards the goal
     goal_center = (1.205, 0.350)
@@ -164,10 +166,12 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
     # 6. Slight penalty if a player is oriented in the air
     for player in player_data:
             if player["team"] == "red":
-                if player["angle"] < 0.5:
+                if player["angle"] < 0.5 and player["angle"] > -0.5:
                     reward += 5
+                    print("dol")
                 else:
                     reward -= 2
+                    print("gor")
 
     return reward
 
@@ -277,10 +281,52 @@ class ContinuousAgent:
         self.exploration_noise = 0.2  # Could be smaller. Tweak as needed.
 
         self.team_color="red"
+
+        self.model = self.actor
+        self.learn_step_counter = 0
+
         
         # Load geometry
         with open('geometry.json') as f:
             self.geometry = json.load(f)
+
+
+    def learn_from_batch(self, states, actions, rewards, next_states, dones):
+        # This is basically your 'learn()' steps, but taking arrays as arguments
+        # instead of sampling from self.memory. For instance:
+
+        states_t = torch.FloatTensor(states)
+        actions_t = torch.FloatTensor(actions)
+        rewards_t = torch.FloatTensor(rewards).unsqueeze(1)
+        next_states_t = torch.FloatTensor(next_states)
+        dones_t = torch.FloatTensor(dones).unsqueeze(1)
+
+        # 1) Critic update
+        current_Q = self.critic(states_t, actions_t)
+        with torch.no_grad():
+            next_actions = self.target_actor(next_states_t)
+            next_Q = self.target_critic(next_states_t, next_actions)
+            target_Q = rewards_t + (1.0 - dones_t) * self.gamma * next_Q
+        critic_loss = nn.MSELoss()(current_Q, target_Q)
+
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic_optimizer.step()
+
+        # 2) Actor update
+        actor_actions = self.actor(states_t)
+        actor_loss = -self.critic(states_t, actor_actions).mean()
+
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        self.actor_optimizer.step()
+
+        # 3) Soft update targets
+        self.soft_update(self.target_actor, self.actor, self.tau)
+        self.soft_update(self.target_critic, self.critic, self.tau)
+
+
+
 
     def choose_action(self, state):
         """

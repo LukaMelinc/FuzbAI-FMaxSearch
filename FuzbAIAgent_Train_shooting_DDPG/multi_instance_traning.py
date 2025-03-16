@@ -1,7 +1,7 @@
 import multiprocessing as mp
 import torch
 import time
-from strel import ShootingAgent
+from strel import ContinuousAgent
 from FuzbAISim import FuzbAISim
 
 
@@ -9,7 +9,7 @@ def simulation_worker(instance_id, experience_queue, model_weights, stop_event):
     """
     Worker for running a single simulation instance.
     """
-    agent = ShootingAgent()
+    agent = ContinuousAgent()
     agent.model.load_state_dict(model_weights.get())
 
     simulator = FuzbAISim()
@@ -23,8 +23,10 @@ def simulation_worker(instance_id, experience_queue, model_weights, stop_event):
                 motor_cmds = agent.process_data(cam_data)
                 
                 # Share experience with the central learner
-                for experience in agent.memory:
+                for experience in agent.memory.buffer:
                     experience_queue.put(experience)
+                agent.memory.buffer.clear()  # so we don't repeat them next time
+
 
                 # Update agent's model with the latest weights
                 if not model_weights.empty():
@@ -42,7 +44,7 @@ def central_learner(num_instances, experience_queue, model_weights, stop_event):
     """
     Central process for training the shared model.
     """
-    agent = ShootingAgent()
+    agent = ContinuousAgent()
     batch_size = agent.batch_size
 
     try:
@@ -81,7 +83,7 @@ def start_distributed_training(num_instances):
     stop_event = mp.Event()
 
     # Initialize and share initial weights
-    initial_agent = ShootingAgent()
+    initial_agent = ContinuousAgent()
     model_weights.put(initial_agent.model.state_dict())
 
     # Start simulation workers
@@ -107,4 +109,4 @@ def start_distributed_training(num_instances):
 
 
 if __name__ == "__main__":
-    start_distributed_training(num_instances=2)
+    start_distributed_training(num_instances=3)
