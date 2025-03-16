@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from collections import deque
+import gc
 
 HOST_ADDRESS = '127.0.0.1:23336'  # IP or Host for your environment
 
@@ -121,8 +122,8 @@ def calculate_player_positions_and_angles(camera, geometry):
 def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
 
     reward = 0
-    goal_x_range = (1.200, 1.210)
-    goal_y_range = (0.250, 0.450)
+    goal_x_range = (1200, 1210)
+    goal_y_range = (250, 450)
 
     # 1. Collision Reward
     if collision_detected:
@@ -133,7 +134,7 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
         print("NO colision")
 
     # 2. Direction towards the goal
-    goal_center = (1.205, 0.350)
+    goal_center = (1205, 350)
     ball_vector = np.array([vx, vy])
     direction_vector = np.array([goal_center[0] - bx, goal_center[1] - by])
 
@@ -156,7 +157,7 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
     # 4. Check goal
     if goal_x_range[0] <= bx <= goal_x_range[1] and goal_y_range[0] <= by <= goal_y_range[1]:
         reward += 100
-    elif bx < 1.000 or bx > 1.230:
+    elif bx < 1000 or bx > 1230:
         reward -= 50  # Own goal or out of bounds
 
     # 5. Slight penalty if ball is basically still
@@ -165,13 +166,9 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
 
     # 6. Slight penalty if a player is oriented in the air
     for player in player_data:
-            if player["team"] == "red":
-                if player["angle"] < 0.5 and player["angle"] > -0.5:
-                    reward += 5
-                    print("dol")
-                else:
-                    reward -= 2
-                    print("gor")
+        if player["team"] == "red":
+            reward = 10 * (32 - abs(player["angle"]))
+  
 
     return reward
 
@@ -223,14 +220,25 @@ class ReplayBuffer:
     """
     Simple replay buffer for storing transitions.
     """
-    def __init__(self, max_size=2000):
+    def __init__(self, max_size=50):
         self.buffer = deque(maxlen=max_size)
 
     def add(self, state, action, reward, next_state, done):
         self.buffer.append((state, action, reward, next_state, done))
 
     def sample(self, batch_size):
-        batch = random.sample(self.buffer, batch_size)
+        # batch = random.sample(self.buffer, batch_size)
+        # states, actions, rewards, next_states, dones = zip(*batch)
+        # return (
+        #     np.array(states, dtype=np.float32),
+        #     np.array(actions, dtype=np.float32),
+        #     np.array(rewards, dtype=np.float32),
+        #     np.array(next_states, dtype=np.float32),
+        #     np.array(dones, dtype=np.float32)
+        # )
+
+        indices = np.random.choice(len(self.buffer), batch_size, replace=False)
+        batch = [self.buffer[i] for i in indices]
         states, actions, rewards, next_states, dones = zip(*batch)
         return (
             np.array(states, dtype=np.float32),
@@ -250,7 +258,7 @@ class ReplayBuffer:
 
 class ContinuousAgent:
     def __init__(self, state_dim=20, action_dim=16, gamma=0.99, lr_actor=0.0001, lr_critic=0.001,
-                 tau=0.005, batch_size=64, max_memory=20000):
+                 tau=0.005, batch_size=64, max_memory=50):
         """
         :param state_dim: dimension of your input (e.g., ball + rods data)
         :param action_dim: dimension of your actions (4 rods × 4 continuous outputs each = 16)
@@ -260,11 +268,19 @@ class ContinuousAgent:
         self.tau = tau
         self.batch_size = batch_size
 
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print("Using device:", self.device)
+
         # Actor & Critic
-        self.actor = Actor(state_dim, action_dim)
-        self.critic = Critic(state_dim, action_dim)
-        self.target_actor = Actor(state_dim, action_dim)
-        self.target_critic = Critic(state_dim, action_dim)
+        # self.actor = Actor(state_dim, action_dim)
+        # self.critic = Critic(state_dim, action_dim)
+        # self.target_actor = Actor(state_dim, action_dim)
+        # self.target_critic = Critic(state_dim, action_dim)
+
+        self.actor = Actor(state_dim, action_dim).to(self.device)
+        self.critic = Critic(state_dim, action_dim).to(self.device)
+        self.target_actor = Actor(state_dim, action_dim).to(self.device)
+        self.target_critic = Critic(state_dim, action_dim).to(self.device)
 
         # Copy weights initially
         self.target_actor.load_state_dict(self.actor.state_dict())
@@ -285,7 +301,6 @@ class ContinuousAgent:
         self.model = self.actor
         self.learn_step_counter = 0
 
-        
         # Load geometry
         with open('geometry.json') as f:
             self.geometry = json.load(f)
@@ -326,18 +341,18 @@ class ContinuousAgent:
         self.soft_update(self.target_critic, self.critic, self.tau)
 
 
-
-
     def choose_action(self, state):
         """
         Chooses an action using the actor plus some exploration noise.
         """
-        state_t = torch.FloatTensor(state).unsqueeze(0)  # shape (1, state_dim)
+        #state_t = torch.FloatTensor(state).unsqueeze(0).to(self.device)  # shape (1, state_dim)
+        state_t = torch.from_numpy(state).unsqueeze(0).to(self.device, dtype=torch.float32, non_blocking=True)
         with torch.no_grad():
             action = self.actor(state_t).cpu().numpy()[0]
         # Add noise for exploration
         noise = np.random.normal(0, self.exploration_noise, size=action.shape)
         action = action + noise
+        
         # Clip to [-1, 1]
         action = np.clip(action, -1.0, 1.0)
         return action
@@ -357,11 +372,17 @@ class ContinuousAgent:
 
         states, actions, rewards, next_states, dones = self.memory.sample(self.batch_size)
 
-        states_t = torch.FloatTensor(states)
-        actions_t = torch.FloatTensor(actions)
-        rewards_t = torch.FloatTensor(rewards).unsqueeze(1)
-        next_states_t = torch.FloatTensor(next_states)
-        dones_t = torch.FloatTensor(dones).unsqueeze(1)
+        # states_t = torch.FloatTensor(states)
+        # actions_t = torch.FloatTensor(actions)
+        # rewards_t = torch.FloatTensor(rewards).unsqueeze(1)
+        # next_states_t = torch.FloatTensor(next_states)
+        # dones_t = torch.FloatTensor(dones).unsqueeze(1)
+
+        states_t = torch.from_numpy(states).float().to(self.device).detach()
+        actions_t = torch.from_numpy(actions).float().to(self.device).detach()
+        rewards_t = torch.from_numpy(rewards).float().unsqueeze(1).to(self.device)
+        next_states_t = torch.from_numpy(next_states).float().to(self.device)
+        dones_t = torch.from_numpy(dones).float().unsqueeze(1).to(self.device)
 
         # =====================
         # 1) Update Critic
@@ -369,19 +390,20 @@ class ContinuousAgent:
         # Current Q
         current_Q = self.critic(states_t, actions_t)
 
-        # Next actions (from target actor)
-        next_actions = self.target_actor(next_states_t)
-        next_Q = self.target_critic(next_states_t, next_actions)
+        with torch.no_grad():
+            # Next actions (from target actor)
+            next_actions = self.target_actor(next_states_t).detach()
+            next_Q = self.target_critic(next_states_t, next_actions).detach()
 
-        # Target Q
-        target_Q = rewards_t + (1.0 - dones_t) * self.gamma * next_Q.detach()
+            # Target Q
+            target_Q = rewards_t + (1.0 - dones_t) * self.gamma * next_Q
 
         # Critic Loss
-        critic_loss = nn.MSELoss()(current_Q, target_Q)
+        critic_loss = nn.MSELoss()(current_Q, target_Q.to(self.device))
 
         # Backprop Critic
-        self.critic_optimizer.zero_grad()
-        critic_loss.backward()
+        self.critic_optimizer.zero_grad(set_to_none=True)
+        critic_loss.backward(retain_graph=False) # Uprašljivp!
         self.critic_optimizer.step()
 
         # =====================
@@ -391,8 +413,8 @@ class ContinuousAgent:
         actor_actions = self.actor(states_t)
         actor_loss = -self.critic(states_t, actor_actions).mean()
 
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward()
+        self.actor_optimizer.zero_grad(set_to_none=True)
+        actor_loss.backward(retain_graph=False) # Uprašljivp!
         self.actor_optimizer.step()
 
         # =====================
@@ -430,21 +452,30 @@ class ContinuousAgent:
         - Learns
         - Returns commands to send to environment
         """
+
+        start = time.time()
+
         # 1) Build the state vector
         bx, by, vx, vy, _ = ball_data(camera)  # 4 values
         opp_pos, opp_rpt = players_data(camera)     # positions & angles -> 8 + 8 = 16
         # Combine into one vector (20 dims if your code is consistent)
         state = np.concatenate([[bx, by, vx, vy], opp_pos, opp_rpt])
+        print("Time 1:", time.time() - start)
 
         # 2) Choose an action (continuous, shape=16)
+        start = time.time()
         action = self.choose_action(state)
+        print("Time 2:", time.time() - start)
 
         # 3) Collect new info to figure out "next_state" if needed
         #    (Often you'd do a second camera read, but here let's assume next_state is the same
         #     or you might call process_data again at next loop iteration. We'll keep it simple.)
+        start = time.time()
         next_state = state  # or do more advanced logic
+        print("Time 3:", time.time() - start)
 
         # 4) Collision detection
+        start = time.time()
         player_data = calculate_player_positions_and_angles(camera, self.geometry)
         ball_position = (bx, by)
         ball_collision = False
@@ -453,24 +484,33 @@ class ContinuousAgent:
                 if detect_collision(ball_position, player["position"]):
                     ball_collision = True
                     break
+        print("Time 4:", time.time() - start)
 
         # 5) Reward
+        start = time.time()
         reward = calculate_shooting_reward(bx, by, vx, vy, ball_collision, player_data)
         print("Reward", reward)
+        print("Time 5:", time.time() - start)
 
         # 6) Check if done
         #    We'll say 'done' if we scored a goal (reward=100),
         #    but that's up to your environment design.
+        start = time.time()
         done = (reward >= 100)
+        print("Time 6:", time.time() - start)
 
         # 7) Store in memory & learn
+        start = time.time()
         self.remember(state, action, reward, next_state, done)
         self.learn()
+        print("Time 7:", time.time() - start)
+
 
         # 8) Convert the 16‐dim action vector into your final commands
         #    Each rod has 4 fields: rotationTarget, rotationVelocity, translationTarget, translationVelocity
         #    We'll do a direct mapping from the continuous action vector to each rod’s 4 values.
         #    The user can tweak scaling as needed.
+        start = time.time()
         rods_for_team = [rod for rod in self.geometry["rods"] if rod["team"] == self.team_color]
         commands = []
         for i, rod in enumerate(rods_for_team):
@@ -490,6 +530,10 @@ class ContinuousAgent:
             }
             
             commands.append(cmd)
+        print("Time 8:", time.time() - start)
+
+        torch.cuda.empty_cache()
+        gc.collect()
 
         #print(commands)
         return commands

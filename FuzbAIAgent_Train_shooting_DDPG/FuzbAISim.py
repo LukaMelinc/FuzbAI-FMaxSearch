@@ -375,6 +375,8 @@ class FuzbAISim:
                 self.ballPos, ballOrn = p.getBasePositionAndOrientation(self.ball)        
                 self.ballVel = p.getBaseVelocity(self.ball)
 
+                print("Iteracija", time.time())
+
                 if self.ballPos[2] < 0.1:
                     #print(ballPos)
                     # Is the ball under the table?
