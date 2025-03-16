@@ -48,7 +48,7 @@ def ball_data(camera):
     return bx, by, vx, vy, flag
 
 
-def player_data(camera):
+def players_data(camera):
 
     CD0 = camera["camData"][0]
     CD1 = camera["camData"][1]
@@ -386,7 +386,7 @@ class ContinuousAgent:
         """
         # 1) Build the state vector
         bx, by, vx, vy, _ = ball_data(camera)  # 4 values
-        opp_pos, opp_rpt = player_data(camera)     # positions & angles -> 8 + 8 = 16
+        opp_pos, opp_rpt = players_data(camera)     # positions & angles -> 8 + 8 = 16
         # Combine into one vector (20 dims if your code is consistent)
         state = np.concatenate([[bx, by, vx, vy], opp_pos, opp_rpt])
 
