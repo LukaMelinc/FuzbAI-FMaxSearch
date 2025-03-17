@@ -132,8 +132,8 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
 
     # 1. Collision Reward
     if collision_detected:
-        reward += 10
-        #print("boom")
+        reward += 100
+        print("boom!!!!!!!")
     else:
         reward -= 5
         #print("NO colision")
@@ -232,7 +232,7 @@ class ReplayBuffer:
     """
     Simple replay buffer for storing transitions.
     """
-    def __init__(self, max_size=500):
+    def __init__(self, max_size=20000):
         self.buffer = deque(maxlen=max_size)
 
     def add(self, state, action, reward, next_state, done):
@@ -270,7 +270,7 @@ class ReplayBuffer:
 
 class ContinuousAgent:
     def __init__(self, state_dim=20, action_dim=16, gamma=0.99, lr_actor=0.0001, lr_critic=0.001,
-                 tau=0.005, batch_size=512, max_memory=500):
+                 tau=0.005, batch_size=32, max_memory=20000):
         """
         :param state_dim: dimension of your input (e.g., ball + rods data)
         :param action_dim: dimension of your actions (4 rods × 4 continuous outputs each = 16)
@@ -306,7 +306,7 @@ class ContinuousAgent:
         self.memory = ReplayBuffer(max_size=max_memory)
 
         # For exploration noise
-        self.exploration_noise = 0.3  # Could be smaller. Tweak as needed.
+        self.exploration_noise = 0.5  # Could be smaller. Tweak as needed.
 
         self.team_color="red"
 
@@ -383,8 +383,11 @@ class ContinuousAgent:
         """
         Sample from replay and update networks (actor & critic).
         """
-        if len(self.memory) < self.batch_size:
-            return
+        # if len(self.memory) < self.batch_size:
+        #     return
+
+        if len(self.memory) < self.batch_size or self.learn_step_counter % 5 != 0:
+            return  # Learn every 5 steps
 
         states, actions, rewards, next_states, dones = self.memory.sample(self.batch_size)
 
@@ -419,7 +422,7 @@ class ContinuousAgent:
 
         # Backprop Critic
         self.critic_optimizer.zero_grad(set_to_none=True)
-        critic_loss.backward(retain_graph=False) # Uprašljivp!
+        critic_loss.backward() # Uprašljivp!
         self.critic_optimizer.step()
 
         # =====================
@@ -430,7 +433,7 @@ class ContinuousAgent:
         actor_loss = -self.critic(states_t, actor_actions).mean()
 
         self.actor_optimizer.zero_grad(set_to_none=True)
-        actor_loss.backward(retain_graph=False) # Uprašljivp!
+        actor_loss.backward() # Uprašljivp!
         self.actor_optimizer.step()
 
         # =====================
@@ -438,6 +441,9 @@ class ContinuousAgent:
         # =====================
         self.soft_update(self.target_actor, self.actor, self.tau)
         self.soft_update(self.target_critic, self.critic, self.tau)
+
+        print(f"Critic Loss: {critic_loss.item()}, Actor Loss: {actor_loss.item()}")
+
 
     def soft_update(self, target_net, source_net, tau):
         for target_param, source_param in zip(target_net.parameters(), source_net.parameters()):
@@ -512,7 +518,7 @@ class ContinuousAgent:
         #    We'll say 'done' if we scored a goal (reward=100),
         #    but that's up to your environment design.
         #start = time.time()
-        done = (reward >= 100)
+        done = (reward >= 1000)
         #print("Time 6:", time.time() - start)
 
         # 7) Store in memory & learn
@@ -548,8 +554,8 @@ class ContinuousAgent:
             commands.append(cmd)
         #print("Time 8:", time.time() - start)
 
-        torch.cuda.empty_cache()
-        gc.collect()
+        # torch.cuda.empty_cache()
+        # gc.collect()
 
         for command in commands:
             values = [v.item() if isinstance(v, np.generic) else v for v in command.values()]
