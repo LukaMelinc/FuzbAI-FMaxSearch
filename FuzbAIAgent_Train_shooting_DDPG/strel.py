@@ -530,9 +530,9 @@ class ContinuousAgent:
             base_idx = i * 4
             # Suppose each dimension is in [-1, 1]; let's rescale them:
             rotation_target      = action[base_idx + 0]  # stays in [-1, 1]
-            rotation_velocity    = (action[base_idx + 1] + 1) * 1.0  # map [-1,1] -> [0,2]
-            translation_target   = (action[base_idx + 2] + 1) * 0.5  # map [-1,1] -> [0,1]
-            translation_velocity = (action[base_idx + 3] + 1) * 1.0  # map [-1,1] -> [0,2]
+            rotation_velocity    = action[base_idx + 1]  # map [-1,1] -> [0,2]
+            translation_target   = action[base_idx + 2]  # map [-1,1] -> [0,1]
+            translation_velocity = action[base_idx + 3]  # map [-1,1] -> [0,2]
 
             cmd = {
                 'driveID': i + 1,  # or i+1, depending on your environment
