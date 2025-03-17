@@ -133,10 +133,10 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
     # 1. Collision Reward
     if collision_detected:
         reward += 10
-        print("boom")
+        #print("boom")
     else:
         reward -= 5
-        print("NO colision")
+        #print("NO colision")
 
     # 2. Direction towards the goal
     goal_center = (1205, 350)
@@ -150,7 +150,7 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
         if cosine_similarity > 0:
             directional_reward = cosine_similarity * 30
             reward += directional_reward
-            print(f"ball moving towards the goal, Reward: {directional_reward}")
+            #print(f"ball moving towards the goal, Reward: {directional_reward}")
         else:
             reward -= 10
     else:
@@ -159,30 +159,29 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
     # 3. Speed
     ball_speed = np.linalg.norm(ball_vector)
     reward += ball_speed * 5
-    print(f"Speed reward: {ball_speed}")
+    #print(f"Speed reward: {ball_speed}")
 
     # 4. Check goal
     if goal_x_range[0] <= bx <= goal_x_range[1] and goal_y_range[0] <= by <= goal_y_range[1]:
         reward += 100
     elif bx < 1000 or bx > 1230:
         reward -= 50  # Own goal or out of bounds
-        print(f"Goal received, Reward -50")
+        #print(f"Goal received, Reward -50")
 
     # 5. Slight penalty if ball is basically still
     if ball_speed < 0.01:
         reward -= 1
-        print(f"Slow ball spet penalty: -1")
+        #print(f"Slow ball spet penalty: -1")
 
     # 6. Slight penalty if a player is oriented in the air
     for player in player_data:
         if player["team"] == "red":
-            reward = 10 * (32 - abs(player["angle"]))
+            rwd = 10 * (abs(player["angle"]) * -1)
+            if rwd > -100:
+                reward += 50 
+            else:
+                reward += rwd
   
-
-    print(reward)
-    print(bx)
-    print(by)
-    print("----------------------------------------------------")
     return reward
 
 
@@ -233,7 +232,7 @@ class ReplayBuffer:
     """
     Simple replay buffer for storing transitions.
     """
-    def __init__(self, max_size=50):
+    def __init__(self, max_size=500):
         self.buffer = deque(maxlen=max_size)
 
     def add(self, state, action, reward, next_state, done):
@@ -271,7 +270,7 @@ class ReplayBuffer:
 
 class ContinuousAgent:
     def __init__(self, state_dim=20, action_dim=16, gamma=0.99, lr_actor=0.0001, lr_critic=0.001,
-                 tau=0.005, batch_size=64, max_memory=50):
+                 tau=0.005, batch_size=512, max_memory=500):
         """
         :param state_dim: dimension of your input (e.g., ball + rods data)
         :param action_dim: dimension of your actions (4 rods × 4 continuous outputs each = 16)
@@ -307,7 +306,7 @@ class ContinuousAgent:
         self.memory = ReplayBuffer(max_size=max_memory)
 
         # For exploration noise
-        self.exploration_noise = 0.2  # Could be smaller. Tweak as needed.
+        self.exploration_noise = 0.3  # Could be smaller. Tweak as needed.
 
         self.team_color="red"
 
@@ -358,17 +357,21 @@ class ContinuousAgent:
         """
         Chooses an action using the actor plus some exploration noise.
         """
+        self.actor.eval()
+
         #state_t = torch.FloatTensor(state).unsqueeze(0).to(self.device)  # shape (1, state_dim)
         state_t = torch.from_numpy(state).unsqueeze(0).to(self.device, dtype=torch.float32, non_blocking=True)
         with torch.no_grad():
             action = self.actor(state_t).cpu().numpy()[0]
+
         # Add noise for exploration
         noise = np.random.normal(0, self.exploration_noise, size=action.shape)
         action = action + noise
         
         # Clip to [-1, 1]
         action = np.clip(action, -1.0, 1.0)
-        return action
+
+        return action#.cpu().numpy()[0]
 
     def remember(self, state, action, reward, next_state, done):
         """
@@ -466,29 +469,29 @@ class ContinuousAgent:
         - Returns commands to send to environment
         """
 
-        start = time.time()
+        #start = time.time()
 
         # 1) Build the state vector
         bx, by, vx, vy, _ = ball_data(camera)  # 4 values
         opp_pos, opp_rpt = players_data(camera)     # positions & angles -> 8 + 8 = 16
         # Combine into one vector (20 dims if your code is consistent)
         state = np.concatenate([[bx, by, vx, vy], opp_pos, opp_rpt])
-        print("Time 1:", time.time() - start)
+        #print("Time 1:", time.time() - start)
 
         # 2) Choose an action (continuous, shape=16)
-        start = time.time()
+        #start = time.time()
         action = self.choose_action(state)
-        print("Time 2:", time.time() - start)
+        #print("Time 2:", time.time() - start)
 
         # 3) Collect new info to figure out "next_state" if needed
         #    (Often you'd do a second camera read, but here let's assume next_state is the same
         #     or you might call process_data again at next loop iteration. We'll keep it simple.)
-        start = time.time()
+        #start = time.time()
         next_state = state  # or do more advanced logic
-        print("Time 3:", time.time() - start)
+        #print("Time 3:", time.time() - start)
 
         # 4) Collision detection
-        start = time.time()
+        #start = time.time()
         player_data = calculate_player_positions_and_angles(camera, self.geometry)
         ball_position = (bx, by)
         ball_collision = False
@@ -497,42 +500,42 @@ class ContinuousAgent:
                 if detect_collision(ball_position, player["position"]):
                     ball_collision = True
                     break
-        print("Time 4:", time.time() - start)
+        #print("Time 4:", time.time() - start)
 
         # 5) Reward
-        start = time.time()
+        #start = time.time()
         reward = calculate_shooting_reward(bx, by, vx, vy, ball_collision, player_data)
         print("Reward", reward)
-        print("Time 5:", time.time() - start)
+        #print("Time 5:", time.time() - start)
 
         # 6) Check if done
         #    We'll say 'done' if we scored a goal (reward=100),
         #    but that's up to your environment design.
-        start = time.time()
+        #start = time.time()
         done = (reward >= 100)
-        print("Time 6:", time.time() - start)
+        #print("Time 6:", time.time() - start)
 
         # 7) Store in memory & learn
-        start = time.time()
+        #start = time.time()
         self.remember(state, action, reward, next_state, done)
         self.learn()
-        print("Time 7:", time.time() - start)
+        #print("Time 7:", time.time() - start)
 
 
         # 8) Convert the 16‐dim action vector into your final commands
         #    Each rod has 4 fields: rotationTarget, rotationVelocity, translationTarget, translationVelocity
         #    We'll do a direct mapping from the continuous action vector to each rod’s 4 values.
         #    The user can tweak scaling as needed.
-        start = time.time()
+        #start = time.time()
         rods_for_team = [rod for rod in self.geometry["rods"] if rod["team"] == self.team_color]
         commands = []
         for i, rod in enumerate(rods_for_team):
             base_idx = i * 4
             # Suppose each dimension is in [-1, 1]; let's rescale them:
-            rotation_target      = action[base_idx + 0]  # stays in [-1, 1]
-            rotation_velocity    = action[base_idx + 1]  # map [-1,1] -> [0,2]
-            translation_target   = action[base_idx + 2]  # map [-1,1] -> [0,1]
-            translation_velocity = action[base_idx + 3]  # map [-1,1] -> [0,2]
+            rotation_target      = action[base_idx + 0] * 32
+            rotation_velocity    = (action[base_idx + 1] + 1) * 0.5
+            translation_target   = (action[base_idx + 2] + 1) * 0.5
+            translation_velocity = (action[base_idx + 3] + 1) * 0.5
 
             cmd = {
                 'driveID': i + 1,  # or i+1, depending on your environment
@@ -543,12 +546,15 @@ class ContinuousAgent:
             }
             
             commands.append(cmd)
-        print("Time 8:", time.time() - start)
+        #print("Time 8:", time.time() - start)
 
         torch.cuda.empty_cache()
         gc.collect()
 
-        #print(commands)
+        for command in commands:
+            values = [v.item() if isinstance(v, np.generic) else v for v in command.values()]
+            print(values)
+
         return commands
 
 
