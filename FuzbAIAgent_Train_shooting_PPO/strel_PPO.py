@@ -97,10 +97,10 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
     goal_y_range = (250, 450)
     if collision_detected:
         reward += 10
-        print("boom")
+    #    print("boom")
     else:
         reward -= 5
-        print("NO colision")
+     #   print("NO colision")
     goal_center = (1205, 350)
     ball_vector = np.array([vx, vy])
     direction_vector = np.array([goal_center[0] - bx, goal_center[1] - by])
@@ -111,28 +111,28 @@ def calculate_shooting_reward(bx, by, vx, vy, collision_detected, player_data):
         if cosine_similarity > 0:
             directional_reward = cosine_similarity * 30
             reward += directional_reward
-            print(f"ball moving towards the goal, Reward: {directional_reward}")
+        #    print(f"ball moving towards the goal, Reward: {directional_reward}")
         else:
             reward -= 10
     else:
         reward -= 5
     ball_speed = np.linalg.norm(ball_vector)
     reward += ball_speed * 5
-    print(f"Speed reward: {ball_speed}")
+   # print(f"Speed reward: {ball_speed}")
     if goal_x_range[0] <= bx <= goal_x_range[1] and goal_y_range[0] <= by <= goal_y_range[1]:
         reward += 100
-    elif bx < 1000 or bx > 1230:
+    elif bx < 10 or bx > 1230:
         reward -= 50
-        print(f"Goal received, Reward -50")
+   #     print(f"Goal received, Reward -50")
     if ball_speed < 0.01:
         reward -= 1
-        print(f"Slow ball spet penalty: -1")
+   #     print(f"Slow ball spet penalty: -1")
     for player in player_data:
         if player["team"] == "red":
             reward = 10 * (32 - abs(player["angle"]))
     print(reward)
-    print(bx)
-    print(by)
+   # print(bx)
+   # print(by)
     print("----------------------------------------------------")
     return reward
 
@@ -170,12 +170,12 @@ class ValueNetwork(nn.Module):
         return value
 
 class PPOAgent:
-    def __init__(self, state_dim=20, action_dim=16, gamma=0.99, lr=0.001, epsilon=0.2, batch_size=64, max_memory=50):
+    def __init__(self, state_dim=20, action_dim=16, gamma=0.99, lr=0.001, epsilon=0.2, batch_size=32, max_memory=200):
         self.gamma = gamma
         self.epsilon = epsilon
         self.batch_size = batch_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print("Using device:", self.device)
+    #    print("Using device:", self.device)
 
         self.policy = PolicyNetwork(state_dim, action_dim).to(self.device)
         self.value = ValueNetwork(state_dim).to(self.device)
@@ -202,6 +202,9 @@ class PPOAgent:
 
     def learn(self):
         if len(self.memory) < self.batch_size:
+            print(len(self.memory))
+            print(self.batch_size)
+            print("Not enough data for learning")
             return
 
         batch = random.sample(self.memory, self.batch_size)
@@ -216,12 +219,18 @@ class PPOAgent:
 
         # Compute value and advantage
         values = self.value(states_t)
+
+        #print(values)
         next_values = self.value(next_states_t)
         td_errors = rewards_t + self.gamma * next_values * (1 - dones_t) - values
         advantages = td_errors.detach()
 
         # Compute new probabilities and policy loss
         mean, std = self.policy(states_t)
+        print("Policy Network Outputs during Learning - Mean:", mean)
+        print("Policy Network Outputs during Learning - Std:", std)
+
+
         dist = torch.distributions.Normal(mean, std)
         new_probs = dist.log_prob(actions_t).sum(dim=1, keepdim=True)
         ratio = torch.exp(new_probs - old_probs_t)
@@ -242,22 +251,22 @@ class PPOAgent:
         self.value_optimizer.step()
 
     def process_data(self, camera):
-        start = time.time()
+
 
         bx, by, vx, vy, _ = ball_data(camera)
         opp_pos, opp_rpt = players_data(camera)
-        state = np.concatenate([[bx, by, vx, vy], opp_pos, opp_rpt])
-        print("Time 1:", time.time() - start)
+        state = np.concatenate([opp_pos, [bx, by, vx, vy],opp_rpt])
 
-        start = time.time()
+
+
         action = self.choose_action(state)
-        print("Time 2:", time.time() - start)
 
-        start = time.time()
+
+ 
         next_state = state
-        print("Time 3:", time.time() - start)
+        
 
-        start = time.time()
+
         player_data = calculate_player_positions_and_angles(camera, self.geometry)
         ball_position = (bx, by)
         ball_collision = False
@@ -266,26 +275,24 @@ class PPOAgent:
                 if detect_collision(ball_position, player["position"]):
                     ball_collision = True
                     break
-        print("Time 4:", time.time() - start)
 
-        start = time.time()
+
+
         reward = calculate_shooting_reward(bx, by, vx, vy, ball_collision, player_data)
-        print("Reward", reward)
-        print("Time 5:", time.time() - start)
+      #  print("Reward", reward)
 
-        start = time.time()
-        done = (reward >= 100)
-        print("Time 6:", time.time() - start)
 
-        start = time.time()
+        done = (reward >= 1000)
+
+
         mean, std = self.policy(torch.FloatTensor(state).unsqueeze(0).to(self.device))
         dist = torch.distributions.Normal(mean, std)
         prob = dist.log_prob(torch.FloatTensor(action).to(self.device)).sum(dim=1, keepdim=True)
         self.remember(state, action, reward, next_state, done, prob.cpu().detach().numpy())
         self.learn()
-        print("Time 7:", time.time() - start)
 
-        start = time.time()
+
+
         rods_for_team = [rod for rod in self.geometry["rods"] if rod["team"] == self.team_color]
         commands = []
         for i, rod in enumerate(rods_for_team):
@@ -302,12 +309,27 @@ class PPOAgent:
                 'translationVelocity': translation_velocity
             }
             commands.append(cmd)
-        print("Time 8:", time.time() - start)
+
 
         torch.cuda.empty_cache()
         gc.collect()
 
         return commands
+
+    def save_model(self, path):
+        torch.save({
+            'policy_state_dict': self.policy.state_dict(),
+            'value_state_dict': self.value.state_dict(),
+            'policy_optimizer_state_dict': self.policy_optimizer.state_dict(),
+            'value_optimizer_state_dict': self.value_optimizer.state_dict(),
+        }, path)
+
+    def load_model(self, path):
+        checkpoint = torch.load(path)
+        self.policy.load_state_dict(checkpoint['policy_state_dict'])
+        self.value.load_state_dict(checkpoint['value_state_dict'])
+        self.policy_optimizer.load_state_dict(checkpoint['policy_optimizer_state_dict'])
+        self.value_optimizer.load_state_dict(checkpoint['value_optimizer_state_dict'])
 
 ##############################
 # 7) The Main Loop

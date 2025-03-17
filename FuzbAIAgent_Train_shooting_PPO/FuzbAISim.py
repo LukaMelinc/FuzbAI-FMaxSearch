@@ -377,45 +377,36 @@ class FuzbAISim:
         refPos = 0
         prev_t = 0
         ball_moving = 0
-            
+
         print(f'\n*********************************\nStarting main loop\n*********************************\n')
 
         self.showScore()
         self.showRound()
-        #self.nudgeBall()
         self.ResetBallToLocation()
         self.showPlayerStatus()
 
         prev_key_t = 0
 
-        try:    
-            while self.isRunning:    
-                self.ballPos, ballOrn = p.getBasePositionAndOrientation(self.ball)        
+        try:
+            while self.isRunning:
+                self.ballPos, ballOrn = p.getBasePositionAndOrientation(self.ball)
                 self.ballVel = p.getBaseVelocity(self.ball)
 
-                print("Iteracija", time.time())
+                print("Iteration at", time.time())
 
                 if self.ballPos[2] < 0.1:
-                    #print(ballPos)
-                    # Is the ball under the table?
                     if (self.ballPos[0] > 0 and self.ballPos[0] < 1.4 and self.ballPos[1] > 0 and self.ballPos[1] < 0.7):
-                        # On which side?
                         if self.ballPos[0] < 0.72:
-                            # Blue scored a goal
                             self.score[1] += 1
                             print(f'Blue scored goal ({self.score[0]}:{self.score[1]})')
                         else:
-                            # Red scored a goal
                             self.score[0] += 1
                             print(f'Red scored goal ({self.score[0]}:{self.score[1]})')
 
                         self.showScore()
                         self.showRound()
 
-                    # Safe drop coordinates within table limits
                     self.ResetBallToLocation()
-                
-
 
                 self.t = time.time() - t0
 
@@ -423,8 +414,6 @@ class FuzbAISim:
                     ball_moving = self.t
 
                 if self.t - ball_moving > 3:
-                    
-                    # Save the model at regular intervals
                     if self.round % self.save_interval == 0:
                         self.p1.save_model("ball_control_model.pth")
 
@@ -432,32 +421,28 @@ class FuzbAISim:
                     self.round += 1
                     print("Round:", self.round)
 
-
                 angles = []
-                rodPoses = []     
-                
-                for ji in range(8):        
+                rodPoses = []
+
+                for ji in range(8):
                     angles.append(32*p.getJointState(self.mizaId, self.revJoints[ji])[0] / math.pi)
 
-                # Linear...
-                for ji in range(8):                         
+                for ji in range(8):
                     rodPoses.append(1-1000*p.getJointState(self.mizaId, self.slideJoints[ji])[0] / self.travels[ji])
-                
+
                 self.rodPositions = rodPoses
                 self.rodAngles = angles
 
                 linVel = 1.5910861528058136
                 rotVel = 174.74649915501303
 
-                # Process the agents...
-                if self.t - prev_t > 0.02:  
-                    try:     
-                        if self.status_player1 == 0:             
+                if self.t - prev_t > 0.02:
+                    try:
+                        if self.status_player1 == 0:
                             motors1 = self.p1.process_data(self.getDelayedCamera(1, self.t - self.simulatedDelay))
                         else:
-                            # Use the external motor data...
                             motors1 = self.motorCommandsExternal1
-                            self.motorCommandsExternal1 = []        
+                            self.motorCommandsExternal1 = []
 
                         driveMap = [0, 1, 3, 5]
                         for m in motors1:
@@ -465,65 +450,56 @@ class FuzbAISim:
                             jId_rot = self.revJoints[axisID]
                             jId_lin = self.slideJoints[axisID]
 
-                            refAngle = m["rotationTargetPosition"]*2*math.pi                
+                            refAngle = m["rotationTargetPosition"]*2*math.pi
                             p.setJointMotorControl2(self.mizaId, jId_rot, controlMode=p.POSITION_CONTROL, targetPosition=refAngle, force=2.0943448919793832, maxVelocity=rotVel*m["rotationVelocity"], positionGain=2.817867199313025, velocityGain=7.574019729635704)
 
                             refPos = self.applyMotorDeadband(axisID, self.travels[axisID]*(1-m["translationTargetPosition"])/1000)
                             p.setJointMotorControl2(self.mizaId, jId_lin, controlMode=p.POSITION_CONTROL, targetPosition=refPos, force=13.303989530423438, maxVelocity=linVel*m["translationVelocity"], positionGain=0.19343157707177333, velocityGain=3.9227062400839023)
-                    except:
-                        print("Exception in agent 1")
+                    except Exception as e:
+                        print("Exception in agent 1:", e)
                         traceback.print_exc()
 
-                    try:                                               
-                        if self.status_player2 == 0:             
+                    try:
+                        if self.status_player2 == 0:
                             motors2 = self.p2.process_data(self.getDelayedCamera(2, self.t - self.simulatedDelay))
                         else:
-                            # Use the external motor data...
                             motors2 = self.motorCommandsExternal2
-                            self.motorCommandsExternal2 = []        
+                            self.motorCommandsExternal2 = []
 
-                        driveMap = [7, 6, 4, 2]                        
+                        driveMap = [7, 6, 4, 2]
                         for m in motors2:
                             axisID = driveMap[m["driveID"]-1]
                             jId_rot = self.revJoints[axisID]
                             jId_lin = self.slideJoints[axisID]
 
-                            refAngle = -m["rotationTargetPosition"]*2*math.pi                
+                            refAngle = -m["rotationTargetPosition"]*2*math.pi
                             p.setJointMotorControl2(self.mizaId, jId_rot, controlMode=p.POSITION_CONTROL, targetPosition=refAngle, force=2.0943448919793832, maxVelocity=rotVel*m["rotationVelocity"], positionGain=2.817867199313025, velocityGain=7.574019729635704)
 
                             refPos = self.applyMotorDeadband(axisID, self.travels[axisID]*(m["translationTargetPosition"])/1000)
                             p.setJointMotorControl2(self.mizaId, jId_lin, controlMode=p.POSITION_CONTROL, targetPosition=refPos, force=13.303989530423438, maxVelocity=linVel*m["translationVelocity"], positionGain=0.19343157707177333, velocityGain=3.9227062400839023)
-                    except:
-                        print("Exception in agent 2")
+                    except Exception as e:
+                        print("Exception in agent 2:", e)
 
-                    prev_t = self.t        
+                    prev_t = self.t
 
                 self.sampleCameras(self.t)
-                #print("States: ", rodPositions, rodAngles)
-                #print(p.getLinkState(mizaId, 3))
 
                 keys = p.getKeyboardEvents()
                 if self.t - prev_key_t > 0.1:
-                    for k, v in keys.items():        
-                        if (k == 65309 and (v & p.KEY_WAS_TRIGGERED)): # 65309 == enter
-                            # Move the ball over the table
-                            #p.resetBasePositionAndOrientation(self.ball, self.defaultBallPos, p.getQuaternionFromEuler([0,0,0]))
+                    for k, v in keys.items():
+                        if (k == 65309 and (v & p.KEY_WAS_TRIGGERED)):
                             self.ResetBallToLocation()
-                        if (k == 32): # Esc
-                            running = False 
-                            break            
+                        if (k == 32):
+                            running = False
+                            break
 
-                        # Enable/disable player 1
-                        if (k == 49): # 1
+                        if (k == 49):
                             self.status_player1 = (self.status_player1 + 1) % 2
                             self.showPlayerStatus()
-                            pass    
 
-                        # Enable/disable player 2
-                        if (k == 50): # 2
+                        if (k == 50):
                             self.status_player2 = (self.status_player2 + 1) % 2
                             self.showPlayerStatus()
-                            pass    
 
                 if len(keys) > 0:
                     prev_key_t = self.t
@@ -538,8 +514,9 @@ class FuzbAISim:
             p.disconnect()
             print("Stopping server...")
 
-        except:
-            pass
+        except Exception as e:
+            print("Unexpected exception:", e)
+            traceback.print_exc()
 
         print(f'Main loop stopped')
 
