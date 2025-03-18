@@ -79,13 +79,16 @@ class ActorCriticNet(nn.Module):
         self.actor = nn.Sequential(
             nn.Linear(obs_dim, hidden_size),
             nn.ReLU(),
+            nn.Dropout(p=0.5),  # Add dropout
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, act_dim)  # raw action scores
+            nn.Dropout(p=0.5),  # Add dropout
+            nn.Linear(hidden_size, act_dim)
         )
         self.critic = nn.Sequential(
             nn.Linear(obs_dim, hidden_size),
             nn.ReLU(),
+            nn.Dropout(p=0.5),  # Add dropout
             nn.Linear(hidden_size, 1)
         )
 
@@ -177,7 +180,7 @@ class PPOAgent:
       - Uses a buffer to accumulate experiences for PPO updates.
     """
     def __init__(self,
-                 obs_dim=20,         # For example: (ball_x, ball_y, ball_vx, ball_vy, rod0pos, rod0ang, ..., rod3pos, rod3ang)
+                 obs_dim=70,         # ball = x, y, vx, vy; player = 2 x 11 x 3
                  act_dim=16,         # 4 rods × 4 numbers each
                  hidden_size=128,
                  steps_per_env=2048, # how many steps per iteration
@@ -196,16 +199,22 @@ class PPOAgent:
 
         with open('geometry.json') as f:
             self.geometry = json.load(f)
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print("Using device:", self.device)
         
         # Actor-Critic network
         self.ac = ActorCriticNet(obs_dim, act_dim, hidden_size)
+        self.ac.to(self.device)
         
         # Separate or shared log_std for continuous actions
-        self.log_std = nn.Parameter(-0.5*torch.ones(act_dim, dtype=torch.float32))
+        #self.log_std = nn.Parameter(-0.5*torch.ones(act_dim, dtype=torch.float32))
+        self.log_std = nn.Parameter(-1*torch.zeros(act_dim, dtype=torch.float32, device=self.device), requires_grad=True)
+        self.log_std = self.log_std.to(self.device)
 
         # Optimizer
         self.optimizer = optim.Adam(list(self.ac.parameters()) + [self.log_std], lr=lr)
-
+        
         # PPO hyperparameters
         self.clip_ratio = clip_ratio
         self.train_iters = train_iters
@@ -245,7 +254,8 @@ class PPOAgent:
         Given a single observation (numpy array),
         return an action in [-1,1], value estimate, and log probability.
         """
-        obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+        #obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
+        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
         mean, value_t = self.ac(obs_t)
         log_std = self.log_std.unsqueeze(0).expand_as(mean)
         std = torch.exp(log_std)
@@ -270,8 +280,13 @@ class PPOAgent:
         Run PPO update once we have a full buffer (N steps).
         """
         data = self.buf.get()  # get everything as torch tensors
+        obs = data["obs"].to(self.device)
+        act = data["act"].to(self.device)
+        ret = data["ret"].to(self.device)
+        adv = data["adv"].to(self.device)
+        logp_old = data["logp"].to(self.device)
 
-        obs, act, ret, adv, logp_old = data['obs'], data['act'], data['ret'], data['adv'], data['logp']
+        #obs, act, ret, adv, logp_old = data['obs'], data['act'], data['ret'], data['adv'], data['logp']
 
         for i in range(self.train_iters):
             mean, value = self.ac(obs)
@@ -323,7 +338,10 @@ class PPOAgent:
         5) Return the list of dicts for each rod.
         """
         # 1) Make an observation (example: ball pos, velocity, rod positions, rod angles).
-        obs = self.extract_observation(camera)
+        obs, col, bxy, vxy = self.extract_observation(camera)
+
+        if col:
+            print("colision")
 
         # If we are in the middle of an episode and have a 'last_obs', we can store
         # the transition from the previous step. But we also need the reward from the
@@ -351,10 +369,70 @@ class PPOAgent:
                 # but store the (last_obs, last_act, reward, last_val, last_logp).
                 pass
 
+            reward = 0
+            goal_x_range = (1200, 1210)
+            goal_y_range = (250, 450)
+
+            # 1. Collision Reward
+            if col:
+                reward += 100
+                print("boom!!!!!!!")
+            else:
+                reward -= 5
+                #print("NO colision")
+
+            # 2. Direction towards the goal
+            goal_center = (1205, 350)
+            ball_vector = np.array([vxy[0], vxy[1]])
+            direction_vector = np.array([goal_center[0] - bxy[0], goal_center[1] - bxy[1]])
+
+            if np.linalg.norm(ball_vector) > 0:
+                cosine_similarity = np.dot(ball_vector, direction_vector) / (
+                    np.linalg.norm(ball_vector) * np.linalg.norm(direction_vector)
+                )
+                if cosine_similarity > 0:
+                    directional_reward = cosine_similarity * 30
+                    reward += directional_reward
+                    #print(f"ball moving towards the goal, Reward: {directional_reward}")
+                else:
+                    reward -= 10
+            else:
+                reward -= 5
+
+            # 3. Speed
+            ball_speed = np.linalg.norm(ball_vector)
+            reward += ball_speed * 5
+            #print(f"Speed reward: {ball_speed}")
+
+            # 4. Check goal
+            if goal_x_range[0] <= bxy[0] <= goal_x_range[1] and goal_y_range[0] <= bxy[1] <= goal_y_range[1]:
+                reward += 100
+            elif bxy[0] < 1000 or bxy[1] > 1230:
+                reward -= 50  # Own goal or out of bounds
+                #print(f"Goal received, Reward -50")
+
+            # 5. Slight penalty if ball is basically still
+            if ball_speed < 0.01:
+                reward -= 1
+                #print(f"Slow ball spet penalty: -1")
+
+            # Reward
+            print("Reward:", reward)
+
             # Now pick the action for current step
             action, value, logp = self.compute_action(obs)
+
             # Typically you'd store that in your buffer *immediately*, e.g.:
-            # self.buf.store(obs, action, reward, value, logp)
+            #self.buf.store(obs, action, reward, value, logp)
+
+            if self.last_obs is not None:
+                self.buf.store(self.last_obs, self.last_action, reward, self.last_val, self.last_logp)
+            
+            self.last_action = action
+            self.last_val = value
+            self.last_logp = logp
+
+
 
         # Keep track for next step
         self.last_obs = obs
@@ -429,7 +507,16 @@ class PPOAgent:
         # Flatten and concatenate everything
         obs = np.concatenate(([bx, by, bvx, bvy], player_positions_array.flatten()), dtype=np.float32)
 
-        return obs
+        ### Colision with a ball
+        ball_radius=0.017
+        player_radius=0.03
+
+        for player in player_positions:
+            if player["team"] == "red":
+                distance = math.hypot(bx - player["position"][0], by - player["position"][1])
+                col = distance <= (ball_radius + player_radius)
+
+        return obs, col, (bx, by), (bx, by)
 
     def scale_to_motor_commands(self, action):
         """
@@ -451,6 +538,11 @@ class PPOAgent:
             trans_target_raw= act_rod[rod_i, 2]  # in [-1,1]
             trans_speed_raw = act_rod[rod_i, 3]  # in [-1,1]
 
+            # print("rot_target_raw",rot_target_raw) 
+            # print("rot_speed_raw",rot_speed_raw) 
+            # print("trans_target_raw",trans_target_raw)
+            # print("trans_speed_raw",trans_speed_raw) 
+
             # Example scaling:
             rot_target   = 0.8 * rot_target_raw     # we only want to rotate between -0.8..+0.8
             rot_velocity = 0.5 * (rot_speed_raw+1)/2  # scale [-1,1]→[0,1], then multiply by max
@@ -466,6 +558,7 @@ class PPOAgent:
             }
             commands.append(cmd)
 
+        #print(commands)
         return commands
 
     def finish_episode(self, last_value=0):
