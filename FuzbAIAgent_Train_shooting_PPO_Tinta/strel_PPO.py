@@ -76,16 +76,44 @@ class ActorCriticNet(nn.Module):
     """
     def __init__(self, obs_dim, act_dim, hidden_size=128):
         super().__init__()
+#        self.actor = nn.Sequential(
+#            nn.Linear(obs_dim, hidden_size),
+#            nn.ReLU(),
+#            nn.Linear(hidden_size, hidden_size),
+#            nn.ReLU(),
+#            nn.Linear(hidden_size, act_dim)  # raw action scores
+#        )
+
+        """self.actor = nn.Sequential(
+            nn.Linear(obs_dim, hidden_size),
+            nn.LeakyReLU(),  # Use LeakyReLU instead of ReLU
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(),
+            nn.Linear(hidden_size, act_dim)
+        )"""
+
         self.actor = nn.Sequential(
             nn.Linear(obs_dim, hidden_size),
             nn.ReLU(),
+            nn.Dropout(p=0.5),  # Add dropout
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, act_dim)  # raw action scores
+            nn.Dropout(p=0.5),  # Add dropout
+            nn.Linear(hidden_size, act_dim)
         )
+
+
+
+#        self.critic = nn.Sequential(
+#            nn.Linear(obs_dim, hidden_size),
+#            nn.ReLU(),
+#            nn.Linear(hidden_size, 1)
+#        )
+
         self.critic = nn.Sequential(
             nn.Linear(obs_dim, hidden_size),
-            nn.ReLU(),
+            nn.Dropout(p=0.5),  # Add dropout
+            nn.LeakyReLU(),
             nn.Linear(hidden_size, 1)
         )
 
@@ -177,7 +205,7 @@ class PPOAgent:
       - Uses a buffer to accumulate experiences for PPO updates.
     """
     def __init__(self,
-                 obs_dim=20,         # For example: (ball_x, ball_y, ball_vx, ball_vy, rod0pos, rod0ang, ..., rod3pos, rod3ang)
+                 obs_dim=70,         # For example: (ball_x, ball_y, ball_vx, ball_vy, rod0pos, rod0ang, ..., rod3pos, rod3ang)
                  act_dim=16,         # 4 rods × 4 numbers each
                  hidden_size=128,
                  steps_per_env=2048, # how many steps per iteration
@@ -201,7 +229,7 @@ class PPOAgent:
         self.ac = ActorCriticNet(obs_dim, act_dim, hidden_size)
         
         # Separate or shared log_std for continuous actions
-        self.log_std = nn.Parameter(-0.5*torch.ones(act_dim, dtype=torch.float32))
+        self.log_std = nn.Parameter(-0.1*torch.ones(act_dim, dtype=torch.float32))
 
         # Optimizer
         self.optimizer = optim.Adam(list(self.ac.parameters()) + [self.log_std], lr=lr)
@@ -363,6 +391,14 @@ class PPOAgent:
 
         # 2) Scale the raw action in [-1,1] to your motor commands
         commands = self.scale_to_motor_commands(action)
+
+        """if self.last_obs is not None:
+                self.buf.store(self.last_obs, self.last_action, reward, self.last_val, self.last_logp)
+
+            self.last_obs = obs
+            self.last_action = action
+            self.last_val = value
+            self.last_logp = logp"""
 
         # 3) Return the motor commands so the simulator can drive the rods
         return commands

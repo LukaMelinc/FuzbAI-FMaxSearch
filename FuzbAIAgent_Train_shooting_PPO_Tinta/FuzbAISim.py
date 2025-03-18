@@ -210,7 +210,7 @@ class FuzbAISim:
         p.resetBasePositionAndOrientation(self.ball, custom_ball_pos, p.getQuaternionFromEuler([0, 0, 0]))
 
         # Random speed within the defined range
-        speed_range=(0.0, 0.0)
+        speed_range=(0.05, 0.2)
         speed = random.uniform(*speed_range)
 
         # Select a random string from the list
