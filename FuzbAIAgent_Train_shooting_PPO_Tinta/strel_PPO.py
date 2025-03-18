@@ -4,10 +4,70 @@ import torch.optim as optim
 import numpy as np
 import time
 import os
+import requests
+import math
+import json
 
-# If you do not have gym, remove or replace this import.
-# We'll illustrate environment-like handling, but your simulator can do the same logic.
-# import gym  
+
+HOST_ADDRESS = '127.0.0.1:23336'  # IP or Host for your environment
+
+##############################
+# 1) Online Functions (unchanged)
+##############################
+
+def get_camera_state():
+    cam_url = f"http://{HOST_ADDRESS}/Camera/State"
+    response = requests.get(cam_url)
+    return response.json()
+
+
+def send_motor_commands(cmds):
+    motors_url = f"http://{HOST_ADDRESS}/Motors/SendCommand?blue=False"
+    requests.post(motors_url, json=cmds)
+
+
+def calculate_player_positions_and_angles(camera, geometry):
+
+    field = geometry["field"]
+    rods = geometry["rods"]
+    player_positions = []
+
+    # We'll read from the camera the same way:
+    cam_data = camera["camData"][0]
+    if cam_data is None:
+        cam_data = camera["camData"][1]
+
+    for rod in rods:
+        rod_id = rod["id"]
+        team = rod["team"]
+        rod_x = rod["position"]
+        travel_range = rod["travel"]
+        num_players = rod["players"]
+        first_offset = rod["first_offset"]
+        spacing = rod["spacing"]
+
+        rod_position_calib = cam_data["rod_position_calib"][rod_id - 1]
+        rod_angle = cam_data["rod_angle"][rod_id - 1]
+
+        # If the calibration is stored as a list, just grab the first element
+        if isinstance(rod_position_calib, list):
+            rod_position_calib = rod_position_calib[0]
+
+        # Convert the normalized rod_position_calib to actual table coordinates
+        rod_y_base = rod_position_calib * travel_range
+
+        for i in range(num_players):
+            player_y = rod_y_base + first_offset + i * spacing
+            player_positions.append({
+                "rod_id": rod_id,
+                "team": team,
+                "position": (rod_x, player_y),
+                "angle": rod_angle
+            })
+
+    return player_positions
+
+
 
 class ActorCriticNet(nn.Module):
     """
@@ -117,7 +177,7 @@ class PPOAgent:
       - Uses a buffer to accumulate experiences for PPO updates.
     """
     def __init__(self,
-                 obs_dim=12,         # For example: (ball_x, ball_y, ball_vx, ball_vy, rod0pos, rod0ang, ..., rod3pos, rod3ang)
+                 obs_dim=20,         # For example: (ball_x, ball_y, ball_vx, ball_vy, rod0pos, rod0ang, ..., rod3pos, rod3ang)
                  act_dim=16,         # 4 rods × 4 numbers each
                  hidden_size=128,
                  steps_per_env=2048, # how many steps per iteration
@@ -133,6 +193,9 @@ class PPOAgent:
         self.act_dim = act_dim
         self.save_model_every = save_model_every
         self.model_save_path = model_save_path
+
+        with open('geometry.json') as f:
+            self.geometry = json.load(f)
         
         # Actor-Critic network
         self.ac = ActorCriticNet(obs_dim, act_dim, hidden_size)
@@ -258,11 +321,8 @@ class PPOAgent:
         3) Compute an action using policy.
         4) Convert that action into final motor commands (scaled).
         5) Return the list of dicts for each rod.
-
-        This function returns the commands for rods: 0,1,3,5 (the red rods).
         """
         # 1) Make an observation (example: ball pos, velocity, rod positions, rod angles).
-        #    The details depend on your camera structure. Just a minimal example below.
         obs = self.extract_observation(camera)
 
         # If we are in the middle of an episode and have a 'last_obs', we can store
@@ -307,14 +367,22 @@ class PPOAgent:
         # 3) Return the motor commands so the simulator can drive the rods
         return commands
 
+
     def extract_observation(self, camera):
         """
         Convert camera dict into a flat numpy array (obs_dim).
         Fill in whatever you need: ball pos, ball vel, rod pos, rod angles, etc.
         """
+
+        field = self.geometry["field"]
+        rods = self.geometry["rods"]
+        player_positions = []
+
         # Just a minimal example:
         CD0 = camera["camData"][0]
-        # If you want to combine CD0/CD1, do so.
+        if CD0 is None:
+            # Fallback if the first camera is None
+            CD0 = camera["camData"][1]
 
         # Ball
         bx = CD0["ball_x"]
@@ -322,20 +390,45 @@ class PPOAgent:
         bvx = CD0["ball_vx"]
         bvy = CD0["ball_vy"]
 
-        # Rod calibration arrays are length 8, but we only need them for red rods: 0,1,3,5
-        rod_pos = []
-        rod_ang = []
-        for i in [0,1,3,5]:
-            rod_pos.append(CD0["rod_position_calib"][i])
-            rod_ang.append(CD0["rod_angle"][i] / 32.0)  # angle is in [-32,+32], normalize
+        for rod in rods:
+            rod_id = rod["id"]
+            team = rod["team"]
+            rod_x = rod["position"]
+            travel_range = rod["travel"]
+            num_players = rod["players"]
+            first_offset = rod["first_offset"]
+            spacing = rod["spacing"]
+
+            rod_position_calib = CD0["rod_position_calib"][rod_id - 1]
+            rod_angle = CD0["rod_angle"][rod_id - 1]
+
+            # If the calibration is stored as a list, just grab the first element
+            if isinstance(rod_position_calib, list):
+                rod_position_calib = rod_position_calib[0]
+
+            # Convert the normalized rod_position_calib to actual table coordinates
+            rod_y_base = rod_position_calib * travel_range
+
+            for i in range(num_players):
+                player_y = rod_y_base + first_offset + i * spacing
+                player_positions.append({
+                    "rod_id": rod_id,
+                    "team": team,
+                    "position": (rod_x, player_y), # TODO: X - JA / NE?
+                    "angle": rod_angle
+                })
 
         # Flatten it all
-        obs = np.array([bx, by, bvx, bvy,
-                        rod_pos[0], rod_ang[0],
-                        rod_pos[1], rod_ang[1],
-                        rod_pos[2], rod_ang[2],
-                        rod_pos[3], rod_ang[3]],
-                       dtype=np.float32)
+        player_numeric_positions = [
+            [p["position"][0], p["position"][1], p["angle"]] for p in player_positions
+        ]
+
+        # Convert to NumPy array
+        player_positions_array = np.array(player_numeric_positions, dtype=np.float32)
+
+        # Flatten and concatenate everything
+        obs = np.concatenate(([bx, by, bvx, bvy], player_positions_array.flatten()), dtype=np.float32)
+
         return obs
 
     def scale_to_motor_commands(self, action):
@@ -430,14 +523,20 @@ if __name__ == "__main__":
     # Possibly load an existing model
     agent.load_model()
 
-    # You would then do something like:
-    # while True:
-    #    camera_data = get_camera_state()  # or whatever your function is
-    #    commands = agent.process_data(camera_data)
-    #    send_motor_commands({'commands': commands})
-    #
-    #    # also compute reward at each step, store in agent.buf, etc.
-    #
-    #    # if episode ends:
-    #    agent.finish_episode(last_value=some_value)
-    pass
+    try:
+        while True:
+            episode += 1
+            time.sleep(0.02)
+
+            # 1) Get the current camera state
+            cam_data = get_camera_state()
+
+            # 2) Process data and get motor commands
+            motor_cmds = agent.process_data(cam_data)
+
+            # 3) Send commands to environment
+            send_motor_commands({'commands': motor_cmds})
+
+    except KeyboardInterrupt:
+        print("Training interrupted. Saving model...")
+        agent.save_model("actor.pth", "critic.pth")
