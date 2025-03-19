@@ -218,8 +218,8 @@ class FuzbAISim:
         direction = random.choice(directions_list)
 
         # Define direction vectors (random da ne dobiš zmeraj 45deg)
-        rnd_vector_x = random.uniform(0.1, 1)
-        rnd_vector_y = random.uniform(0.1, 1)
+        rnd_vector_x = 0.001 #random.uniform(0.1, 1)
+        rnd_vector_y = 0.001 #random.uniform(0.1, 1)
         direction_vectors = {
             'left': [-rnd_vector_x, 0.0, 0.0],
             'right': [rnd_vector_x, 0.0, 0.0],
@@ -393,7 +393,7 @@ class FuzbAISim:
                 self.ballPos, ballOrn = p.getBasePositionAndOrientation(self.ball)        
                 self.ballVel = p.getBaseVelocity(self.ball)
 
-                print("Iteracija", time.time())
+                #print("Iteracija")
 
                 if self.ballPos[2] < 0.1:
                     #print(ballPos)
