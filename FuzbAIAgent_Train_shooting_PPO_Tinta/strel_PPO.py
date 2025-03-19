@@ -416,43 +416,43 @@ class PPOAgent:
             
             self.prev_ball = vxy[0] # Save the last ball speed
 
-            # # 2. Direction towards the goal
-            # goal_center = (1205, 350)
-            # ball_vector = np.array([vxy[0], vxy[1]])
-            # direction_vector = np.array([goal_center[0] - bxy[0], goal_center[1] - bxy[1]])
+            # 2. Direction towards the goal
+            goal_center = (1205, 350)
+            ball_vector = np.array([vxy[0], vxy[1]])
+            direction_vector = np.array([goal_center[0] - bxy[0], goal_center[1] - bxy[1]])
 
-            # if np.linalg.norm(ball_vector) > 0:
-            #     cosine_similarity = np.dot(ball_vector, direction_vector) / (
-            #         np.linalg.norm(ball_vector) * np.linalg.norm(direction_vector)
-            #     )
-            #     if cosine_similarity > 0:
-            #         directional_reward = cosine_similarity * 30
-            #         reward += directional_reward
-            #         #print(f"ball moving towards the goal, Reward: {directional_reward}")
-            #     else:
-            #         reward -= 10
-            # else:
-            #     reward -= 5
+            if np.linalg.norm(ball_vector) > 0:
+                cosine_similarity = np.dot(ball_vector, direction_vector) / (
+                    np.linalg.norm(ball_vector) * np.linalg.norm(direction_vector)
+                )
+                if cosine_similarity > 0:
+                    directional_reward = cosine_similarity * 30
+                    reward += directional_reward
+                    #print(f"ball moving towards the goal, Reward: {directional_reward}")
+                else:
+                    reward -= 10
+            else:
+                reward -= 5
 
-            # # 3. Speed
-            # ball_speed = np.linalg.norm(ball_vector)
-            # reward += ball_speed * 5
-            # #print(f"Speed reward: {ball_speed}")
+            # 3. Speed
+            ball_speed = np.linalg.norm(ball_vector)
+            reward += ball_speed * 5
+            #print(f"Speed reward: {ball_speed}")
 
-            # # 4. Check goal
-            # if goal_x_range[0] <= bxy[0] <= goal_x_range[1] and goal_y_range[0] <= bxy[1] <= goal_y_range[1]:
-            #     reward += 100
-            # elif bxy[0] < 1000 or bxy[1] > 1230:
-            #     reward -= 50  # Own goal or out of bounds
-            #     #print(f"Goal received, Reward -50")
+            # 4. Check goal
+            if goal_x_range[0] <= bxy[0] <= goal_x_range[1] and goal_y_range[0] <= bxy[1] <= goal_y_range[1]:
+                reward += 100
+            elif bxy[0] < 1000 or bxy[1] > 1230:
+                reward -= 50  # Own goal or out of bounds
+                #print(f"Goal received, Reward -50")
 
-            # # 5. Slight penalty if ball is basically still
-            # if ball_speed < 0.01:
-            #     reward -= 1
-            #     #print(f"Slow ball spet penalty: -1")
+            # 5. Slight penalty if ball is basically still
+            if ball_speed < 0.01:
+                reward -= 1
+                #print(f"Slow ball spet penalty: -1")
 
-            # # Reward 
-            # print("Reward:", reward)
+            # Reward 
+            print("Reward:", reward)
 
             # Now pick the action for current step
             action, value, logp = self.compute_action(obs)
