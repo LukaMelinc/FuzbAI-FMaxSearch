@@ -147,12 +147,12 @@ class PPOBuffer:
     def store(self, obs, act, rew, val, logp):
         """Store one step of interaction."""
         #assert self.ptr < self.max_size, "Buffer overflow!"
-        idx = self.ptr % self.max_size
-        self.obs_buf[self.ptr] = obs
-        self.act_buf[self.ptr] = act
-        self.rew_buf[self.ptr] = rew
-        self.val_buf[self.ptr] = val
-        self.logp_buf[self.ptr] = logp
+        idx = self.ptr % self.max_size  # Ensure index wraps around when full
+        self.obs_buf[idx] = obs
+        self.act_buf[idx] = act
+        self.rew_buf[idx] = rew
+        self.val_buf[idx] = val
+        self.logp_buf[idx] = logp
         self.ptr += 1
 
     def finish_path(self, last_val=0):
