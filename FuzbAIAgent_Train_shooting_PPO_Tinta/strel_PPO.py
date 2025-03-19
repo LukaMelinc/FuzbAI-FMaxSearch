@@ -68,6 +68,35 @@ def calculate_player_positions_and_angles(camera, geometry):
     return player_positions
 
 
+def detect_collision_and_reward(prev_ball_vx, current_ball_vx, ball_x, rod_positions=[80, 230, 530, 830]):
+        
+    # print("------------------------")
+    # print(prev_ball_vx)
+    # print(current_ball_vx)
+    # print(ball_x)
+    # Define the regions along the rods where collisions are checked
+    collision_regions = [(rod_x - 50, rod_x + 50) for rod_x in rod_positions]
+
+    # Check if the ball is within any of the collision regions
+    for region in collision_regions:
+        if region[0] <= ball_x <= region[1]:
+            # Detect if there is an increase in the ball's speed
+            if abs(abs(current_ball_vx) - abs(prev_ball_vx)) > 0.2:
+                print("Colision")
+                # Determine the direction of the speed increase
+                if current_ball_vx > prev_ball_vx:
+                    # Positive increase in speed (towards opponent's goal)
+                    #print("Colision!")
+                    return 5.0  # Positive reward
+                else:
+                    # Negative increase in speed (towards own goal)
+                    #print("Nazaj!")
+                    return -2.0  # Negative reward
+
+    # No collision detected
+    return 0.0
+
+
 
 class ActorCriticNet(nn.Module):
     """
@@ -117,7 +146,8 @@ class PPOBuffer:
 
     def store(self, obs, act, rew, val, logp):
         """Store one step of interaction."""
-        assert self.ptr < self.max_size, "Buffer overflow!"
+        #assert self.ptr < self.max_size, "Buffer overflow!"
+        idx = self.ptr % self.max_size
         self.obs_buf[self.ptr] = obs
         self.act_buf[self.ptr] = act
         self.rew_buf[self.ptr] = rew
@@ -150,18 +180,24 @@ class PPOBuffer:
         """
         Get all data from the buffer, then normalize advantages.
         """
-        assert self.ptr == self.max_size, "Buffer has to be full before you get()"
-        self.ptr, self.path_start_idx = 0, 0
+        # assert self.ptr == self.max_size, "Buffer has to be full before you get()"
+        # self.ptr, self.path_start_idx = 0, 0
 
-        adv_mean = np.mean(self.adv_buf)
-        adv_std  = np.std(self.adv_buf)
-        self.adv_buf = (self.adv_buf - adv_mean) / (adv_std + 1e-8)
+        # adv_mean = np.mean(self.adv_buf)
+        # adv_std  = np.std(self.adv_buf)
+        # self.adv_buf = (self.adv_buf - adv_mean) / (adv_std + 1e-8)
 
-        data = dict(obs=self.obs_buf,
-                    act=self.act_buf,
-                    ret=self.ret_buf,
-                    adv=self.adv_buf,
-                    logp=self.logp_buf)
+        indices = np.arange(min(self.ptr, self.max_size))  # Only take latest
+        adv_mean = np.mean(self.adv_buf[indices])
+        adv_std  = np.std(self.adv_buf[indices])
+        self.adv_buf[indices] = (self.adv_buf[indices] - adv_mean) / (adv_std + 1e-8)
+
+        data = dict(obs=self.obs_buf[indices],
+                    act=self.act_buf[indices],
+                    ret=self.ret_buf[indices],
+                    adv=self.adv_buf[indices],
+                    logp=self.logp_buf[indices]
+                    )
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in data.items()}
 
 def mlp_gaussian_likelihood(action, mean, log_std):
@@ -196,6 +232,8 @@ class PPOAgent:
         self.act_dim = act_dim
         self.save_model_every = save_model_every
         self.model_save_path = model_save_path
+
+        self.prev_ball = 0
 
         with open('geometry.json') as f:
             self.geometry = json.load(f)
@@ -338,10 +376,7 @@ class PPOAgent:
         5) Return the list of dicts for each rod.
         """
         # 1) Make an observation (example: ball pos, velocity, rod positions, rod angles).
-        obs, col, bxy, vxy = self.extract_observation(camera)
-
-        if col:
-            print("colision")
+        obs, bxy, vxy = self.extract_observation(camera)
 
         # If we are in the middle of an episode and have a 'last_obs', we can store
         # the transition from the previous step. But we also need the reward from the
@@ -374,50 +409,50 @@ class PPOAgent:
             goal_y_range = (250, 450)
 
             # 1. Collision Reward
-            if col:
-                reward += 100
-                print("boom!!!!!!!")
+            if self.prev_ball == 0:
+                pass
             else:
-                reward -= 5
-                #print("NO colision")
+                reward += detect_collision_and_reward(self.prev_ball, vxy[0], bxy[0])
+            
+            self.prev_ball = vxy[0] # Save the last ball speed
 
-            # 2. Direction towards the goal
-            goal_center = (1205, 350)
-            ball_vector = np.array([vxy[0], vxy[1]])
-            direction_vector = np.array([goal_center[0] - bxy[0], goal_center[1] - bxy[1]])
+            # # 2. Direction towards the goal
+            # goal_center = (1205, 350)
+            # ball_vector = np.array([vxy[0], vxy[1]])
+            # direction_vector = np.array([goal_center[0] - bxy[0], goal_center[1] - bxy[1]])
 
-            if np.linalg.norm(ball_vector) > 0:
-                cosine_similarity = np.dot(ball_vector, direction_vector) / (
-                    np.linalg.norm(ball_vector) * np.linalg.norm(direction_vector)
-                )
-                if cosine_similarity > 0:
-                    directional_reward = cosine_similarity * 30
-                    reward += directional_reward
-                    #print(f"ball moving towards the goal, Reward: {directional_reward}")
-                else:
-                    reward -= 10
-            else:
-                reward -= 5
+            # if np.linalg.norm(ball_vector) > 0:
+            #     cosine_similarity = np.dot(ball_vector, direction_vector) / (
+            #         np.linalg.norm(ball_vector) * np.linalg.norm(direction_vector)
+            #     )
+            #     if cosine_similarity > 0:
+            #         directional_reward = cosine_similarity * 30
+            #         reward += directional_reward
+            #         #print(f"ball moving towards the goal, Reward: {directional_reward}")
+            #     else:
+            #         reward -= 10
+            # else:
+            #     reward -= 5
 
-            # 3. Speed
-            ball_speed = np.linalg.norm(ball_vector)
-            reward += ball_speed * 5
-            #print(f"Speed reward: {ball_speed}")
+            # # 3. Speed
+            # ball_speed = np.linalg.norm(ball_vector)
+            # reward += ball_speed * 5
+            # #print(f"Speed reward: {ball_speed}")
 
-            # 4. Check goal
-            if goal_x_range[0] <= bxy[0] <= goal_x_range[1] and goal_y_range[0] <= bxy[1] <= goal_y_range[1]:
-                reward += 100
-            elif bxy[0] < 1000 or bxy[1] > 1230:
-                reward -= 50  # Own goal or out of bounds
-                #print(f"Goal received, Reward -50")
+            # # 4. Check goal
+            # if goal_x_range[0] <= bxy[0] <= goal_x_range[1] and goal_y_range[0] <= bxy[1] <= goal_y_range[1]:
+            #     reward += 100
+            # elif bxy[0] < 1000 or bxy[1] > 1230:
+            #     reward -= 50  # Own goal or out of bounds
+            #     #print(f"Goal received, Reward -50")
 
-            # 5. Slight penalty if ball is basically still
-            if ball_speed < 0.01:
-                reward -= 1
-                #print(f"Slow ball spet penalty: -1")
+            # # 5. Slight penalty if ball is basically still
+            # if ball_speed < 0.01:
+            #     reward -= 1
+            #     #print(f"Slow ball spet penalty: -1")
 
-            # Reward
-            print("Reward:", reward)
+            # # Reward 
+            # print("Reward:", reward)
 
             # Now pick the action for current step
             action, value, logp = self.compute_action(obs)
@@ -507,16 +542,7 @@ class PPOAgent:
         # Flatten and concatenate everything
         obs = np.concatenate(([bx, by, bvx, bvy], player_positions_array.flatten()), dtype=np.float32)
 
-        ### Colision with a ball
-        ball_radius=0.017
-        player_radius=0.03
-
-        for player in player_positions:
-            if player["team"] == "red":
-                distance = math.hypot(bx - player["position"][0], by - player["position"][1])
-                col = distance <= (ball_radius + player_radius)
-
-        return obs, col, (bx, by), (bx, by)
+        return obs, (bx, by), (bvx, bvy)
 
     def scale_to_motor_commands(self, action):
         """
