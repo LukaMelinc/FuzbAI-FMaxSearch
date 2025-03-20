@@ -190,13 +190,13 @@ class FuzbAISim:
     ### --- Function for spawning ball at specified location --- ###
     def ResetBallToLocation(self):
         # Randomize the drop position within specified ranges
-        y_range=(0.1, 0.6)      # Cela širina igrišča skorej
-        zone1 = (1.0, 1.2)      # Območje meta žoge - za palco 4
+        y_range = (0.3, 0.4) #(0.1, 0.6)      # Cela širina igrišča skorej
+        zone1 = (1.0, 1.1)      # Območje meta žoge - za palco 4 (1.0, 1.2)  
         zone2 = (0.7, 1.0)      # Območje meta žoge - za palco 3
         zone3 = (0.5, 0.7)      # Območje meta žoge - za palco 2
         zone4 = (0.2, 0.5)      # Območje meta žoge - za palco 1
 
-        zone_list = [zone1, zone2, zone3, zone4] # zone1, zone2, zone3, zone4
+        zone_list = [zone1, zone1, zone1, zone1] # zone1, zone2, zone3, zone4
         x_range = random.choice(zone_list)
 
         custom_x = random.uniform(*x_range)
@@ -210,16 +210,16 @@ class FuzbAISim:
         p.resetBasePositionAndOrientation(self.ball, custom_ball_pos, p.getQuaternionFromEuler([0, 0, 0]))
 
         # Random speed within the defined range
-        speed_range=(0.05, 0.2)
+        speed_range=(0.07, 0.1)
         speed = random.uniform(*speed_range)
 
         # Select a random string from the list
-        directions_list = ['left', 'diagonal-left-up', 'diagonal-left-down'] # vnesi željene smeri 
+        directions_list = ['left'] #, 'diagonal-left-up', 'diagonal-left-down'] # vnesi željene smeri 
         direction = random.choice(directions_list)
 
         # Define direction vectors (random da ne dobiš zmeraj 45deg)
-        rnd_vector_x = 0.001 #random.uniform(0.1, 1)
-        rnd_vector_y = 0.001 #random.uniform(0.1, 1)
+        rnd_vector_x = random.uniform(0.1, 1)
+        rnd_vector_y = random.uniform(0.1, 1)
         direction_vectors = {
             'left': [-rnd_vector_x, 0.0, 0.0],
             'right': [rnd_vector_x, 0.0, 0.0],
@@ -436,7 +436,7 @@ class FuzbAISim:
 
                     self.ResetBallToLocation()
                     self.round += 1
-                    print("Round:", self.round)
+                    #print("Round:", self.round)
 
 
                 angles = []

@@ -75,7 +75,7 @@ def detect_collision_and_reward(prev_ball_vx, current_ball_vx, ball_x, rod_posit
     # print(current_ball_vx)
     # print(ball_x)
     # Define the regions along the rods where collisions are checked
-    collision_regions = [(rod_x - 50, rod_x + 50) for rod_x in rod_positions]
+    collision_regions = [(rod_x - 80, rod_x + 80) for rod_x in rod_positions]
 
     # Check if the ball is within any of the collision regions
     for region in collision_regions:
@@ -131,7 +131,8 @@ class PPOBuffer:
     """
     A simple buffer to store trajectories for PPO.
     """
-    def __init__(self, obs_dim, act_dim, size, gamma=0.99, lam=0.95):
+    def __init__(self, obs_dim, act_dim, size, gamma=0.8, lam=0.95):
+        # večja lambda pomeni večjo varianco in bolj dolgotrajen trening
         self.obs_buf = np.zeros((size, obs_dim), dtype=np.float32)
         self.act_buf = np.zeros((size, act_dim), dtype=np.float32)
         self.adv_buf = np.zeros(size, dtype=np.float32)
@@ -218,7 +219,7 @@ class PPOAgent:
     def __init__(self,
                  obs_dim=70,         # ball = x, y, vx, vy; player = 2 x 11 x 3
                  act_dim=16,         # 4 rods × 4 numbers each
-                 hidden_size=128,
+                 hidden_size=1024,
                  steps_per_env=2048, # how many steps per iteration
                  gamma=0.99,
                  lam=0.95,
@@ -268,6 +269,7 @@ class PPOAgent:
         self.ep_reward = 0.0     # reward this episode
         self.last_obs = None     # store last observation
         self.episode_rewards = []
+        self.reward = 0
 
         # For training mode vs. inference mode
         self.training_enabled = True
@@ -394,8 +396,7 @@ class PPOAgent:
             if self.last_obs is not None:
                 # We have a previous observation; store the reward for that step
                 # until now. The reward must be computed from your environment logic:
-                reward = 0.0  # or update from your environment’s collision/score trackers
-                done   = False
+                reward = 10.0  # or update from your environment’s collision/score trackers
 
                 # We store (last_obs, act, rew, val, logp). But we need val & logp from last step.
                 # So typically you'd store them as soon as you pick them. For brevity, we skip that detail.
@@ -404,8 +405,9 @@ class PPOAgent:
                 # but store the (last_obs, last_act, reward, last_val, last_logp).
                 pass
 
-            reward = 0
-            goal_x_range = (1200, 1210)
+            reward = 10
+            goal_x_range = (1195, 1210)
+            goal_x_range_out = (0, 10)
             goal_y_range = (250, 450)
 
             # 1. Collision Reward
@@ -431,18 +433,18 @@ class PPOAgent:
                     #print(f"ball moving towards the goal, Reward: {directional_reward}")
                 else:
                     reward -= 10
-            else:
-                reward -= 5
+            # else:
+            #     reward -= 5
 
             # 3. Speed
             ball_speed = np.linalg.norm(ball_vector)
-            reward += ball_speed * 5
+            reward += ball_speed
             #print(f"Speed reward: {ball_speed}")
 
             # 4. Check goal
             if goal_x_range[0] <= bxy[0] <= goal_x_range[1] and goal_y_range[0] <= bxy[1] <= goal_y_range[1]:
                 reward += 100
-            elif bxy[0] < 1000 or bxy[1] > 1230:
+            elif goal_x_range_out[0] <= bxy[0] <= goal_x_range_out[1] and goal_y_range[0] <= bxy[1] <= goal_y_range[1]:
                 reward -= 50  # Own goal or out of bounds
                 #print(f"Goal received, Reward -50")
 
@@ -450,9 +452,11 @@ class PPOAgent:
             if ball_speed < 0.01:
                 reward -= 1
                 #print(f"Slow ball spet penalty: -1")
+            else:
+                reward += 3
 
             # Reward 
-            print("Reward:", reward)
+            #print("Reward:", reward)
 
             # Now pick the action for current step
             action, value, logp = self.compute_action(obs)
@@ -461,8 +465,9 @@ class PPOAgent:
             #self.buf.store(obs, action, reward, value, logp)
 
             if self.last_obs is not None:
-                self.buf.store(self.last_obs, self.last_action, reward, self.last_val, self.last_logp)
+                self.buf.store(self.last_obs, self.last_action, self.reward, self.last_val, self.last_logp)
             
+            self.reward = reward
             self.last_action = action
             self.last_val = value
             self.last_logp = logp
@@ -571,7 +576,7 @@ class PPOAgent:
 
             # Example scaling:
             rot_target   = 0.8 * rot_target_raw     # we only want to rotate between -0.8..+0.8
-            rot_velocity = 0.5 * (rot_speed_raw+1)/2  # scale [-1,1]→[0,1], then multiply by max
+            rot_velocity = 0.5 * (rot_speed_raw+1)/8  # scale [-1,1]→[0,1], then multiply by max
             trans_target = 0.5 * ((trans_target_raw+1)/2)  # scale [-1,1]→[0,1], you might want full 0..1
             trans_velocity = 1.0 * (trans_speed_raw+1)/2   # scale [-1,1]→[0,1]
 
