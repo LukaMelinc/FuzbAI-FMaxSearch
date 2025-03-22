@@ -360,8 +360,8 @@ class FuzbAISim:
         p.resetDebugVisualizerCamera(cameraDistance=1, cameraYaw=0,cameraPitch=-80, cameraTargetPosition=[0.72,0.375,0])
 
         # Enable realtime simulation
-        p.setRealTimeSimulation(1)
-        #p.setTimeStep(0.002)  # stability
+        p.setRealTimeSimulation(1)      # the argument represents the one second in the sim corresponds to real second
+        #p.setTimeStep(0.002)  # stability (500x per second)
         #p.setTimeStep(1/200) # Not working with realtime simulation
 
     def run(self):

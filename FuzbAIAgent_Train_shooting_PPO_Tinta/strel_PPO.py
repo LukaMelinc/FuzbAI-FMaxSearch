@@ -27,7 +27,6 @@ def send_motor_commands(cmds):
 
 
 def calculate_player_positions_and_angles(camera, geometry):
-
     field = geometry["field"]
     rods = geometry["rods"]
     player_positions = []
@@ -75,14 +74,16 @@ def detect_collision_and_reward(prev_ball_vx, current_ball_vx, ball_x, rod_posit
     # print(current_ball_vx)
     # print(ball_x)
     # Define the regions along the rods where collisions are checked
+    #print(current_ball_vx)
     collision_regions = [(rod_x - 80, rod_x + 80) for rod_x in rod_positions]
 
     # Check if the ball is within any of the collision regions
     for region in collision_regions:
         if region[0] <= ball_x <= region[1]:
             # Detect if there is an increase in the ball's speed
-            if abs(abs(current_ball_vx) - abs(prev_ball_vx)) > 0.2:
+            if abs(abs(current_ball_vx) - abs(prev_ball_vx)) > 0.05:
                 print("Colision")
+                print("------")
                 # Determine the direction of the speed increase
                 if current_ball_vx > prev_ball_vx:
                     # Positive increase in speed (towards opponent's goal)
@@ -108,16 +109,16 @@ class ActorCriticNet(nn.Module):
         self.actor = nn.Sequential(
             nn.Linear(obs_dim, hidden_size),
             nn.ReLU(),
-            nn.Dropout(p=0.5),  # Add dropout
+            nn.Dropout(p=0.25),  # Add dropout
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Dropout(p=0.5),  # Add dropout
+            nn.Dropout(p=0.25),  # Add dropout
             nn.Linear(hidden_size, act_dim)
         )
         self.critic = nn.Sequential(
             nn.Linear(obs_dim, hidden_size),
             nn.ReLU(),
-            nn.Dropout(p=0.5),  # Add dropout
+            nn.Dropout(p=0.25),  # Add dropout
             nn.Linear(hidden_size, 1)
         )
 
@@ -228,11 +229,13 @@ class PPOAgent:
                  train_iters=10,
                  target_kl=0.01,
                  save_model_every=100,   # save every N episodes
-                 model_save_path="ppo_foos.pth"):
+                 model_save_path="ppo_foos.pth",
+                 l2_lambda=5e-4):       # L2 regularization strength
         self.obs_dim = obs_dim
         self.act_dim = act_dim
         self.save_model_every = save_model_every
         self.model_save_path = model_save_path
+        self.l2_lambda = l2_lambda  # L2 regularization strength
 
         self.prev_ball = 0
 
@@ -241,19 +244,18 @@ class PPOAgent:
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print("Using device:", self.device)
-        
+
         # Actor-Critic network
         self.ac = ActorCriticNet(obs_dim, act_dim, hidden_size)
         self.ac.to(self.device)
-        
+
         # Separate or shared log_std for continuous actions
-        #self.log_std = nn.Parameter(-0.5*torch.ones(act_dim, dtype=torch.float32))
         self.log_std = nn.Parameter(-1*torch.zeros(act_dim, dtype=torch.float32, device=self.device), requires_grad=True)
         self.log_std = self.log_std.to(self.device)
 
         # Optimizer
         self.optimizer = optim.Adam(list(self.ac.parameters()) + [self.log_std], lr=lr)
-        
+
         # PPO hyperparameters
         self.clip_ratio = clip_ratio
         self.train_iters = train_iters
@@ -294,7 +296,6 @@ class PPOAgent:
         Given a single observation (numpy array),
         return an action in [-1,1], value estimate, and log probability.
         """
-        #obs_t = torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)
         obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
         mean, value_t = self.ac(obs_t)
         log_std = self.log_std.unsqueeze(0).expand_as(mean)
@@ -309,9 +310,7 @@ class PPOAgent:
         value  = value_t.detach().cpu().numpy()[0,0]
         logp   = logp.detach().cpu().numpy()[0]
 
-        # Action in [-1,1], but the raw Gaussian might exceed that. 
-        # We can clamp or just let it be. Usually we just let it be and clamp downstream.
-        # We'll clamp here for safety:
+        # Action in [-1,1], but the raw Gaussian might exceed that.
         action = np.clip(action, -1.0, 1.0)
         return action, value, logp
 
@@ -326,43 +325,46 @@ class PPOAgent:
         adv = data["adv"].to(self.device)
         logp_old = data["logp"].to(self.device)
 
-        #obs, act, ret, adv, logp_old = data['obs'], data['act'], data['ret'], data['adv'], data['logp']
-
         for i in range(self.train_iters):
             mean, value = self.ac(obs)
             log_std = self.log_std.expand_as(mean)
             std = torch.exp(log_std)
 
-            # compute logp for the new actions
+            # Compute log probability for the new actions
             logp_pi = mlp_gaussian_likelihood(act, mean, log_std)
 
-            # ratio = exp(logp_new - logp_old)
+            # Ratio for surrogate loss
             ratio = torch.exp(logp_pi - logp_old)
 
-            # clipped surrogate
+            # Clipped surrogate objective
             clip_adv = torch.where(
                 ratio > (1 + self.clip_ratio),
                 adv,
                 torch.where(ratio < (1 - self.clip_ratio), adv, adv)
-            )  # note: the typical PPO formula is: min(ratio*adv, clip(ratio,1±eps)*adv)
+            )
 
             obj = ratio * adv
             clipped_obj = torch.clamp(ratio, 1 - self.clip_ratio, 1 + self.clip_ratio) * adv
 
             loss_pi = -torch.mean(torch.min(obj, clipped_obj))
             loss_vf = torch.mean((ret - value.squeeze())**2)
-            loss = loss_pi + 0.5*loss_vf  # typical weighting
+
+            # Calculate L2 regularization
+            l2_norm = sum(p.pow(2.0).sum() for p in self.ac.parameters())
+            loss = loss_pi + 0.5 * loss_vf + self.l2_lambda * l2_norm
 
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
 
-            # approximate KL
+            # Approximate KL divergence
             kl = torch.mean(logp_old - logp_pi).item()
             if kl > 1.5 * self.target_kl:
-                # early stopping
                 print(f"[PPO] Early stopping at iter={i} due to reaching max kl.")
                 break
+
+    # The rest of your class remains unchanged...
+
 
     # ------------------------------------------------------------------
     # The main interface: "process_data(camera)" for each step in the sim
