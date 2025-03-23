@@ -545,7 +545,7 @@ class PPOAgent:
             else:
                 _ = detect_y_axis_changes(bxy[1], self.prev_vy, vxy[1])
 
-            self.prev_vy = bxy[1]
+            self.prev_vy = vxy[1]
             # Reward
             #print("Reward:", reward)
 
