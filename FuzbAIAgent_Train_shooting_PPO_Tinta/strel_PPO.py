@@ -274,9 +274,13 @@ class PPOAgent:
                  lr=3e-4,
                  train_iters=10,
                  target_kl=0.01,
+                 delay_step=2,
                  save_model_every=100,   # save every N episodes
                  model_save_path="ppo_foos.pth",
-                 l2_lambda=5e-4):       # L2 regularization strength
+                 l2_lambda=5e-4):
+                        # L2 regularization strength
+        
+        
         self.obs_dim = obs_dim
         self.act_dim = act_dim
         self.save_model_every = save_model_every
@@ -286,6 +290,14 @@ class PPOAgent:
         self.prev_ball = 0
         self.prev_vy = 0
         self.active_regions = None  # Initialize active_regions
+
+        self.delay_steps = delay_step
+        self.obs_buffer = [None] * self.delay_steps
+        self.action_buffer = [None] * self.delay_steps
+        self.reward_buffer = [None] * self.delay_steps
+        self.value_buffer = [None] * self.delay_steps
+        self.logp_buffer = [None] * self.delay_steps
+
 
         with open('geometry.json') as f:
             self.geometry = json.load(f)
@@ -418,128 +430,57 @@ class PPOAgent:
     # The main interface: "process_data(camera)" for each step in the sim
     # ------------------------------------------------------------------
     def process_data(self, camera):
-        """
-        Called by the simulator each step to get motor commands.
-
-        1) Convert camera data to an observation array.
-        2) If training, either handle the previous step's transition or store the new one.
-        3) Compute an action using policy.
-        4) Convert that action into final motor commands (scaled).
-        5) Return the list of dicts for each rod.
-        """
-        # 1) Make an observation (example: ball pos, velocity, rod positions, rod angles).
+        # Extract the current observation
         obs, bxy, vxy = self.extract_observation(camera)
 
-        # If we are in the middle of an episode and have a 'last_obs', we can store
-        # the transition from the previous step. But we also need the reward from the
-        # previous step. That means you must keep track of reward signals externally,
-        # or incorporate them here if you have the info. For simplicity, we’ll do it
-        # in a separate function call "update_on_step(...)" that you can call from your
-        # simulator. (Alternatively, store partial transitions here, etc.)
-        # (See "reward_function(...)" placeholder below for how to compute it.)
+        # Store the current observation in the buffer
+        self.obs_buffer.append(obs)
+        self.obs_buffer.pop(0)
 
         if not self.training_enabled:
             # If not training, just run the policy forward pass
-            action, _, _ = self.compute_action(obs)
+            action, _, _ = self.compute_action(self.obs_buffer[-1])
         else:
             # Training: collect the step
             if self.last_obs is not None:
                 # We have a previous observation; store the reward for that step
-                # until now. The reward must be computed from your environment logic:
                 reward = 10.0  # or update from your environment’s collision/score trackers
 
-                # We store (last_obs, act, rew, val, logp). But we need val & logp from last step.
-                # So typically you'd store them as soon as you pick them. For brevity, we skip that detail.
-                # You can do so with an internal "self.prev_val" etc.
-                # Or if you prefer, do a short-circuit approach: pick the action for next step,
-                # but store the (last_obs, last_act, reward, last_val, last_logp).
-                pass
+                # Store the current action, value, and logp in the buffer
+                self.action_buffer.append(self.last_action)
+                self.action_buffer.pop(0)
+                self.value_buffer.append(self.last_val)
+                self.value_buffer.pop(0)
+                self.logp_buffer.append(self.last_logp)
+                self.logp_buffer.pop(0)
 
-            reward = 10
-            goal_x_range = (1195, 1210)
-            goal_x_range_out = (0, 10)
-            goal_y_range = (250, 450)
+                # Store the reward in the buffer
+                self.reward_buffer.append(reward)
+                self.reward_buffer.pop(0)
 
-            # 1. Collision Reward
-            if self.prev_ball == 0:
-                pass
-            else:
-                collision_reward, self.active_regions = detect_collision_and_reward(
-                    vxy[1], self.prev_ball, vxy[0], bxy[0], self.active_regions
-                )
-                reward += collision_reward
+                # Use the delayed reward for training
+                delayed_reward = self.reward_buffer[-1]
 
-            self.prev_ball = vxy[0]  # Save the last ball speed
+                # Store the transition in the buffer
+                self.buf.store(self.obs_buffer[-2], self.action_buffer[-2], delayed_reward, self.value_buffer[-2], self.logp_buffer[-2])
 
-            # 2. Direction towards the goal
-            goal_center = (1205, 350)
-            ball_vector = np.array([vxy[0], vxy[1]])
-            direction_vector = np.array([goal_center[0] - bxy[0], goal_center[1] - bxy[1]])
+            # Compute the action for the current step
+            action, value, logp = self.compute_action(self.obs_buffer[-1])
 
-            if np.linalg.norm(ball_vector) > 0:
-                cosine_similarity = np.dot(ball_vector, direction_vector) / (
-                    np.linalg.norm(ball_vector) * np.linalg.norm(direction_vector)
-                )
-                if cosine_similarity > 0:
-                    directional_reward = cosine_similarity * 30
-                    reward += directional_reward
-                    #print(f"ball moving towards the goal, Reward: {directional_reward}")
-                else:
-                    reward -= 10
-            # else:
-            #     reward -= 5
-
-            # 3. Speed
-            ball_speed = np.linalg.norm(ball_vector)
-            reward += ball_speed
-            #print(f"Speed reward: {ball_speed}")
-
-            # 4. Check goal
-            if goal_x_range[0] <= bxy[0] <= goal_x_range[1] and goal_y_range[0] <= bxy[1] <= goal_y_range[1]:
-                reward += 100
-            elif goal_x_range_out[0] <= bxy[0] <= goal_x_range_out[1] and goal_y_range[0] <= bxy[1] <= goal_y_range[1]:
-                reward -= 50  # Own goal or out of bounds
-                #print(f"Goal received, Reward -50")
-
-            # 5. Slight penalty if ball is basically still
-            if ball_speed < 0.01:
-                reward -= 1
-                #print(f"Slow ball spet penalty: -1")
-            else:
-                reward += 3
-
-            if self.prev_vy == 0:
-                pass
-            else:
-                _ = detect_y_axis_changes(bxy[1], self.prev_vy, vxy[1])
-
-            self.prev_vy = vxy[1]
-            # Reward
-            #print("Reward:", reward)
-
-            # Now pick the action for current step
-            action, value, logp = self.compute_action(obs)
-
-            # Typically you'd store that in your buffer *immediately*, e.g.:
-            #self.buf.store(obs, action, reward, value, logp)
-
-            if self.last_obs is not None:
-                self.buf.store(self.last_obs, self.last_action, self.reward, self.last_val, self.last_logp)
-
-            self.reward = reward
+            # Store the current action, value, and logp for the next step
             self.last_action = action
             self.last_val = value
             self.last_logp = logp
 
         # Keep track for next step
-        self.last_obs = obs
+        self.last_obs = self.obs_buffer[-1]
         self.current_step += 1
         self.ep_reward += 0.0  # add reward from this step if you have it
 
-        # 2) Scale the raw action in [-1,1] to your motor commands
+        # Scale the raw action in [-1,1] to your motor commands
         commands = self.scale_to_motor_commands(action)
 
-        # 3) Return the motor commands so the simulator can drive the rods
+        # Return the motor commands so the simulator can drive the rods
         return commands
 
 
@@ -650,10 +591,6 @@ class PPOAgent:
         return commands
 
     def finish_episode(self, last_value=0):
-        """
-        Call this when the episode (i.e. round) ends so we can finish
-        advantage calculation, do a PPO update, etc.
-        """
         self.episode_count += 1
         # Let the buffer compute GAE, returns, etc.
         self.buf.finish_path(last_val=last_value)
@@ -667,6 +604,13 @@ class PPOAgent:
         self.current_step = 0
         self.ep_reward = 0.0
         self.last_obs = None
+
+        # Clear the buffers
+        self.obs_buffer = [None] * self.delay_steps
+        self.action_buffer = [None] * self.delay_steps
+        self.reward_buffer = [None] * self.delay_steps
+        self.value_buffer = [None] * self.delay_steps
+        self.logp_buffer = [None] * self.delay_steps
 
         # Save model every N episodes
         if self.episode_count % self.save_model_every == 0:
