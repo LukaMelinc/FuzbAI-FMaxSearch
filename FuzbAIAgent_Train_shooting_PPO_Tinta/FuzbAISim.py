@@ -188,15 +188,17 @@ class FuzbAISim:
 
 
     ### --- Function for spawning ball at specified location --- ###
+    import random
+
     def ResetBallToLocation(self):
         # Randomize the drop position within specified ranges
-        y_range = (0.3, 0.4) #(0.1, 0.6)      # Cela širina igrišča skorej
-        zone1 = (1.0, 1.1)      # Območje meta žoge - za palco 4 (1.0, 1.2)  
-        zone2 = (0.7, 1.0)      # Območje meta žoge - za palco 3
-        zone3 = (0.5, 0.7)      # Območje meta žoge - za palco 2
-        zone4 = (0.2, 0.5)      # Območje meta žoge - za palco 1
+        y_range = (0.3, 0.4)  # Full width of the field
+        zone1 = (1.0, 1.1)    # Target area for zone 4
+        zone2 = (0.7, 1.0)    # Target area for zone 3
+        zone3 = (0.5, 0.7)    # Target area for zone 2
+        zone4 = (0.2, 0.5)    # Target area for zone 1
 
-        zone_list = [zone1, zone1, zone1, zone1] # zone1, zone2, zone3, zone4
+        zone_list = [zone1, zone2, zone3, zone4]  # Include all zones
         x_range = random.choice(zone_list)
 
         custom_x = random.uniform(*x_range)
@@ -206,18 +208,17 @@ class FuzbAISim:
         custom_ball_pos = [custom_x, custom_y, custom_z]
 
         # Reset the ball to the randomized safe location
-        #print(f"Dropping ball at position: {custom_ball_pos}")
         p.resetBasePositionAndOrientation(self.ball, custom_ball_pos, p.getQuaternionFromEuler([0, 0, 0]))
 
         # Random speed within the defined range
-        speed_range=(0.07, 0.1)
+        speed_range = (0.07, 0.1)
         speed = random.uniform(*speed_range)
 
-        # Select a random string from the list
-        directions_list = ['left'] #, 'diagonal-left-up', 'diagonal-left-down'] # vnesi željene smeri 
+        # Select a random direction from the list
+        directions_list = ['left', 'right', 'up', 'down', 'diagonal-right-up', 'diagonal-left-up', 'diagonal-right-down', 'diagonal-left-down']
         direction = random.choice(directions_list)
 
-        # Define direction vectors (random da ne dobiš zmeraj 45deg)
+        # Define direction vectors
         rnd_vector_x = random.uniform(0.1, 1)
         rnd_vector_y = random.uniform(0.1, 1)
         direction_vectors = {
@@ -239,10 +240,8 @@ class FuzbAISim:
         # Apply velocity to the ball
         p.resetBaseVelocity(self.ball, linearVelocity=velocity, angularVelocity=[0, 0, 0])
 
-        #print(f"Ball thrown towards {direction} with velocity: {velocity}")
-
         self.showRound()
-        #self.nudgeBall() # izniči efekt zgornje kode
+
 
 
 

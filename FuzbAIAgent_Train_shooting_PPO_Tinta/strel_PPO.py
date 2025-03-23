@@ -67,35 +67,81 @@ def calculate_player_positions_and_angles(camera, geometry):
     return player_positions
 
 
-def detect_collision_and_reward(prev_ball_vx, current_ball_vx, ball_x, rod_positions=[80, 230, 530, 830]):
-        
-    # print("------------------------")
-    # print(prev_ball_vx)
-    # print(current_ball_vx)
-    # print(ball_x)
+
+def detect_collision_and_reward(yv, prev_ball_vx, current_ball_vx, ball_x, active_regions=None):
+    
+   # print("-------")
+   # print(prev_ball_vx)
+   # print(current_ball_vx)
+   # print(yv)
+    
+    
+    rod_positions=[80, 230, 530, 830]
+    if active_regions is None:
+        active_regions = {i: {"active": False, "rewarded": False} for i in range(len(rod_positions))}
+
     # Define the regions along the rods where collisions are checked
-    #print(current_ball_vx)
     collision_regions = [(rod_x - 80, rod_x + 80) for rod_x in rod_positions]
 
     # Check if the ball is within any of the collision regions
-    for region in collision_regions:
+    for i, region in enumerate(collision_regions):
         if region[0] <= ball_x <= region[1]:
             # Detect if there is an increase in the ball's speed
             if abs(abs(current_ball_vx) - abs(prev_ball_vx)) > 0.05:
-                print("Colision")
-                print("------")
-                # Determine the direction of the speed increase
-                if current_ball_vx > prev_ball_vx:
-                    # Positive increase in speed (towards opponent's goal)
-                    #print("Colision!")
-                    return 5.0  # Positive reward
-                else:
-                    # Negative increase in speed (towards own goal)
-                    #print("Nazaj!")
-                    return -2.0  # Negative reward
+                if not active_regions[i]["active"]:
+                    # Ball entered the region
+                    active_regions[i]["active"] = True
+                    active_regions[i]["rewarded"] = False
+
+                if not active_regions[i]["rewarded"]:
+                 #   print("Collision detected in region:", region)
+                    # Determine the direction of the speed increase
+                    if current_ball_vx > prev_ball_vx:
+                        # Positive increase in speed (towards opponent's goal)
+                        active_regions[i]["rewarded"] = True
+                        return 5.0, active_regions  # Positive reward
+                    else:
+                        # Negative increase in speed (towards own goal)
+                        active_regions[i]["rewarded"] = True
+                        return -2.0, active_regions  # Negative reward
+
+    # Reset active regions if the ball is not in proximity
+    for i, region in enumerate(collision_regions):
+        if not (region[0] <= ball_x <= region[1]):
+            active_regions[i]["active"] = False
 
     # No collision detected
-    return 0.0
+    return 0.0, active_regions
+
+
+# SAM ZA PREVERIT, ČE JE DELAY 2 - POTEM SE GA LAHKO ZAKOMENTIRA
+def detect_y_axis_changes(current_y, prev_vy, current_vy, threshold=0.05):
+
+    print("-------------")
+    #print(f"Previous y position: {prev_y}")
+    print(f"Current y position: {current_y}")
+    print("......")
+    print(f"Previous y speed: {prev_vy}")
+    print(f"Current y speed: {current_vy}")
+   
+    change_detected = False
+    #reward = 0.0
+
+    """ # Check for significant changes in y-axis position
+    if abs(current_y - prev_y) > threshold:
+        change_detected = True
+        reward += 2.0  # Positive reward for significant position change"""
+
+    # Check for significant changes in y-axis velocity
+    if abs(current_vy - prev_vy) > threshold:
+        change_detected = True
+        #reward += 2.0  # Positive reward for significant velocity change
+
+    if (prev_vy > 0 and current_vy < 0) or (prev_vy < 0 and current_vy > 0):
+            print("Direction of y-axis velocity changed!")
+           # reward += 3.0  # Additional reward for change in direction
+
+
 
 
 
@@ -104,7 +150,7 @@ class ActorCriticNet(nn.Module):
     A simple Actor-Critic network.
     It outputs both action_mean (the policy) and value (the critic).
     """
-    def __init__(self, obs_dim, act_dim, hidden_size=128):
+    def __init__(self, obs_dim, act_dim, hidden_size=512):
         super().__init__()
         self.actor = nn.Sequential(
             nn.Linear(obs_dim, hidden_size),
@@ -238,6 +284,8 @@ class PPOAgent:
         self.l2_lambda = l2_lambda  # L2 regularization strength
 
         self.prev_ball = 0
+        self.prev_vy = 0
+        self.active_regions = None  # Initialize active_regions
 
         with open('geometry.json') as f:
             self.geometry = json.load(f)
@@ -402,8 +450,8 @@ class PPOAgent:
 
                 # We store (last_obs, act, rew, val, logp). But we need val & logp from last step.
                 # So typically you'd store them as soon as you pick them. For brevity, we skip that detail.
-                # You can do so with an internal "self.prev_val" etc.  
-                # Or if you prefer, do a short-circuit approach: pick the action for next step, 
+                # You can do so with an internal "self.prev_val" etc.
+                # Or if you prefer, do a short-circuit approach: pick the action for next step,
                 # but store the (last_obs, last_act, reward, last_val, last_logp).
                 pass
 
@@ -416,9 +464,12 @@ class PPOAgent:
             if self.prev_ball == 0:
                 pass
             else:
-                reward += detect_collision_and_reward(self.prev_ball, vxy[0], bxy[0])
-            
-            self.prev_ball = vxy[0] # Save the last ball speed
+                collision_reward, self.active_regions = detect_collision_and_reward(
+                    vxy[1], self.prev_ball, vxy[0], bxy[0], self.active_regions
+                )
+                reward += collision_reward
+
+            self.prev_ball = vxy[0]  # Save the last ball speed
 
             # 2. Direction towards the goal
             goal_center = (1205, 350)
@@ -457,7 +508,13 @@ class PPOAgent:
             else:
                 reward += 3
 
-            # Reward 
+            if self.prev_vy == 0:
+                pass
+            else:
+                _ = detect_y_axis_changes(bxy[1], self.prev_vy, vxy[1])
+
+            self.prev_vy = vxy[1]
+            # Reward
             #print("Reward:", reward)
 
             # Now pick the action for current step
@@ -468,13 +525,11 @@ class PPOAgent:
 
             if self.last_obs is not None:
                 self.buf.store(self.last_obs, self.last_action, self.reward, self.last_val, self.last_logp)
-            
+
             self.reward = reward
             self.last_action = action
             self.last_val = value
             self.last_logp = logp
-
-
 
         # Keep track for next step
         self.last_obs = obs
@@ -617,28 +672,6 @@ class PPOAgent:
         if self.episode_count % self.save_model_every == 0:
             self.save_model()
 
-    def reward_function(self, collision=False, goal_scored=False, own_goal=False, ball_dir_bonus=0.0):
-        """
-        Example reward shaping logic.  You or the simulator can call this each step
-        or after collisions, etc.  Then feed the result to the buffer store(...).
-        
-        Some ideas from your request:
-          - If ball collided with red player => +R
-          - If ball is traveling toward the opponent => +r
-          - If scored => big +R
-          - If lost => big negative
-          - Keep rods' legs down => small positive, etc.
-        """
-        reward = 0.0
-        if collision:
-            reward += 0.1
-        reward += ball_dir_bonus
-        if goal_scored:
-            reward += 5.0
-        if own_goal:
-            reward -= 5.0
-        # etc.
-        return reward
 
 # --------------------------------------------
 # If you want to run standalone:
