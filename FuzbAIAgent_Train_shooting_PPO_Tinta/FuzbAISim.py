@@ -192,7 +192,7 @@ class FuzbAISim:
 
 
     ### --- Function for spawning ball at specified location --- ###
-    def ResetBallToLocation(self):
+    """def ResetBallToLocation(self):
         # Randomize the drop position within specified ranges
         y_range = (0.3, 0.4) #(0.1, 0.6)      # Cela širina igrišča skorej
         zone1 = (1.0, 1.1)      # Območje meta žoge - za palco 4 (1.0, 1.2)  
@@ -244,6 +244,45 @@ class FuzbAISim:
         p.resetBaseVelocity(self.ball, linearVelocity=velocity, angularVelocity=[0, 0, 0])
 
         #print(f"Ball thrown towards {direction} with velocity: {velocity}")
+
+        self.showRound()
+        #self.nudgeBall() # izniči efekt zgornje kode"""
+
+
+    def ResetBallToLocation(self):
+        # Randomize the drop position within specified ranges
+        y_range = (0.3, 0.4)  # Cela širina igrišča skorej
+        zone1 = (1.0, 1.1)    # Območje meta žoge - za palco 4 (1.0, 1.2)
+        zone2 = (0.7, 1.0)    # Območje meta žoge - za palco 3
+        zone3 = (0.5, 0.7)    # Območje meta žoge - za palco 2
+        zone4 = (0.2, 0.5)    # Območje meta žoge - za palco 1
+
+        zone_list = [zone1, zone1, zone1, zone1]  # zone1, zone2, zone3, zone4
+        x_range = random.choice(zone_list)
+
+        custom_x = random.uniform(*x_range)
+        custom_y = random.uniform(*y_range)
+        custom_z = 0.25  # Ensure it's above the table to avoid collision
+
+        custom_ball_pos = [custom_x, custom_y, custom_z]
+
+        # Reset the ball to the randomized safe location
+        p.resetBasePositionAndOrientation(self.ball, custom_ball_pos, p.getQuaternionFromEuler([0, 0, 0]))
+
+        # Set a constant speed for the downward direction
+        speed = 0.2  # You can adjust this value as needed
+
+        # Define the downward direction vector
+        velocity_vector = [0.0, -1.0, 0.0]
+
+        # Normalize the velocity vector and apply the speed
+        norm = (velocity_vector[0]**2 + velocity_vector[1]**2) ** 0.5
+        velocity = [v / norm * speed for v in velocity_vector]
+
+        # Apply velocity to the ball
+        p.resetBaseVelocity(self.ball, linearVelocity=velocity, angularVelocity=[0, 0, 0])
+
+        #print(f"Ball thrown downward with velocity: {velocity}")
 
         self.showRound()
         #self.nudgeBall() # izniči efekt zgornje kode

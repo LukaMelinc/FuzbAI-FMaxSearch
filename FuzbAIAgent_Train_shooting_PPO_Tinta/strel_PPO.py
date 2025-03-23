@@ -101,10 +101,10 @@ def calculate_player_positions_and_angles(camera, geometry):
 
 def detect_collision_and_reward(yv, prev_ball_vx, current_ball_vx, ball_x, active_regions=None):
     
-    print("-------")
-    print(prev_ball_vx)
-    print(current_ball_vx)
-    print(yv)
+   # print("-------")
+   # print(prev_ball_vx)
+   # print(current_ball_vx)
+   # print(yv)
     
     
     rod_positions=[80, 230, 530, 830]
@@ -125,7 +125,7 @@ def detect_collision_and_reward(yv, prev_ball_vx, current_ball_vx, ball_x, activ
                     active_regions[i]["rewarded"] = False
 
                 if not active_regions[i]["rewarded"]:
-                    print("Collision detected in region:", region)
+                 #   print("Collision detected in region:", region)
                     # Determine the direction of the speed increase
                     if current_ball_vx > prev_ball_vx:
                         # Positive increase in speed (towards opponent's goal)
@@ -143,6 +143,39 @@ def detect_collision_and_reward(yv, prev_ball_vx, current_ball_vx, ball_x, activ
 
     # No collision detected
     return 0.0, active_regions
+
+def detect_y_axis_changes(current_y, prev_vy, current_vy, threshold=0.05):
+
+    print("-------------")
+    #print(f"Previous y position: {prev_y}")
+    print(f"Current y position: {current_y}")
+    print("......")
+    print(f"Previous y speed: {prev_vy}")
+    print(f"Current y speed: {current_vy}")
+   
+    change_detected = False
+    reward = 0.0
+
+    """ # Check for significant changes in y-axis position
+    if abs(current_y - prev_y) > threshold:
+        change_detected = True
+        reward += 2.0  # Positive reward for significant position change"""
+
+    # Check for significant changes in y-axis velocity
+    if abs(current_vy - prev_vy) > threshold:
+        change_detected = True
+        reward += 2.0  # Positive reward for significant velocity change
+
+    if (prev_vy > 0 and current_vy < 0) or (prev_vy < 0 and current_vy > 0):
+            print("Direction of y-axis velocity changed!")
+           # reward += 3.0  # Additional reward for change in direction
+
+    
+
+
+
+    return reward
+
 
 
 
@@ -283,6 +316,7 @@ class PPOAgent:
         self.l2_lambda = l2_lambda  # L2 regularization strength
 
         self.prev_ball = 0
+        self.prev_vy = 0
         self.active_regions = None  # Initialize active_regions
 
         with open('geometry.json') as f:
@@ -506,6 +540,12 @@ class PPOAgent:
             else:
                 reward += 3
 
+            if self.prev_vy == 0:
+                pass
+            else:
+                _ = detect_y_axis_changes(bxy[1], self.prev_vy, vxy[1])
+
+            self.prev_vy = bxy[1]
             # Reward
             #print("Reward:", reward)
 
