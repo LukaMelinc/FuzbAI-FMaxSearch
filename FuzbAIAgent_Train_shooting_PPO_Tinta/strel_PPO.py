@@ -290,6 +290,8 @@ class PPOAgent:
         self.prev_ball = 0
         self.prev_vy = 0
         self.active_regions = None  # Initialize active_regions
+        self.MAX_EPISODE_STEPS = 100
+        self.episode_steps = 0
 
         self.delay_steps = delay_step
         self.obs_buffer = [None] * self.delay_steps
@@ -467,15 +469,22 @@ class PPOAgent:
             # Compute the action for the current step
             action, value, logp = self.compute_action(self.obs_buffer[-1])
 
+            if self.episode_steps >= self.MAX_EPISODE_STEPS:
+                print("Treniram")
+                self.finish_episode()
+                self.episode_steps = 0
+            else:
+                self.episode_steps += 1
+
             # Store the current action, value, and logp for the next step
             self.last_action = action
             self.last_val = value
             self.last_logp = logp
 
-        # Keep track for next step
-        self.last_obs = self.obs_buffer[-1]
-        self.current_step += 1
-        self.ep_reward += 0.0  # add reward from this step if you have it
+            # Keep track for next step
+            self.last_obs = self.obs_buffer[-1]
+            self.current_step += 1
+            self.ep_reward += 0.0  # add reward from this step if you have it
 
         # Scale the raw action in [-1,1] to your motor commands
         commands = self.scale_to_motor_commands(action)
@@ -597,7 +606,9 @@ class PPOAgent:
         self.episode_rewards.append(self.ep_reward)
 
         # If we filled our buffer, we do a PPO update
+        print("Buffer:", self.buf.ptr)
         if self.buf.ptr == self.buf.max_size:
+            print("Buffer full!")
             self.train_on_buffer()
 
         # Housekeeping
@@ -606,11 +617,11 @@ class PPOAgent:
         self.last_obs = None
 
         # Clear the buffers
-        self.obs_buffer = [None] * self.delay_steps
-        self.action_buffer = [None] * self.delay_steps
-        self.reward_buffer = [None] * self.delay_steps
-        self.value_buffer = [None] * self.delay_steps
-        self.logp_buffer = [None] * self.delay_steps
+        # self.obs_buffer = [None] * self.delay_steps
+        # self.action_buffer = [None] * self.delay_steps
+        # self.reward_buffer = [None] * self.delay_steps
+        # self.value_buffer = [None] * self.delay_steps
+        # self.logp_buffer = [None] * self.delay_steps
 
         # Save model every N episodes
         if self.episode_count % self.save_model_every == 0:
