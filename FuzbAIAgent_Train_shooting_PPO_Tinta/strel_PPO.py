@@ -206,6 +206,23 @@ def reward_movement(ball_vel, ball_loc, player_data):
             else:
                 reward += rwd
 
+
+    # 7. Slight reward for distance between player and ball
+    min_distance = float("inf")
+
+    for player in player_data:
+        team_code = player[0]
+        if math.isclose(team_code, 0.0, abs_tol=1e-6):
+            dx = player[1] - ball_loc[0]
+            dy = player[2] - ball_loc[1]
+            dist = math.sqrt(dx**2 + dy**2)
+            if dist < min_distance:
+                min_distance = dist
+
+    # Use the closest distance to the ball to compute reward
+    # You can adjust the reward scaling as needed
+    reward += max(0, 100 - min_distance)  # Smaller distance = higher reward
+
     return reward  
 
 
@@ -330,12 +347,12 @@ class PPOAgent:
     def __init__(self,
                  obs_dim=92,         # ball = x, y, vx, vy; player = 2 x 11 x 3
                  act_dim=16,         # 4 rods × 4 numbers each
-                 hidden_size=256,
-                 steps_per_env=512,#2048, # how many steps per iteration
+                 hidden_size=512,
+                 steps_per_env=256,#2048, # how many steps per iteration
                  gamma=0.99,
                  lam=0.95,
                  clip_ratio=0.2,
-                 lr=3e-4,
+                 lr=1e-4,
                  train_iters=2,
                  target_kl=0.01,
                  delay_step=2,
@@ -451,6 +468,9 @@ class PPOAgent:
         adv = data["adv"].to(self.device)
         logp_old = data["logp"].to(self.device)
 
+        if not torch.isfinite(logp_old).all():
+            print("NaN in logp_old!")
+
         for i in range(self.train_iters):
             mean, value = self.ac(obs)
             log_std = self.log_std.expand_as(mean)
@@ -486,9 +506,9 @@ class PPOAgent:
 
             # Approximate KL divergence
             kl = torch.mean(logp_old - logp_pi).item()
-            # if kl > 1.5 * self.target_kl:
-            #     print(f"[PPO] Early stopping at iter={i} due to reaching max kl.")
-            #     break
+            if kl > 1.5 * self.target_kl:
+                print(f"[PPO] Early stopping at iter={i} due to reaching max kl.")
+                break
 
 
     # ------------------------------------------------------------------
@@ -513,6 +533,8 @@ class PPOAgent:
                 reward, self.active_regions = detect_collision_and_reward(vxy[1], self.prev_ball, vxy[0], bxy[0], self.active_regions)
                 reward += reward_movement(vxy, bxy, obs)
 
+                reward = np.clip(reward, -500, 500)
+
                 # Store the current action, value, and logp in the buffer
                 self.action_buffer.append(self.last_action)
                 self.action_buffer.pop(0)
@@ -533,6 +555,11 @@ class PPOAgent:
 
             # Compute the action for the current step
             action, value, logp = self.compute_action(self.obs_buffer[-1])
+
+            if not np.all(np.isfinite(action)):
+                print("NaN or Inf detected in action:", action)
+                action = np.zeros_like(action)  # fallback to safe value PREVERI KL
+
 
             if self.episode_steps >= self.MAX_EPISODE_STEPS:
                 print("Treniram")
