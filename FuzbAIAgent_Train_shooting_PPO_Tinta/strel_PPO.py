@@ -68,15 +68,10 @@ def calculate_player_positions_and_angles(camera, geometry):
 
 
 
-def detect_collision_and_reward(yv, prev_ball_vx, current_ball_vx, ball_x, active_regions=None):
-    
-   # print("-------")
-   # print(prev_ball_vx)
-   # print(current_ball_vx)
-   # print(yv)
-    
+def detect_collision_and_reward(yv, prev_ball_vx, current_ball_vx, ball_x, active_regions=None):   
     
     rod_positions=[80, 230, 530, 830]
+    
     if active_regions is None:
         active_regions = {i: {"active": False, "rewarded": False} for i in range(len(rod_positions))}
 
@@ -99,7 +94,7 @@ def detect_collision_and_reward(yv, prev_ball_vx, current_ball_vx, ball_x, activ
                     if current_ball_vx > prev_ball_vx:
                         # Positive increase in speed (towards opponent's goal)
                         active_regions[i]["rewarded"] = True
-                        return 5.0, active_regions  # Positive reward
+                        return 50.0, active_regions  # Positive reward
                     else:
                         # Negative increase in speed (towards own goal)
                         active_regions[i]["rewarded"] = True
@@ -142,7 +137,76 @@ def detect_y_axis_changes(current_y, prev_vy, current_vy, threshold=0.05):
            # reward += 3.0  # Additional reward for change in direction
 
 
+def reward_movement(ball_vel, ball_loc, player_data):
 
+    reward = 0
+    goal_x_range = (1195, 1210)
+    goal_x_range_out = (0, 10)
+    goal_y_range = (250, 450)
+
+    # # 1. Collision Reward
+    # if self.prev_ball == 0:
+    #     pass
+    # else:
+    #     collision_reward, self.active_regions = detect_collision_and_reward(
+    #         vxy[1], self.prev_ball, vxy[0], bxy[0], self.active_regions
+    #     )
+    #     reward += collision_reward
+
+    # self.prev_ball = vxy[0]  # Save the last ball speed
+
+    # 2. Direction towards the goal
+    goal_center = (1205, 350)
+    ball_vector = np.array([ball_vel[0], ball_vel[1]])
+    direction_vector = np.array([goal_center[0] - ball_loc[0], goal_center[1] - ball_loc[1]])
+
+    if np.linalg.norm(ball_vector) > 0:
+        cosine_similarity = np.dot(ball_vector, direction_vector) / (
+            np.linalg.norm(ball_vector) * np.linalg.norm(direction_vector)
+        )
+        if cosine_similarity > 0:
+            directional_reward = cosine_similarity * 30
+            reward += directional_reward
+            #print(f"ball moving towards the goal, Reward: {directional_reward}")
+        else:
+            reward -= 10
+    # else:
+    #     reward -= 5
+
+    # 3. Speed
+    ball_speed = np.linalg.norm(ball_vector)
+    reward += ball_speed
+    #print(f"Speed reward: {ball_speed}")
+
+    # 4. Check goal
+    if goal_x_range[0] <= ball_loc[0] <= goal_x_range[1] and goal_y_range[0] <= ball_loc[1] <= goal_y_range[1]:
+        reward += 500
+    elif goal_x_range_out[0] <= ball_loc[0] <= goal_x_range_out[1] and goal_y_range[0] <= ball_loc[1] <= goal_y_range[1]:
+        reward -= 100  # Own goal or out of bounds
+        #print(f"Goal received, Reward -50")
+
+    # # 5. Slight penalty if ball is basically still
+    # if ball_speed < 0.01:
+    #     reward -= 1
+    #     #print(f"Slow ball spet penalty: -1")
+    # else:
+    #     reward += 3
+
+    # 6. Slight penalty if a player is oriented in the air
+    # team_encoding = {"red": 0.0, "blue": 1.0}
+
+    player_data = player_data[4:].reshape(-1, 4)
+
+    for player in player_data:
+        team_code = player[0]
+        if math.isclose(team_code, 0.0, abs_tol=1e-6):
+            rwd = 5 * (abs(player[3]) * -1)
+            if rwd > -50:
+                reward += 50
+            else:
+                reward += rwd
+
+    return reward  
 
 
 class ActorCriticNet(nn.Module):
@@ -264,15 +328,15 @@ class PPOAgent:
       - Uses a buffer to accumulate experiences for PPO updates.
     """
     def __init__(self,
-                 obs_dim=70,         # ball = x, y, vx, vy; player = 2 x 11 x 3
+                 obs_dim=92,         # ball = x, y, vx, vy; player = 2 x 11 x 3
                  act_dim=16,         # 4 rods × 4 numbers each
-                 hidden_size=1024,
-                 steps_per_env=2048, # how many steps per iteration
+                 hidden_size=256,
+                 steps_per_env=512,#2048, # how many steps per iteration
                  gamma=0.99,
                  lam=0.95,
                  clip_ratio=0.2,
                  lr=3e-4,
-                 train_iters=10,
+                 train_iters=2,
                  target_kl=0.01,
                  delay_step=2,
                  save_model_every=100,   # save every N episodes
@@ -418,14 +482,13 @@ class PPOAgent:
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
+            print("Backprop complete!")
 
             # Approximate KL divergence
             kl = torch.mean(logp_old - logp_pi).item()
-            if kl > 1.5 * self.target_kl:
-                print(f"[PPO] Early stopping at iter={i} due to reaching max kl.")
-                break
-
-    # The rest of your class remains unchanged...
+            # if kl > 1.5 * self.target_kl:
+            #     print(f"[PPO] Early stopping at iter={i} due to reaching max kl.")
+            #     break
 
 
     # ------------------------------------------------------------------
@@ -446,7 +509,9 @@ class PPOAgent:
             # Training: collect the step
             if self.last_obs is not None:
                 # We have a previous observation; store the reward for that step
-                reward = 10.0  # or update from your environment’s collision/score trackers
+                reward = 0.0  # or update from your environment’s collision/score trackers
+                reward, self.active_regions = detect_collision_and_reward(vxy[1], self.prev_ball, vxy[0], bxy[0], self.active_regions)
+                reward += reward_movement(vxy, bxy, obs)
 
                 # Store the current action, value, and logp in the buffer
                 self.action_buffer.append(self.last_action)
@@ -480,11 +545,12 @@ class PPOAgent:
             self.last_action = action
             self.last_val = value
             self.last_logp = logp
+            self.prev_ball = vxy[0]
 
             # Keep track for next step
             self.last_obs = self.obs_buffer[-1]
             self.current_step += 1
-            self.ep_reward += 0.0  # add reward from this step if you have it
+            self.ep_reward += self.action_buffer[-2]  # add reward from this step if you have it
 
         # Scale the raw action in [-1,1] to your motor commands
         commands = self.scale_to_motor_commands(action)
@@ -544,8 +610,9 @@ class PPOAgent:
                 })
 
         # Flatten it all
+        team_encoding = {"red": 0.0, "blue": 1.0}
         player_numeric_positions = [
-            [p["position"][0], p["position"][1], p["angle"]] for p in player_positions
+            [team_encoding[p["team"]], p["position"][0], p["position"][1], p["angle"]] for p in player_positions
         ]
 
         # Convert to NumPy array
@@ -607,9 +674,9 @@ class PPOAgent:
 
         # If we filled our buffer, we do a PPO update
         print("Buffer:", self.buf.ptr)
-        if self.buf.ptr == self.buf.max_size:
-            print("Buffer full!")
+        if self.buf.ptr >= self.buf.max_size:
             self.train_on_buffer()
+            self.buf.ptr = 0
 
         # Housekeeping
         self.current_step = 0
