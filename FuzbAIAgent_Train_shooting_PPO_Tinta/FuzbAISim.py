@@ -283,8 +283,8 @@ class FuzbAISim:
 
     def loadSimulator(self, printJointInfo = False):
         print("Loading simulator...")
-        physicsClient = p.connect(p.GUI)    # graphical version
-        #physicsClient = p.connect(p.DIRECT) # non-graphical version
+        #physicsClient = p.connect(p.GUI)    # graphical version
+        physicsClient = p.connect(p.DIRECT) # non-graphical version
 
         p.configureDebugVisualizer(p.COV_ENABLE_WIREFRAME,0)
         p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS,1)

@@ -550,8 +550,21 @@ class PPOAgent:
                 # Use the delayed reward for training
                 delayed_reward = self.reward_buffer[-1]
 
-                # Store the transition in the buffer
-                self.buf.store(self.obs_buffer[-2], self.action_buffer[-2], delayed_reward, self.value_buffer[-2], self.logp_buffer[-2])
+                if (self.obs_buffer[-2] is not None and
+                    self.action_buffer[-2] is not None and
+                    self.value_buffer[-2] is not None and
+                    self.logp_buffer[-2] is not None):
+
+
+
+                    # Store the transition in the buffer
+                    self.buf.store(self.obs_buffer[-2], self.action_buffer[-2], delayed_reward, self.value_buffer[-2], self.logp_buffer[-2])
+
+                    """print(f"Stored in buffer - Obs: {self.obs_buffer[-2]}")
+                    print(f"Stored in buffer - Action: {self.action_buffer[-2]}")
+                    print(f"Stored in buffer - Reward: {delayed_reward}")
+                    print(f"Stored in buffer - Value: {self.value_buffer[-2]}")
+                    print(f"Stored in buffer - Logp: {self.logp_buffer[-2]}")"""
 
             # Compute the action for the current step
             action, value, logp = self.compute_action(self.obs_buffer[-1])
