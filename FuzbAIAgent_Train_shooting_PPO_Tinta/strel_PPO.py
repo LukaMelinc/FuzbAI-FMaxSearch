@@ -689,9 +689,9 @@ class PPOAgent:
             # print("trans_speed_raw",trans_speed_raw) 
 
             # Example scaling:
-            rot_target   = 0.8 * rot_target_raw     # we only want to rotate between -0.8..+0.8
-            rot_velocity = 0.5 * (rot_speed_raw+1)/8  # scale [-1,1]→[0,1], then multiply by max
-            trans_target = 0.5 * ((trans_target_raw+1)/2)  # scale [-1,1]→[0,1], you might want full 0..1
+            rot_target   = 0.3 * rot_target_raw     # we only want to rotate between -0.8..+0.8 0.8
+            rot_velocity = 0.2 * (rot_speed_raw+1)/8  # scale [-1,1]→[0,1], then multiply by max 0.5
+            trans_target = 0.2 * ((trans_target_raw+1)/2)  # scale [-1,1]→[0,1], you might want full 0..1 0.5
             trans_velocity = 1.0 * (trans_speed_raw+1)/2   # scale [-1,1]→[0,1]
 
             cmd = {
