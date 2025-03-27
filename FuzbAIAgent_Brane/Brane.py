@@ -91,7 +91,7 @@ class AgentBrane:
 
     def __init__(self):
         self.rod_positions=[80, 230, 530, 830]  # Koordinate palic
-        self.posible_kick = 0                   # flag za indikacijo možnega udarca
+        self.possible_kick = 0                   # flag za indikacijo možnega udarca
         
         
         # Odpri file z geometrijo mize
@@ -110,18 +110,7 @@ class AgentBrane:
         player_positions, bxy, vxy = self.extract_observation(camera)
 
         # Preveri ali je mogoče izvesti akcijo na žogi
-        collision_regions = [(rod_x - 50, rod_x + 50) for rod_x in self.rod_positions]
-
-        # preveri ali je žoga v obmčju v katerem lahko nanjo vplivamo
-        for i, region in enumerate(collision_regions):
-
-            if region[0] <= bxy[0] <= region[1]:
-                self.posible_kick = 1 # Kick je mogoč
-            else:
-                self.posible_kick = 0 # Kick ni mogoč
-
-
-
+        self.possible_kick = self.can_kick(bxy[0])
 
         # Info o premikanju:
         # Vse hitrosti imajo trapezen profil [pospeševanje -> željena hitrost -> zaviranje]
@@ -202,13 +191,22 @@ class AgentBrane:
                 })
 
         return player_positions, (bx, by), (bvx, bvy)
+    
+
+    # Can we kick the ball
+    def can_kick(self, ball_x):
+
+        collision_regions = [(rod_x - 50, rod_x + 50) for rod_x in self.rod_positions]
+
+        for i, region in enumerate(collision_regions):
+            if region[0] <= ball_x[0] <= region[1]:
+                return 1 # Kick je mogoč / naša žoga
+            else:
+                return 0 # Kick ni mogoč / nasprotnikova žoga
+            
 
     def scale_to_motor_commands(self, action):
-        """
-        We have 16 values in [-1,1]: for rods 0,1,3,5, each rod has 4 values:
-          [rot_target, rot_speed, trans_target, trans_speed]
-        We'll scale them appropriately into the JSON commands expected by the simulator.
-        """
+
         # Reshape to (4 rods, 4 dims)
         act_rod = action.reshape((4,4))
 
@@ -247,9 +245,11 @@ class AgentBrane:
         return commands
 
 
-########################################################################################################################################
-############################################################        MAIN    ############################################################
-########################################################################################################################################
+
+####################################################################################################################################
+############################################################    MAIN    ############################################################
+####################################################################################################################################
+
 if __name__ == "__main__":
     # Create the PPO agent
     agent = AgentBrane()
@@ -269,4 +269,3 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
         print("Training interrupted. Saving model...")
-        agent.save_model("actor.pth", "critic.pth")
