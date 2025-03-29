@@ -211,7 +211,7 @@ class FuzbAISim:
         p.resetBasePositionAndOrientation(self.ball, custom_ball_pos, p.getQuaternionFromEuler([0, 0, 0]))
 
         # Random speed within the defined range
-        speed_range = (0.12, 0.15)
+        speed_range = (0.12, 0.5)
         speed = random.uniform(*speed_range)
 
         # Select a random direction from the list
@@ -427,15 +427,20 @@ class FuzbAISim:
                 if math.sqrt(self.ballVel[0][0]**2 + self.ballVel[0][1]**2) > 0.05:
                     ball_moving = self.t
 
-                if self.t - ball_moving > 3:
+                # if self.t - ball_moving > 3:
                     
-                    # Save the model at regular intervals
-                    if self.round % self.save_interval == 0:
-                        self.p1.save_model("ball_control_model.pth")
+                #     # Save the model at regular intervals
+                #     if self.round % self.save_interval == 0:
+                #         self.p1.save_model("ball_control_model.pth")
 
+                #     self.ResetBallToLocation()
+                #     self.round += 1
+                #     #print("Round:", self.round)
+
+                if self.t - ball_moving > 3 or math.sqrt(self.ballVel[0][0]**2 + self.ballVel[0][1]**2) < 0.005:
+                    print("Ball stopped or moving too slowly. Resetting position...")
                     self.ResetBallToLocation()
                     self.round += 1
-                    #print("Round:", self.round)
 
 
                 angles = []
@@ -457,11 +462,8 @@ class FuzbAISim:
                 # Process the agents...
                 if self.t - prev_t > 0.02:  
                     try:     
-                        if self.status_player1 == 0:   
-                            startTime = int(time.time() * 1000)
+                        if self.status_player1 == 0:             
                             motors1 = self.p1.process_data(self.getDelayedCamera(1, self.t - self.simulatedDelay))
-                            print("Iteration time:", (int(time.time() * 1000)) - startTime)
-
                         else:
                             # Use the external motor data...
                             motors1 = self.motorCommandsExternal1

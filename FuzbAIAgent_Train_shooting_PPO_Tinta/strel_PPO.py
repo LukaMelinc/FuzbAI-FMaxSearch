@@ -192,6 +192,7 @@ def reward_movement(ball_vel, ball_loc, player_data):
     # else:
     #     reward += 3
 
+
     # 6. Slight penalty if a player is oriented in the air
     # team_encoding = {"red": 0.0, "blue": 1.0}
 
