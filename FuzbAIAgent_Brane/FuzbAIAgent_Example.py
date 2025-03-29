@@ -35,7 +35,7 @@ class PlayerAgent():
         #         * first_offset: y-axis position of the first player center
         #         * spacing: spacing between players on the rod
 
-        self.demo_state = -1 # 0
+        self.demo_state = 0 # -1
         self.demo_t = 0
 
     def process_data(self, camera):

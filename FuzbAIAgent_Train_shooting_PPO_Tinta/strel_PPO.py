@@ -234,20 +234,41 @@ class ActorCriticNet(nn.Module):
     def __init__(self, obs_dim, act_dim, hidden_size=512):
         super().__init__()
         self.actor = nn.Sequential(
-            nn.Linear(obs_dim, hidden_size),
+            nn.Linear(obs_dim, hidden_size),   # Input layer
             nn.ReLU(),
-            nn.Dropout(p=0.25),  # Add dropout
-            nn.Linear(hidden_size, hidden_size),
+            nn.Dropout(p=0.1),
+            
+            nn.Linear(hidden_size, hidden_size),  # First added hidden layer
             nn.ReLU(),
-            nn.Dropout(p=0.25),  # Add dropout
-            nn.Linear(hidden_size, act_dim)
+            nn.Dropout(p=0.1),
+            
+            nn.Linear(hidden_size, hidden_size),  # Second added hidden layer
+            nn.ReLU(),
+            nn.Dropout(p=0.1),
+            
+            nn.Linear(hidden_size, hidden_size),  # Original hidden layer
+            nn.ReLU(),
+            nn.Dropout(p=0.1),
+            
+            nn.Linear(hidden_size, act_dim)       # Output layer
         )
+
         self.critic = nn.Sequential(
-            nn.Linear(obs_dim, hidden_size),
+            nn.Linear(obs_dim, hidden_size),   # Input layer
             nn.ReLU(),
-            nn.Dropout(p=0.25),  # Add dropout
-            nn.Linear(hidden_size, 1)
+            nn.Dropout(p=0.1),
+            
+            nn.Linear(hidden_size, hidden_size),  # First added hidden layer
+            nn.ReLU(),
+            nn.Dropout(p=0.1),
+            
+            nn.Linear(hidden_size, hidden_size),  # Second added hidden layer
+            nn.ReLU(),
+            nn.Dropout(p=0.1),
+            
+            nn.Linear(hidden_size, 1)            # Output layer (single value for value estimation)
         )
+
 
     def forward(self, x):
         # x is a batch of observations
@@ -361,7 +382,22 @@ class PPOAgent:
                  l2_lambda=5e-4):
                         # L2 regularization strength
         
+
+        """# Setting the Min and Max values for NN input normalization
+        self.min_values = np.full(obs_dim, float("inf"))
+        self.max_values = np.full(obs_dim, float("-inf"))
         
+        # Some predetermined MINs and MAXs
+        self.min_values[0] = 0
+        self.max_values[0] = 1210
+
+        self.min_values[1] = 0
+        self.max_values[1] = 700"""
+
+
+        
+
+
         self.obs_dim = obs_dim
         self.act_dim = act_dim
         self.save_model_every = save_model_every
@@ -433,6 +469,22 @@ class PPOAgent:
             print(f"[PPOAgent] Model loaded from {path}")
         else:
             print("[PPOAgent] No saved model found, skipping load.")
+
+    def normalize_observation(self, obs):
+       
+        obs[0] /= 1210
+        obs[1] /= 700
+        obs[2] /= 10
+        obs[3] /= 10
+
+        # Normalize the player positions and angles
+        for i in range(4, len(obs), 4):
+            obs[i + 1] /= 1210
+            obs[i + 2] /=  700
+            obs[i + 3] = (obs[i + 3] + 32) / 64
+
+        return obs
+
 
     def compute_action(self, obs):
         """
@@ -518,6 +570,7 @@ class PPOAgent:
         # Extract the current observation
         obs, bxy, vxy = self.extract_observation(camera)
 
+
         # Store the current observation in the buffer
         self.obs_buffer.append(obs)
         self.obs_buffer.pop(0)
@@ -533,7 +586,7 @@ class PPOAgent:
                 reward, self.active_regions = detect_collision_and_reward(vxy[1], self.prev_ball, vxy[0], bxy[0], self.active_regions)
                 reward += reward_movement(vxy, bxy, obs)
 
-                reward = np.clip(reward, -500, 500)
+                reward = np.clip(reward, -1000, 1000)
 
                 # Store the current action, value, and logp in the buffer
                 self.action_buffer.append(self.last_action)
@@ -654,13 +707,17 @@ class PPOAgent:
         player_numeric_positions = [
             [team_encoding[p["team"]], p["position"][0], p["position"][1], p["angle"]] for p in player_positions
         ]
+        # position[0] is x distance of that rod from the x axis
+        # position[1] is the travel of the rod
 
         # Convert to NumPy array
         player_positions_array = np.array(player_numeric_positions, dtype=np.float32)
 
         # Flatten and concatenate everything
         obs = np.concatenate(([bx, by, bvx, bvy], player_positions_array.flatten()), dtype=np.float32)
-
+        obs = self.normalize_observation(obs)
+        print(obs)
+        print("---")
         return obs, (bx, by), (bvx, bvy)
 
     def scale_to_motor_commands(self, action):
@@ -689,7 +746,7 @@ class PPOAgent:
             # print("trans_speed_raw",trans_speed_raw) 
 
             # Example scaling:
-            rot_target   = 0.3 * rot_target_raw     # we only want to rotate between -0.8..+0.8 0.8
+            rot_target   = 0.5 * rot_target_raw     
             rot_velocity = 0.2 * (rot_speed_raw+1)/8  # scale [-1,1]→[0,1], then multiply by max 0.5
             trans_target = 0.2 * ((trans_target_raw+1)/2)  # scale [-1,1]→[0,1], you might want full 0..1 0.5
             trans_velocity = 1.0 * (trans_speed_raw+1)/2   # scale [-1,1]→[0,1]

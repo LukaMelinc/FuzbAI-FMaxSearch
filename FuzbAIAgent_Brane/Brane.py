@@ -91,15 +91,22 @@ class AgentBrane:
 
     def __init__(self):
         self.rod_positions=[80, 230, 530, 830]  # Koordinate palic
-        self.possible_kick = 0                   # flag za indikacijo možnega udarca
+        self.possible_kick = 0                  # Flag za indikacijo možnega udarca
+        self.team_color = "red"                 # Barva ekipe s katero igramo
         
         
         # Odpri file z geometrijo mize
         with open('geometry.json') as f:
             self.geometry = json.load(f)
 
+        field = self.geometry["field"]
+        self.field_x = field["dimension_x"]
+        self.field_y = field["dimension_y"]
+
+
+
     ##############################
-    #        Main logika
+    ###      Main logika       ###
     ##############################
     def process_data(self, camera):
 
@@ -116,11 +123,13 @@ class AgentBrane:
         # Vse hitrosti imajo trapezen profil [pospeševanje -> željena hitrost -> zaviranje]
         # 0,0 je spodaj 
         # + Rotacija
-        #   - Kot: -0.8 do 0.8 (0 je navzdol, - je v desno, + je v levo)
+        #   - Kot: -0.5 do 0.5 (0 je navzdol, - je v desno, + je v levo)
         #   - Hitrost: 0 do 1
         # + Translacija:
         #   - Pozicija: 0 do 1 (0.5 je center)
         #   - Hitrost: 0 do 1
+
+        tranPosBall, rodIdBall, tranVelBall = self.move_towards_the_ball(player_positions, bxy)
 
         for i in range(8):
 
@@ -128,14 +137,24 @@ class AgentBrane:
             if playerMapping[i] < 0:
                 continue
 
-            cmd = {
-                "driveID": playerMapping[i],
-                "rotationTargetPosition": -0.5,      
-                "rotationVelocity": 0.05,            
-                "translationTargetPosition": 0.5,
-                "translationVelocity": 1.0 
-                }        
-            commands.append(cmd)
+            if playerMapping[i] == rodIdBall:
+                cmd = {
+                    "driveID": rodIdBall,
+                    "rotationTargetPosition": 0.0,      
+                    "rotationVelocity": 0.0,            
+                    "translationTargetPosition": tranPosBall,
+                    "translationVelocity": tranVelBall 
+                    }        
+                commands.append(cmd)
+            else:
+                cmd = {
+                    "driveID": playerMapping[i],
+                    "rotationTargetPosition": 0.0,      
+                    "rotationVelocity": 0.0,            
+                    "translationTargetPosition": 0.5,
+                    "translationVelocity": 1.0 
+                    }        
+                commands.append(cmd)
 
 
 
@@ -199,10 +218,44 @@ class AgentBrane:
         collision_regions = [(rod_x - 50, rod_x + 50) for rod_x in self.rod_positions]
 
         for i, region in enumerate(collision_regions):
-            if region[0] <= ball_x[0] <= region[1]:
+            if region[0] <= ball_x <= region[1]:
                 return 1 # Kick je mogoč / naša žoga
             else:
                 return 0 # Kick ni mogoč / nasprotnikova žoga
+            
+
+    # Iščemo po y igralca (naše ekipe) ki je najbližje žogi
+    def move_towards_the_ball(self, player_data, ball_xy):
+        min_distance = float("inf")
+        closest_player = None
+        rod_id = 0
+
+        for player in player_data:
+            if player["team"] == self.team_color:
+                dx = player["position"][0] - ball_xy[0]
+                dy = player["position"][1] - ball_xy[1]
+                dist = math.sqrt(dx**2 + dy**2)
+                if dist < min_distance:
+                    min_distance = dist
+                    closest_player = player
+                    rod_id = player["rod_id"]
+
+        if closest_player is None:
+            return 0.5, rod_id  # Default pozicija
+
+        player_y = closest_player["position"][1]
+        ball_y = ball_xy[1]
+        travel_range = self.geometry["rods"][rod_id - 1]["travel"]
+
+        # Normaliziranje
+        translationTargetPosition = min(max((ball_y / travel_range), 0), 1)
+
+        # hitrost
+        distance = abs(player_y - ball_y)
+        translationVelocity = min(1.0, distance / travel_range)
+
+        return translationTargetPosition, rod_id, translationVelocity
+
             
 
     def scale_to_motor_commands(self, action):
