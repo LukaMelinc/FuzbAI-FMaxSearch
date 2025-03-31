@@ -368,9 +368,9 @@ class PPOAgent:
     """
     def __init__(self,
                  obs_dim=92,         # ball = x, y, vx, vy; player = 2 x 11 x 3
-                 act_dim=16,         # 4 rods × 4 numbers each
+                 act_dim=4,          # 1 rod × 4 numbers each
                  hidden_size=512,
-                 steps_per_env=256,#2048, # how many steps per iteration
+                 steps_per_env=256,  # how many steps per iteration
                  gamma=0.99,
                  lam=0.95,
                  clip_ratio=0.2,
@@ -380,24 +380,7 @@ class PPOAgent:
                  delay_step=2,
                  save_model_every=100,   # save every N episodes
                  model_save_path="ppo_foos.pth",
-                 l2_lambda=5e-4):
-                        # L2 regularization strength
-        
-
-        """# Setting the Min and Max values for NN input normalization
-        self.min_values = np.full(obs_dim, float("inf"))
-        self.max_values = np.full(obs_dim, float("-inf"))
-        
-        # Some predetermined MINs and MAXs
-        self.min_values[0] = 0
-        self.max_values[0] = 1210
-
-        self.min_values[1] = 0
-        self.max_values[1] = 700"""
-
-
-        
-
+                 l2_lambda=5e-4):      # L2 regularization strength
 
         self.obs_dim = obs_dim
         self.act_dim = act_dim
@@ -417,7 +400,6 @@ class PPOAgent:
         self.reward_buffer = [None] * self.delay_steps
         self.value_buffer = [None] * self.delay_steps
         self.logp_buffer = [None] * self.delay_steps
-
 
         with open('geometry.json') as f:
             self.geometry = json.load(f)
@@ -455,6 +437,8 @@ class PPOAgent:
 
         # For training mode vs. inference mode
         self.training_enabled = True
+
+
 
     def save_model(self, path=None):
         if path is None:
@@ -571,7 +555,6 @@ class PPOAgent:
         # Extract the current observation
         obs, bxy, vxy = self.extract_observation(camera)
 
-
         # Store the current observation in the buffer
         self.obs_buffer.append(obs)
         self.obs_buffer.pop(0)
@@ -609,27 +592,18 @@ class PPOAgent:
                     self.value_buffer[-2] is not None and
                     self.logp_buffer[-2] is not None):
 
-
-
                     # Store the transition in the buffer
                     self.buf.store(self.obs_buffer[-2], self.action_buffer[-2], delayed_reward, self.value_buffer[-2], self.logp_buffer[-2])
-
-                    """print(f"Stored in buffer - Obs: {self.obs_buffer[-2]}")
-                    print(f"Stored in buffer - Action: {self.action_buffer[-2]}")
-                    print(f"Stored in buffer - Reward: {delayed_reward}")
-                    print(f"Stored in buffer - Value: {self.value_buffer[-2]}")
-                    print(f"Stored in buffer - Logp: {self.logp_buffer[-2]}")"""
 
             # Compute the action for the current step
             action, value, logp = self.compute_action(self.obs_buffer[-1])
 
             if not np.all(np.isfinite(action)):
                 print("NaN or Inf detected in action:", action)
-                action = np.zeros_like(action)  # fallback to safe value PREVERI KL
-
+                action = np.zeros_like(action)  # fallback to safe value
 
             if self.episode_steps >= self.MAX_EPISODE_STEPS:
-                print("Treniram")
+                print("Training")
                 self.finish_episode()
                 self.episode_steps = 0
             else:
@@ -723,45 +697,54 @@ class PPOAgent:
 
     def scale_to_motor_commands(self, action):
         """
-        We have 16 values in [-1,1]: for rods 0,1,3,5, each rod has 4 values:
-          [rot_target, rot_speed, trans_target, trans_speed]
+        We have 4 values in [-1,1]: for the forward-most rod, each rod has 4 values:
+        [rot_target, rot_speed, trans_target, trans_speed]
         We'll scale them appropriately into the JSON commands expected by the simulator.
         """
-        # Reshape to (4 rods, 4 dims)
-        act_rod = action.reshape((4,4))
+        # The forward-most rod (index in geometry): 0 => drive ID = 1
+        rod_map = [0]
+        driveID = [1]
 
-        commands = []
-        # The rods we control (index in geometry): 0,1,3,5 => drive IDs = 1,2,3,4
-        rod_map = [0,1,3,5]
-        driveID = [1,2,3,4]
-        for rod_i in range(4):
-            # Raw from policy
-            rot_target_raw  = act_rod[rod_i, 0]  # in [-1,1]
-            rot_speed_raw   = act_rod[rod_i, 1]  # in [-1,1]
-            trans_target_raw= act_rod[rod_i, 2]  # in [-1,1]
-            trans_speed_raw = act_rod[rod_i, 3]  # in [-1,1]
+        # Example scaling:
+        rot_target   = 0.5 * action[0]  # in [-1,1]
+        rot_velocity = 0.2 * (action[1] + 1) / 8  # scale [-1,1]→[0,1], then multiply by max 0.5
+        trans_target = 0.2 * ((action[2] + 1) / 2)  # scale [-1,1]→[0,1], you might want full 0..1 0.5
+        trans_velocity = 1.0 * (action[3] + 1) / 2   # scale [-1,1]→[0,1]
 
-            # print("rot_target_raw",rot_target_raw) 
-            # print("rot_speed_raw",rot_speed_raw) 
-            # print("trans_target_raw",trans_target_raw)
-            # print("trans_speed_raw",trans_speed_raw) 
+        cmd = {
+            "driveID": 4,
+            "rotationTargetPosition": rot_target,
+            "rotationVelocity": rot_velocity,
+            "translationTargetPosition": trans_target,
+            "translationVelocity": trans_velocity
+        }
 
-            # Example scaling:
-            rot_target   = 0.5 * rot_target_raw     
-            rot_velocity = 0.2 * (rot_speed_raw+1)/8  # scale [-1,1]→[0,1], then multiply by max 0.5
-            trans_target = 0.2 * ((trans_target_raw+1)/2)  # scale [-1,1]→[0,1], you might want full 0..1 0.5
-            trans_velocity = 1.0 * (trans_speed_raw+1)/2   # scale [-1,1]→[0,1]
-
-            cmd = {
-                "driveID": driveID[rod_i],
-                "rotationTargetPosition": rot_target,
-                "rotationVelocity": rot_velocity,
-                "translationTargetPosition": trans_target,
-                "translationVelocity": trans_velocity
+        # Idle commands for the other rods
+        idle_commands = [
+            {
+                "driveID": 2,
+                "rotationTargetPosition": 0.5,
+                "rotationVelocity": 0.1,
+                "translationTargetPosition": 0.5,
+                "translationVelocity": 0.0
+            },
+            {
+                "driveID": 3,
+                "rotationTargetPosition": 0.0,
+                "rotationVelocity": 0.0,
+                "translationTargetPosition": 0.5,
+                "translationVelocity": 0.0
+            },
+            {
+                "driveID": 1,
+                "rotationTargetPosition": 0.0,
+                "rotationVelocity": 0.0,
+                "translationTargetPosition": 0.5,
+                "translationVelocity": 0.0
             }
-            commands.append(cmd)
+        ]
 
-        #print(commands)
+        commands = [cmd] + idle_commands
         return commands
 
     def finish_episode(self, last_value=0):
