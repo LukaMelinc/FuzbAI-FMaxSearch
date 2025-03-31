@@ -70,6 +70,21 @@ class AgentBrane:
         self.field_x = field["dimension_x"]
         self.field_y = field["dimension_y"]
 
+        # Reklama
+        print(r"""
+
+  ___                   _    ______                      
+ / _ \                 | |   | ___ \                     
+/ /_\ \ __ _ _ __   ___| |_  | |_/ /_ __ __ _ _ __   ___ 
+|  _  |/ _` | '_ \ / _ \ __| | ___ \ '__/ _` | '_ \ / _ \
+| | | | (_| | | | |  __/ |_  | |_/ / | | (_| | | | |  __/
+\_| |_/\__, |_| |_|\___|\__| \____/|_|  \__,_|_| |_|\___|
+        __/ |                                            
+       |___/                                             
+
+
+        """)
+
 
 
     ##############################
@@ -171,13 +186,13 @@ class AgentBrane:
                     "driveID": rodIdBall,
                     "rotationTargetPosition": 0.0,      
                     "rotationVelocity": 0.0,            
-                    "translationTargetPosition": 0, # tranPosBall
-                    "translationVelocity": 0  # tranVelBall
+                    "translationTargetPosition": tranPosBall, # 
+                    "translationVelocity": tranVelBall  # 
                     }        
                 
-                # if self.possible_kick == 1 and self.kick_block_en == 0:
-                #     cmd = self.kick_routine(rodIdBall)
-                #     self.kick_block_en = 1
+                if self.possible_kick == 1 and self.kick_block_en == 0:
+                    cmd = self.kick_routine(rodIdBall)
+                    self.kick_block_en = 1
 
                 commands.append(cmd)
 
@@ -199,6 +214,8 @@ class AgentBrane:
 
     # Pridobivanje podatkov o žogi in vsakemu igralcu posebej (x, y, kot, ekipa)
     def extract_observation(self, camera):
+
+        #print(camera)
 
         field = self.geometry["field"]
         rods = self.geometry["rods"]
@@ -260,11 +277,11 @@ class AgentBrane:
             if region[0] <= ball_x <= region[1]:
 
                 if ball_x <= region[0] + offset:
-                    if ball_vel[0] < 0.1 and ball_vel[1] < 0.1:
+                    if ball_vel[0] < 0.1 and ball_vel[1] < 0.3:
                         return 1, 0 # Kick je mogoč / naša žoga, žoga za nami (malo kick)
                     
                 if ball_x >= region[1] - offset:
-                    if ball_vel[0] < 0.1 and ball_vel[1] < 0.1:
+                    if ball_vel[0] < 0.3 and ball_vel[1] < 0.3:
                         return 1, 1 # Kick je mogoč / naša žoga, žoga pred nami (kick na hard)
             
         return 0, 0 # Kick ni mogoč / nasprotnikova žoga
@@ -340,7 +357,7 @@ class AgentBrane:
         closest_rod = None
         target_player = None
 
-        # Find the closest rod to the ball based on default positions
+        # Na osnovnih pozicijah igralcev najdi rod najbližji žogi
         for rod in self.geometry['rods']:
             if rod['team'] == self.team_color:
                 rod_x = rod['position']
@@ -350,43 +367,53 @@ class AgentBrane:
                     min_distance = distance
                     closest_rod = rod
 
+        # Če slušajno ne najde roda (nima lih smisla)
         if closest_rod is None:
-            return 0.5, 0, 0.0  # Default values if no valid rod is found
+            return 0.5, 0, 0.0  
 
-        rod_id = closest_rod['id']
+        rod_id = closest_rod["id"]
+        rod_players = [p for p in player_data if p["rod_id"] == rod_id]
         travel_range = closest_rod['travel']
         first_offset = closest_rod['first_offset']
         spacing = closest_rod['spacing']
         num_players = closest_rod['players']
 
-        # Determine the default positions of all players on this rod
+        # Default pozicije vseh igralcev
         default_positions = [first_offset + i * spacing for i in range(num_players)]
 
-        # Find the player closest to the ball on the y-axis
+        # po y osi najdi najbližjega igralca žogi
         min_y_distance = float('inf')
+        chosen_local_index = 0
         for i, default_y in enumerate(default_positions):
-            distance_y = abs(default_y - ball_xy[1])
-            if distance_y < min_y_distance:
-                min_y_distance = distance_y
-                target_player = i
+            dist_y = abs(default_y - ball_xy[1])
+            if dist_y < min_y_distance:
+                min_y_distance = dist_y
+                chosen_local_index = i
 
-        if target_player is None:
-            return 0.5, rod_id, 0.0  # Default values if no player is found
+        print(chosen_local_index)
+        #print("Rod:", rod_id, "Igralec:", target_player)
+        # Če slušajno ne najde igralca (nima lih smisla)
+        # if target_player is None:
+        #     return 0.5, rod_id, 0.0  
 
-        # Determine the movement range for this player
-        player_default_y = default_positions[target_player]
-        rod_position = self.geometry['rods'][rod_id - 1]['position']
+        # Definiraj range premikanja igralca
+        # player_default_y = default_positions[target_player]
+        # rod_position = player_data[target_player]['rod_position']
+        chosen_player_data = rod_players[chosen_local_index]
+        rod_position = chosen_player_data["rod_position"]
         min_y = rod_position - (travel_range / 2)
         max_y = rod_position + (travel_range / 2)
 
-        # Calculate the desired position for the rod
+        # Razdalja premika
         ball_y = ball_xy[1]
         translationTargetPosition = (ball_y - min_y) / (max_y - min_y)
         translationTargetPosition = min(max(translationTargetPosition, 0), 1)
 
-        # Calculate the speed of movement
-        distance = abs(player_default_y - ball_y)
-        translationVelocity = min(1.0, abs(distance) / travel_range + 0.4)
+        # Hitrost premika
+        distance = abs(min_y_distance - ball_y)
+        translationVelocity = min(1.0, abs(distance) / travel_range) + 0.4
+
+        print("translacija:", translationTargetPosition, "hitrost:", translationVelocity)
 
         # Adjust rod ID for compatibility with motor commands
         if rod_id == 4: 
