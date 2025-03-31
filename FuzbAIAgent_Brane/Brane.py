@@ -171,13 +171,13 @@ class AgentBrane:
                     "driveID": rodIdBall,
                     "rotationTargetPosition": 0.0,      
                     "rotationVelocity": 0.0,            
-                    "translationTargetPosition": tranPosBall,
-                    "translationVelocity": tranVelBall 
+                    "translationTargetPosition": 0, # tranPosBall
+                    "translationVelocity": 0  # tranVelBall
                     }        
                 
-                if self.possible_kick == 1 and self.kick_block_en == 0:
-                    cmd = self.kick_routine(rodIdBall)
-                    self.kick_block_en = 1
+                # if self.possible_kick == 1 and self.kick_block_en == 0:
+                #     cmd = self.kick_routine(rodIdBall)
+                #     self.kick_block_en = 1
 
                 commands.append(cmd)
 
@@ -235,10 +235,12 @@ class AgentBrane:
             for i in range(num_players):
                 player_y = rod_y_base + first_offset + i * spacing
                 player_positions.append({
-                    "rod_id": rod_id,
-                    "team": team,
-                    "position": (rod_x, player_y),
-                    "angle": rod_angle
+                    "rod_id": rod_id,               # zaporedna št. palice
+                    "team": team,                   # Ekipa (rdeča/modra)
+                    "player_pos": i + 1,            # pozicija igralca na palici
+                    "position": (rod_x, player_y),  # koordinate igralca
+                    "angle": rod_angle,             # kot igralca / naklon
+                    "rod_position": rod_y_base      # pozicija palice - enkoder
                 })
 
         return player_positions, (bx, by), (bvx, bvy)
@@ -326,53 +328,74 @@ class AgentBrane:
 
     # Iščemo po y igralca (naše ekipe) ki je najbližje žogi
     def move_towards_the_ball(self, player_data, ball_xy):
-        min_distance = float("inf")
+        # TODO: računaj razdalje na osnovi osnovnih položajev igralcev kot
+        # da se teli ne premikajo -> tako vsak dobi žogo če ta gre po širini
+        # igrišča in vsak izpolnjuje svoj max range premikanja.
+        # Tako določiš kdo se bo ukvarjal z žogo in ko gre čez njegov range 
+        # to določi naslednjemu igralcu 
+
+        min_distance = float('inf')
         closest_player = None
         rod_id = 0
+        closest_rod = None
+        target_player = None
 
-        for player in player_data:
-            if player["team"] == self.team_color:
-                dx = player["position"][0] - ball_xy[0]
-                dy = player["position"][1] - ball_xy[1]
-                dist = math.sqrt(dx**2 + dy**2)
-                if dist < min_distance:
-                    min_distance = dist
-                    closest_player = player
-                    rod_id = player["rod_id"]
+        # Find the closest rod to the ball based on default positions
+        for rod in self.geometry['rods']:
+            if rod['team'] == self.team_color:
+                rod_x = rod['position']
+                distance = abs(rod_x - ball_xy[0])
 
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_rod = rod
 
-        player_y = closest_player["position"][1]
-        ball_y = ball_xy[1]
+        if closest_rod is None:
+            return 0.5, 0, 0.0  # Default values if no valid rod is found
 
-        rod_geometry = self.geometry["rods"][rod_id - 1]
-        travel_range = rod_geometry["travel"]
-        rod_position = rod_geometry["position"]
+        rod_id = closest_rod['id']
+        travel_range = closest_rod['travel']
+        first_offset = closest_rod['first_offset']
+        spacing = closest_rod['spacing']
+        num_players = closest_rod['players']
 
+        # Determine the default positions of all players on this rod
+        default_positions = [first_offset + i * spacing for i in range(num_players)]
+
+        # Find the player closest to the ball on the y-axis
+        min_y_distance = float('inf')
+        for i, default_y in enumerate(default_positions):
+            distance_y = abs(default_y - ball_xy[1])
+            if distance_y < min_y_distance:
+                min_y_distance = distance_y
+                target_player = i
+
+        if target_player is None:
+            return 0.5, rod_id, 0.0  # Default values if no player is found
+
+        # Determine the movement range for this player
+        player_default_y = default_positions[target_player]
+        rod_position = self.geometry['rods'][rod_id - 1]['position']
         min_y = rod_position - (travel_range / 2)
         max_y = rod_position + (travel_range / 2)
 
-        # Now normalize ball_y to be within 0 to 1 based on the rod's allowed range
+        # Calculate the desired position for the rod
+        ball_y = ball_xy[1]
         translationTargetPosition = (ball_y - min_y) / (max_y - min_y)
         translationTargetPosition = min(max(translationTargetPosition, 0), 1)
 
-        # Normaliziranje
-        #translationTargetPosition = min(max((ball_y - player_y) / travel_range, 0), 1)
+        # Calculate the speed of movement
+        distance = abs(player_default_y - ball_y)
+        translationVelocity = min(1.0, abs(distance) / travel_range + 0.4)
 
-        # hitrost
-        distance = abs(player_y - ball_y)
-        translationVelocity = min(1.0, abs(distance) / travel_range + 0.4) 
-
-        # Uredi indekse
+        # Adjust rod ID for compatibility with motor commands
         if rod_id == 4: 
             rod_id = 3
         elif rod_id == 6: 
             rod_id = 4
-        else:
-            rod_id = rod_id
-        
-        #print("Rod id", rod_id)
 
         return translationTargetPosition, rod_id, translationVelocity
+
 
 
 
