@@ -60,6 +60,7 @@ class AgentBrane:
         self.kick_block = 10                    # Število iteracij ki prepreči ponoven brc
         self.kick_block_cnt = 0                 # Števec iteracij za blokado brca
         self.kick_block_en = 0                  # Enable flag za brcanje
+        self.in_front = 0                       # Flag ki pove da je žoga pred igralcem
         
         
         # Odpri file z geometrijo mize
@@ -190,9 +191,10 @@ class AgentBrane:
                     "translationVelocity": tranVelBall  # 
                     }        
                 
-                if self.possible_kick == 1 and self.kick_block_en == 0:
+                if self.possible_kick == 1 and self.kick_block_en == 0 and self.in_front == 1:
                     cmd = self.kick_routine(rodIdBall)
                     self.kick_block_en = 1
+                    self.in_front = 0
 
                 commands.append(cmd)
 
@@ -277,7 +279,7 @@ class AgentBrane:
             if region[0] <= ball_x <= region[1]:
 
                 if ball_x <= region[0] + offset:
-                    if ball_vel[0] < 0.1 and ball_vel[1] < 0.3:
+                    if ball_vel[0] < 0.3 and ball_vel[1] < 0.3:
                         return 1, 0 # Kick je mogoč / naša žoga, žoga za nami (malo kick)
                     
                 if ball_x >= region[1] - offset:
@@ -293,7 +295,7 @@ class AgentBrane:
         if self.ball_front_back == 1:   # Žoga pred igralcem
             kick_power = 0.8
         else:                           # Žoga za igralcem
-            kick_power = 0.1
+            kick_power = 0.05
 
         match self.kick_stage:
             case 0:
@@ -362,7 +364,6 @@ class AgentBrane:
             if rod['team'] == self.team_color:
                 rod_x = rod['position']
                 distance = abs(rod_x - ball_xy[0])
-
                 if distance < min_distance:
                     min_distance = distance
                     closest_rod = rod
@@ -390,19 +391,23 @@ class AgentBrane:
                 min_y_distance = dist_y
                 chosen_local_index = i
 
-        print(chosen_local_index)
+        # Flag da ne brca vse povprek
+        if min_y_distance < 30:
+            self.in_front = 1
+        else:
+            self.in_front = 0
+
+        #print(rod_players)
         #print("Rod:", rod_id, "Igralec:", target_player)
         # Če slušajno ne najde igralca (nima lih smisla)
         # if target_player is None:
         #     return 0.5, rod_id, 0.0  
 
         # Definiraj range premikanja igralca
-        # player_default_y = default_positions[target_player]
-        # rod_position = player_data[target_player]['rod_position']
         chosen_player_data = rod_players[chosen_local_index]
-        rod_position = chosen_player_data["rod_position"]
-        min_y = rod_position - (travel_range / 2)
-        max_y = rod_position + (travel_range / 2)
+        player_y  = chosen_player_data["position"][1]
+        min_y = player_y  - (travel_range / 2) + 10
+        max_y = player_y  + (travel_range / 2) - 10
 
         # Razdalja premika
         ball_y = ball_xy[1]
@@ -411,9 +416,10 @@ class AgentBrane:
 
         # Hitrost premika
         distance = abs(min_y_distance - ball_y)
-        translationVelocity = min(1.0, abs(distance) / travel_range) + 0.4
+        translationVelocity = min(1.0, abs(distance) / travel_range) + 0.2
 
-        print("translacija:", translationTargetPosition, "hitrost:", translationVelocity)
+        #print("translacija:", translationTargetPosition, "hitrost:", translationVelocity)
+        #print("Zoga", ball_y, "Igralec", player_y)
 
         # Adjust rod ID for compatibility with motor commands
         if rod_id == 4: 
