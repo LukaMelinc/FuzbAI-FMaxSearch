@@ -367,7 +367,7 @@ class PPOAgent:
       - Uses a buffer to accumulate experiences for PPO updates.
     """
     def __init__(self,
-                 obs_dim=92,         # ball = x, y, vx, vy; player = 2 x 11 x 3
+                 obs_dim=36,         # ball = x, y, vx, vy; player = 2 x 11 x 3
                  act_dim=4,          # 1 rod × 4 numbers each
                  hidden_size=512,
                  steps_per_env=256,  # how many steps per iteration
@@ -667,15 +667,23 @@ class PPOAgent:
 
             # Convert the normalized rod_position_calib to actual table coordinates
             rod_y_base = rod_position_calib * travel_range
-
-            for i in range(num_players):
+            print(num_players)
+            
+            player_positions.append({
+                "rod_id": rod_id,
+                "team": team,
+                "position": (rod_x, rod_y_base),
+                "angle": rod_angle
+            })
+            
+            """for i in range(num_players):
                 player_y = rod_y_base + first_offset + i * spacing
                 player_positions.append({
                     "rod_id": rod_id,
                     "team": team,
                     "position": (rod_x, player_y), # TODO: X - JA / NE?
                     "angle": rod_angle
-                })
+                })"""
 
         # Flatten it all
         team_encoding = {"red": 0.0, "blue": 1.0}
