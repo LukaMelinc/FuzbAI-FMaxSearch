@@ -190,9 +190,7 @@ class FuzbAISim:
     ### --- Function for spawning ball at specified location --- ###
     import random
 
-
-    # Spawning the ball for all 4 rows
-    """    def ResetBallToLocation(self):
+    def ResetBallToLocation(self):
         # Randomize the drop position within specified ranges
         y_range = (0.3, 0.4)  # Full width of the field
         zone1 = (1.0, 1.1)    # Target area for zone 4
@@ -200,8 +198,7 @@ class FuzbAISim:
         zone3 = (0.5, 0.7)    # Target area for zone 2
         zone4 = (0.2, 0.5)    # Target area for zone 1
 
-        #zone_list = [zone1, zone2, zone3, zone4]  # Include all zones
-        zone_list = [zone1] # Spawning only for attacking row
+        zone_list = [zone1, zone2, zone3, zone4]  # Include all zones
         x_range = random.choice(zone_list)
 
         custom_x = random.uniform(*x_range)
@@ -243,66 +240,7 @@ class FuzbAISim:
         # Apply velocity to the ball
         p.resetBaseVelocity(self.ball, linearVelocity=velocity, angularVelocity=[0, 0, 0])
 
-        self.showRound()"""
-
-    # Spawning the ball for the attacking row
-    def ResetBallToLocation(self):
-        # Define the drop position within zone1
-        y_range = (0.3, 0.4)  # Full width of the field
-        zone1 = (1.0, 1.1)    # Target area for zone1
-
-        # Spawning only for attacking row
-        x_range = zone1
-
-        custom_x = random.uniform(*x_range)
-        custom_y = random.uniform(*y_range)
-        custom_z = 0.2  # Ensure it's above the table to avoid collision
-
-        custom_ball_pos = [custom_x, custom_y, custom_z]
-
-        # Reset the ball to the randomized safe location
-        p.resetBasePositionAndOrientation(self.ball, custom_ball_pos, p.getQuaternionFromEuler([0, 0, 0]))
-
-        # Random speed within the defined range
-        speed_range = (0.12, 0.2)
-        speed = random.uniform(*speed_range)
-
-        # Define direction vectors
-        rnd_vector_x = random.uniform(0.1, 1)
-        rnd_vector_y = random.uniform(0.1, 1)
-
-        # Determine the direction based on the x position relative to the forward-most rod
-        if custom_x > zone1[0]:
-            # Ball is to the right of the forward-most rod, move it left or left-something
-            directions_list = ['left', 'diagonal-left-up', 'diagonal-left-down']
-        else:
-            # Ball is to the left of the forward-most rod, move it right or right-something
-            directions_list = ['right', 'diagonal-right-up', 'diagonal-right-down']
-
-        direction = random.choice(directions_list)
-
-        direction_vectors = {
-            'left': [-rnd_vector_x, 0.0, 0.0],
-            'right': [rnd_vector_x, 0.0, 0.0],
-            'diagonal-left-up': [-rnd_vector_x, rnd_vector_y, 0.0],
-            'diagonal-left-down': [-rnd_vector_x, -rnd_vector_y, 0.0],
-            'diagonal-right-up': [rnd_vector_x, rnd_vector_y, 0.0],
-            'diagonal-right-down': [rnd_vector_x, -rnd_vector_y, 0.0],
-        }
-
-        # Select direction vector and normalize it
-        velocity_vector = direction_vectors.get(direction, [1.0, 0.0, 0.0])
-        norm = (velocity_vector[0]**2 + velocity_vector[1]**2) ** 0.5
-        velocity = [v / norm * speed for v in velocity_vector]
-
-        # Apply velocity to the ball
-        p.resetBaseVelocity(self.ball, linearVelocity=velocity, angularVelocity=[0, 0, 0])
-
         self.showRound()
-
-
-
-
 
     def placeBall(self, position, velocity=[0, 0, 0]):
         """
@@ -316,10 +254,6 @@ class FuzbAISim:
 
         # Set the ball's velocity
         p.resetBaseVelocity(self.ball, linearVelocity=velocity, angularVelocity=[0, 0, 0])
-
-
-
-
 
     def applyMotorDeadband(self, i, newPos):    
         motionDiff = newPos - self.prevRefPositions[i]
@@ -342,16 +276,16 @@ class FuzbAISim:
 
     def loadSimulator(self, printJointInfo = False):
         print("Loading simulator...")
-        physicsClient = p.connect(p.GUI)    # graphical version
-        #physicsClient = p.connect(p.DIRECT) # non-graphical version
+        #physicsClient = p.connect(p.GUI)    # graphical version
+        physicsClient = p.connect(p.DIRECT) # non-graphical version
 
-        p.configureDebugVisualizer(p.COV_ENABLE_WIREFRAME,0)
-        p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS,1)
-        p.configureDebugVisualizer(p.COV_ENABLE_GUI,0)
-        p.configureDebugVisualizer(p.COV_ENABLE_RENDERING,1)
-        p.configureDebugVisualizer(p.COV_ENABLE_KEYBOARD_SHORTCUTS,1)
-        p.configureDebugVisualizer(p.COV_ENABLE_MOUSE_PICKING,1)
-        p.setPhysicsEngineParameter(enableFileCaching=0)
+        #p.configureDebugVisualizer(p.COV_ENABLE_WIREFRAME,0)
+        #p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS,1)
+        #p.configureDebugVisualizer(p.COV_ENABLE_GUI,0)
+        #p.configureDebugVisualizer(p.COV_ENABLE_RENDERING,1)
+        #p.configureDebugVisualizer(p.COV_ENABLE_KEYBOARD_SHORTCUTS,1)
+        #p.configureDebugVisualizer(p.COV_ENABLE_MOUSE_PICKING,1)
+        #p.setPhysicsEngineParameter(enableFileCaching=0)
 
         p.setAdditionalSearchPath(pybullet_data.getDataPath()) #used by loadURDF
         p.resetDebugVisualizerCamera(cameraDistance=2, cameraYaw=0,cameraPitch=-80, cameraTargetPosition=[0.72,0.375,0])
@@ -370,14 +304,14 @@ class FuzbAISim:
         # Import collision model - miza
         print("Loading FuzbAI table model...")
         visualShapeId = p.createVisualShape(shapeType=p.GEOM_MESH,
-                                            fileName="meshes/Miza.obj",
+                                            fileName="FuzbAIAgent_Train_shooting_PPO_Tinta/meshes/Miza.obj",
                                             rgbaColor=[1, 1, 1, 1],
                                             specularColor=[0.4, .4, 0],
                                             visualFramePosition=[0,0,0],
                                             meshScale=[1e-5, 1e-5, 1e-5]) # Very small visual model
                                         
         collisionShapeId = p.createCollisionShape(shapeType=p.GEOM_MESH,
-                                            fileName="meshes/Miza.obj",
+                                            fileName="FuzbAIAgent_Train_shooting_PPO_Tinta/meshes/Miza.obj",
                                             flags=p.GEOM_FORCE_CONCAVE_TRIMESH,
                                             collisionFramePosition=shift,
                                             meshScale=meshScale)
@@ -391,7 +325,7 @@ class FuzbAISim:
                                             useMaximalCoordinates=True)
         
         # Import main URDF model
-        self.mizaId = p.loadURDF("urdf/miza_garlando.urdf",mizaStartPos, mizaStartOrientation, useFixedBase=1)
+        self.mizaId = p.loadURDF("FuzbAIAgent_Train_shooting_PPO_Tinta/urdf/miza_garlando.urdf",mizaStartPos, mizaStartOrientation, useFixedBase=1)
 
         if printJointInfo:
             jointsNum = p.getNumJoints(self.mizaId)

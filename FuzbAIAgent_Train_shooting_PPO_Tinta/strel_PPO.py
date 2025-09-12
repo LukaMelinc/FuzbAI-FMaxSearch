@@ -401,7 +401,7 @@ class PPOAgent:
         self.value_buffer = [None] * self.delay_steps
         self.logp_buffer = [None] * self.delay_steps
 
-        with open('geometry.json') as f:
+        with open('FuzbAIAgent_Train_shooting_PPO_Tinta/geometry.json') as f:
             self.geometry = json.load(f)
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
