@@ -243,14 +243,6 @@ class ActorCriticNet(nn.Module):
             nn.ReLU(),
             nn.Dropout(p=0.1),
             
-            nn.Linear(hidden_size, hidden_size),  # Second added hidden layer
-            nn.ReLU(),
-            nn.Dropout(p=0.1),
-            
-            nn.Linear(hidden_size, hidden_size),  # Original hidden layer
-            nn.ReLU(),
-            nn.Dropout(p=0.1),
-            
             nn.Linear(hidden_size, act_dim)       # Output layer
         )
 
@@ -260,10 +252,6 @@ class ActorCriticNet(nn.Module):
             nn.Dropout(p=0.1),
             
             nn.Linear(hidden_size, hidden_size),  # First added hidden layer
-            nn.ReLU(),
-            nn.Dropout(p=0.1),
-            
-            nn.Linear(hidden_size, hidden_size),  # Second added hidden layer
             nn.ReLU(),
             nn.Dropout(p=0.1),
             
@@ -296,14 +284,20 @@ class PPOBuffer:
         self.ptr, self.path_start_idx, self.max_size = 0, 0, size
 
     def store(self, obs, act, rew, val, logp):
-        """Store one step of interaction."""
-        #assert self.ptr < self.max_size, "Buffer overflow!"
-        idx = self.ptr % self.max_size  # Ensure index wraps around when full
-        self.obs_buf[idx] = obs
-        self.act_buf[idx] = act
-        self.rew_buf[idx] = rew
-        self.val_buf[idx] = val
-        self.logp_buf[idx] = logp
+        """
+            Single step appender for the buffer, it records one transition (obs, act, rew, val, logp) at a time and
+            advances the pointer. The data is later used to compute GAE-Lambda advantage and rewards-to-go.
+            The buffer has a fixed size, and if it overflows, an error is raised so it remains continious
+        """
+ 
+        if self.ptr >= self.max_size:
+            raise RuntimeError(f"Buffer overflow! ptr={self.ptr}, max_size={self.max_size}")
+        
+        self.obs_buf[self.ptr] = obs    # observation at time t. Used as imput for actor-critic durig training
+        self.act_buf[self.ptr] = act    # Action at time t, to evaluate the the policy loss on the taken action
+        self.rew_buf[self.ptr] = rew    # Reward at time t, used to compute the advantage and rewards-to-go
+        self.val_buf[self.ptr] = val    # Value at time t, used to compute the advantage
+        self.logp_buf[self.ptr] = logp  # Log probability of the action at time t, used to compute the policy loss
         self.ptr += 1
 
     def finish_path(self, last_val=0):
@@ -329,19 +323,26 @@ class PPOBuffer:
 
     def get(self):
         """
-        Get all data from the buffer, then normalize advantages.
+            Gets the collected data from the buffer into tensor for training, normalizes the advantages
+            and resets the buffer pointers.
+            Call this at the end of an epoch to get all of the data from the buffer, with advantages normalized
+            to mean 0 and std 1.
+            Also resets some pointers in the buffer.
         """
-        # assert self.ptr == self.max_size, "Buffer has to be full before you get()"
-        # self.ptr, self.path_start_idx = 0, 0
+        
+        actual_size = self.ptr
+        if actual_size == 0:
+            return None
+        
+        indices = np.arange(actual_size)
 
-        # adv_mean = np.mean(self.adv_buf)
-        # adv_std  = np.std(self.adv_buf)
-        # self.adv_buf = (self.adv_buf - adv_mean) / (adv_std + 1e-8)
+        # Normalize the advantages
+        if actual_size > 1:
+            adv_mean = np.mean(self.adv_buf[indices])
+            adv_std  = np.std(self.adv_buf[indices])
+            if adv_std > 1e-8:
+                self.adv_buf[indices] = (self.adv_buf[indices] - adv_mean) / (adv_std + 1e-8)
 
-        indices = np.arange(min(self.ptr, self.max_size))  # Only take latest
-        adv_mean = np.mean(self.adv_buf[indices])
-        adv_std  = np.std(self.adv_buf[indices])
-        self.adv_buf[indices] = (self.adv_buf[indices] - adv_mean) / (adv_std + 1e-8)
 
         data = dict(obs=self.obs_buf[indices],
                     act=self.act_buf[indices],
@@ -349,6 +350,8 @@ class PPOBuffer:
                     adv=self.adv_buf[indices],
                     logp=self.logp_buf[indices]
                     )
+
+        self.ptr, self.path_start_idx = 0, 0  # reset pointer
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in data.items()}
 
 def mlp_gaussian_likelihood(action, mean, log_std):
