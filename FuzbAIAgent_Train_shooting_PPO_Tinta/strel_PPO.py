@@ -232,9 +232,9 @@ class ActorCriticNet(nn.Module):
     A simple Actor-Critic network.
     It outputs both action_mean (the policy) and value (the critic).
     """
-    def __init__(self, obs_dim, act_dim, hidden_size=512):
+    def __init__(self, obs_dim, act_dim, hidden_size=128):
         super().__init__()
-        self.actor = nn.Sequential(
+        """self.actor = nn.Sequential(
             nn.Linear(obs_dim, hidden_size),   # Input layer
             nn.ReLU(),
             nn.Dropout(p=0.1),
@@ -256,6 +256,22 @@ class ActorCriticNet(nn.Module):
             nn.Dropout(p=0.1),
             
             nn.Linear(hidden_size, 1)            # Output layer (single value for value estimation)
+        )"""
+        self.actor = nn.Sequential(
+            nn.Linear(obs_dim, hidden_size),    # 9 -> 128
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size), # 128 -> 128
+            nn.ReLU(), 
+            nn.Linear(hidden_size, act_dim),     # 128 -> 4
+            nn.Tanh()  # Bound outputs to [-1,1]
+        )
+        
+        self.critic = nn.Sequential(
+            nn.Linear(obs_dim, hidden_size),    # 9 -> 128
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size), # 128 -> 128
+            nn.ReLU(),
+            nn.Linear(hidden_size, 1)           # 128 -> 1
         )
 
 
@@ -370,8 +386,8 @@ class PPOAgent:
       - Uses a buffer to accumulate experiences for PPO updates.
     """
     def __init__(self,
-                 obs_dim=36,         # ball = x, y, vx, vy; player = 2 x 11 x 3
-                 act_dim=4,          # 1 rod × 4 numbers each
+                 obs_dim=9, #obs_dim=36,         # ball = x, y, vx, vy; player = 2 x 11 x 3
+                 act_dim=4, #act_dim=4,          # 1 rod × 4 numbers each
                  hidden_size=512,
                  steps_per_env=256,  # how many steps per iteration
                  gamma=0.99,
@@ -383,8 +399,10 @@ class PPOAgent:
                  delay_step=2,
                  save_model_every=100,   # save every N episodes
                  model_save_path="ppo_foos.pth",
-                 l2_lambda=5e-4):      # L2 regularization strength
+                 l2_lambda=5e-4,
+                 controlled_rod_id=4):      # L2 regularization strength
 
+        self.controlled_rod_id = controlled_rod_id
         self.obs_dim = obs_dim
         self.act_dim = act_dim
         self.save_model_every = save_model_every
@@ -404,7 +422,7 @@ class PPOAgent:
         self.value_buffer = [None] * self.delay_steps
         self.logp_buffer = [None] * self.delay_steps
 
-        with open('FuzbAIAgent_Train_shooting_PPO_Tinta/geometry.json') as f:
+        with open('geometry.json') as f:
             self.geometry = json.load(f)
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -621,7 +639,7 @@ class PPOAgent:
             # Keep track for next step
             self.last_obs = self.obs_buffer[-1]
             self.current_step += 1
-            self.ep_reward += self.action_buffer[-2]  # add reward from this step if you have it
+            self.ep_reward += reward #self.action_buffer[-2]  # add reward from this step if you have it
 
         # Scale the raw action in [-1,1] to your motor commands
         commands = self.scale_to_motor_commands(action)
@@ -634,6 +652,7 @@ class PPOAgent:
         """
         Convert camera dict into a flat numpy array (obs_dim).
         Fill in whatever you need: ball pos, ball vel, rod pos, rod angles, etc.
+        NOTE: Currently training only 
         """
 
         field = self.geometry["field"]
@@ -641,18 +660,71 @@ class PPOAgent:
         player_positions = []
 
         # Just a minimal example:
-        CD0 = camera["camData"][0]
-        if CD0 is None:
-            # Fallback if the first camera is None
-            CD0 = camera["camData"][1]
+        CD0 = camera["camData"][0] if camera["camData"][0] is not None else camera["camData"][1]
 
         # Ball
-        bx = CD0["ball_x"]
+        """bx = CD0["ball_x"]
         by = CD0["ball_y"]
         bvx = CD0["ball_vx"]
-        bvy = CD0["ball_vy"]
+        bvy = CD0["ball_vy"]"""
+        ball_x = (CD0["ball_x"] - 605) / 605  # Center around table middle [-1,1]
+        ball_y = (CD0["ball_y"] - 350) / 350  # Center around table middle [-1,1]
+        ball_vx = np.clip(CD0["ball_vx"] / 5.0, -2, 2)  # Velocity normalized
+        ball_vy = np.clip(CD0["ball_vy"] / 5.0, -2, 2)
 
-        for rod in rods:
+        # Find controlled rod in geometry
+        controlled_rod_info = None
+        for rod in self.geometry["rods"]:
+            if rod["id"] == self.controlled_rod_id:
+                controlled_rod_info = rod
+                break
+        
+        if controlled_rod_info is None:
+            raise ValueError(f"Rod {self.controlled_rod_id} not found in geometry")
+        
+        # Controlled rod state (5 values)
+        rod_idx = self.controlled_rod_id - 1  # Convert to 0-based index
+        rod_pos_calib = CD0["rod_position_calib"][rod_idx]
+        rod_angle = CD0["rod_angle"][rod_idx]
+        
+        if isinstance(rod_pos_calib, list):
+            rod_pos_calib = rod_pos_calib[0]
+        
+        # Team encoding (0=red, 1=blue)
+        team = 0.0 if controlled_rod_info["team"] == "red" else 1.0
+        
+        # Rod position (already normalized 0-1)
+        rod_y_normalized = rod_pos_calib
+        
+        # Relative positioning - KEY FOR SINGLE ROD LEARNING
+        rod_x_world = controlled_rod_info["position"]
+        ball_x_world = CD0["ball_x"]
+        ball_y_world = CD0["ball_y"] 
+        rod_y_world = rod_pos_calib * controlled_rod_info["travel"]
+        
+        # Distance from ball to controlled rod
+        ball_rod_dist_x = (ball_x_world - rod_x_world) / 605  # Normalized [-1,1]
+        ball_rod_dist_y = (ball_y_world - rod_y_world) / 350  # Normalized [-1,1]
+        
+        # Rod angle normalized
+        angle_normalized = np.clip(rod_angle / 45.0, -1, 1)  # Assuming ±45° range
+        
+        # Combine: Ball(4) + Rod(5) = 9 total
+        obs = np.array([
+            ball_x, ball_y, ball_vx, ball_vy,           # Ball state (4)
+            team,                                        # Rod team (1)
+            ball_rod_dist_x, ball_rod_dist_y,           # Relative position (2)
+            rod_y_normalized,                            # Rod position (1) 
+            angle_normalized                             # Rod angle (1)
+        ], dtype=np.float32)
+        
+        # Verify size
+        assert len(obs) == 9, f"Expected obs_dim=9, got {len(obs)}"
+        
+        return obs, (CD0["ball_x"], CD0["ball_y"]), (CD0["ball_vx"], CD0["ball_vy"])
+
+
+        """for rod in rods:
             rod_id = rod["id"]
             team = rod["team"]
             rod_x = rod["position"]
@@ -679,14 +751,14 @@ class PPOAgent:
                 "angle": rod_angle
             })
             
-            """for i in range(num_players):
+            """"""for i in range(num_players):
                 player_y = rod_y_base + first_offset + i * spacing
                 player_positions.append({
                     "rod_id": rod_id,
                     "team": team,
                     "position": (rod_x, player_y), # TODO: X - JA / NE?
                     "angle": rod_angle
-                })"""
+                })""""""
 
         # Flatten it all
         team_encoding = {"red": 0.0, "blue": 1.0}
@@ -704,7 +776,7 @@ class PPOAgent:
         obs = self.normalize_observation(obs)
         print(obs)
         print("---")
-        return obs, (bx, by), (bvx, bvy)
+        return obs, (bx, by), (bvx, bvy)"""
 
     def scale_to_motor_commands(self, action):
         """
@@ -712,9 +784,6 @@ class PPOAgent:
         [rot_target, rot_speed, trans_target, trans_speed]
         We'll scale them appropriately into the JSON commands expected by the simulator.
         """
-        # The forward-most rod (index in geometry): 0 => drive ID = 1
-        rod_map = [0]
-        driveID = [1]
 
         # Example scaling:
         rot_target   = 0.5 * action[0]  # in [-1,1]

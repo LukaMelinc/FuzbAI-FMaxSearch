@@ -20,7 +20,7 @@ class PlayerAgent():
     def __init__(self):
         # Load field geometry from json
         # origin in top-left corner, x towards right, y towards down (as seen in the simulator)   
-        f = open('FuzbAIAgent_Train_shooting_PPO_Tinta/geometry.json')
+        f = open('geometry.json')
         self.geometry = json.load(f)
         f.close()
         
