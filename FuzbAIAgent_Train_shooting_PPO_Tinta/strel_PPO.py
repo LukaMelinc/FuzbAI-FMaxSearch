@@ -7,26 +7,25 @@ import os
 import requests
 import math
 import json
+from pprint import pprint
 
 
 HOST_ADDRESS = '127.0.0.1:23336'  # IP or Host for your environment
 
-##############################
-# 1) Online Functions (unchanged)
-##############################
-
 def get_camera_state():
+    """Gets the data from the camera"""
     cam_url = f"http://{HOST_ADDRESS}/Camera/State"
     response = requests.get(cam_url)
     return response.json()
 
-
 def send_motor_commands(cmds):
+    """Sends REST communication to the HW"""
     motors_url = f"http://{HOST_ADDRESS}/Motors/SendCommand?blue=False"
     requests.post(motors_url, json=cmds)
 
-
 def calculate_player_positions_and_angles(camera, geometry):
+    "Function that calculates the state parameters of the rods in the enviroment"
+    # NOTE: Not used for single row training, activate later
     field = geometry["field"]
     rods = geometry["rods"]
     player_positions = []
@@ -66,204 +65,71 @@ def calculate_player_positions_and_angles(camera, geometry):
 
     return player_positions
 
+def mlp_gaussian_likelihood(action, mean, log_std):
+    """
+    Compute log likelihood of a Gaussian distribution with diagonal covariance
+    (log_std is a vector).
+    """
+    # 1. Compute σ from log_std
+    std = torch.exp(log_std)  # σ = e^(log_std)
 
+    # 2. Standardized residual: (action - mean) / σ
+    z = (action - mean) / std
 
-def detect_collision_and_reward(yv, prev_ball_vx, current_ball_vx, ball_x, active_regions=None):   
-    
-    rod_positions=[80, 230, 530, 830]
-    
-    if active_regions is None:
-        active_regions = {i: {"active": False, "rewarded": False} for i in range(len(rod_positions))}
+    # 3. Compute the log-probability for each action dimension
+    #    Formula: -0.5 * z² - log(σ) - 0.5·log(2π)
+    pre_sum = -0.5 * (z**2 + 2*log_std + np.log(2*np.pi))
+    #pre_sum = -0.5 * (((action - mean) / (torch.exp(log_std)))**2 + 2*log_std + np.log(2*np.pi))
+    return torch.sum(pre_sum, axis=1)
 
-    # Define the regions along the rods where collisions are checked
-    collision_regions = [(rod_x - 80, rod_x + 80) for rod_x in rod_positions]
-
-    # Check if the ball is within any of the collision regions
-    for i, region in enumerate(collision_regions):
-        if region[0] <= ball_x <= region[1]:
-            # Detect if there is an increase in the ball's speed
-            if abs(abs(current_ball_vx) - abs(prev_ball_vx)) > 0.05:
-                if not active_regions[i]["active"]:
-                    # Ball entered the region
-                    active_regions[i]["active"] = True
-                    active_regions[i]["rewarded"] = False
-
-                if not active_regions[i]["rewarded"]:
-                 #   print("Collision detected in region:", region)
-                    # Determine the direction of the speed increase
-                    if current_ball_vx > prev_ball_vx:
-                        # Positive increase in speed (towards opponent's goal)
-                        active_regions[i]["rewarded"] = True
-                        return 50.0, active_regions  # Positive reward
-                    else:
-                        # Negative increase in speed (towards own goal)
-                        active_regions[i]["rewarded"] = True
-                        return -2.0, active_regions  # Negative reward
-
-    # Reset active regions if the ball is not in proximity
-    for i, region in enumerate(collision_regions):
-        if not (region[0] <= ball_x <= region[1]):
-            active_regions[i]["active"] = False
-
-    # No collision detected
-    return 0.0, active_regions
-
-
-# SAM ZA PREVERIT, ČE JE DELAY 2 - POTEM SE GA LAHKO ZAKOMENTIRA
-def detect_y_axis_changes(current_y, prev_vy, current_vy, threshold=0.05):
-
-    print("-------------")
-    #print(f"Previous y position: {prev_y}")
-    print(f"Current y position: {current_y}")
-    print("......")
-    print(f"Previous y speed: {prev_vy}")
-    print(f"Current y speed: {current_vy}")
-   
-    change_detected = False
-    #reward = 0.0
-
-    """ # Check for significant changes in y-axis position
-    if abs(current_y - prev_y) > threshold:
-        change_detected = True
-        reward += 2.0  # Positive reward for significant position change"""
-
-    # Check for significant changes in y-axis velocity
-    if abs(current_vy - prev_vy) > threshold:
-        change_detected = True
-        #reward += 2.0  # Positive reward for significant velocity change
-
-    if (prev_vy > 0 and current_vy < 0) or (prev_vy < 0 and current_vy > 0):
-            print("Direction of y-axis velocity changed!")
-           # reward += 3.0  # Additional reward for change in direction
-
-
-def reward_movement(ball_vel, ball_loc, player_data):
-
+def simple_reward(ball_loc, ball_x_speed_now, ball_x_speed_before):
+    """Minimal reward to verify training works"""
     reward = 0
-    goal_x_range = (1195, 1210)
-    goal_x_range_out = (0, 10)
-    goal_y_range = (250, 450)
+    
+    # 1. Ball moving right = good (toward opponent goal)
+    #if ball_vel[0] > 0:
+    #    reward += ball_vel[0]
 
-    # # 1. Collision Reward
-    # if self.prev_ball == 0:
-    #     pass
-    # else:
-    #     collision_reward, self.active_regions = detect_collision_and_reward(
-    #         vxy[1], self.prev_ball, vxy[0], bxy[0], self.active_regions
-    #     )
-    #     reward += collision_reward
+    if ball_x_speed_before == None:
+        reward += 0
+    elif ball_x_speed_before != None:
+        # If the agent kicks the ball towards its own goal and it did not happen by bouncing off the right end of the pitch
+        # Negative reward
+        if (ball_x_speed_now < 0) and (ball_x_speed_before > 0) and not (1195 <= ball_loc[0] <= 1210):
+            reward -= 5
 
-    # self.prev_ball = vxy[0]  # Save the last ball speed
+        if (ball_x_speed_now > 0) and (ball_x_speed_before < 0) and not (0 <= ball_loc[0] <= 15):
+            reward += 5
 
-    # 2. Direction towards the goal
-    goal_center = (1205, 350)
-    ball_vector = np.array([ball_vel[0], ball_vel[1]])
-    direction_vector = np.array([goal_center[0] - ball_loc[0], goal_center[1] - ball_loc[1]])
+        if ball_x_speed_now > (ball_x_speed_before * 2):
+            reward += 5
 
-    if np.linalg.norm(ball_vector) > 0:
-        cosine_similarity = np.dot(ball_vector, direction_vector) / (
-            np.linalg.norm(ball_vector) * np.linalg.norm(direction_vector)
-        )
-        if cosine_similarity > 0:
-            directional_reward = cosine_similarity * 30
-            reward += directional_reward
-            #print(f"ball moving towards the goal, Reward: {directional_reward}")
-        else:
-            reward -= 10
-    # else:
-    #     reward -= 5
-
-    # 3. Speed
-    ball_speed = np.linalg.norm(ball_vector)
-    reward += ball_speed
-    #print(f"Speed reward: {ball_speed}")
-
-    # 4. Check goal
-    if goal_x_range[0] <= ball_loc[0] <= goal_x_range[1] and goal_y_range[0] <= ball_loc[1] <= goal_y_range[1]:
-        reward += 500
-    elif goal_x_range_out[0] <= ball_loc[0] <= goal_x_range_out[1] and goal_y_range[0] <= ball_loc[1] <= goal_y_range[1]:
-        reward -= 100  # Own goal or out of bounds
-        #print(f"Goal received, Reward -50")
-
-    # # 5. Slight penalty if ball is basically still
-    # if ball_speed < 0.01:
-    #     reward -= 1
-    #     #print(f"Slow ball spet penalty: -1")
-    # else:
-    #     reward += 3
-
-
-    # 6. Slight penalty if a player is oriented in the air
-    # team_encoding = {"red": 0.0, "blue": 1.0}
-
-    player_data = player_data[4:].reshape(-1, 4)
-
-    for player in player_data:
-        team_code = player[0]
-        if math.isclose(team_code, 0.0, abs_tol=1e-6):
-            rwd = 5 * (abs(player[3]) * -1)
-            if rwd > -50:
-                reward += 50
-            else:
-                reward += rwd
-
-
-    # 7. Slight reward for distance between player and ball
-    min_distance = float("inf")
-
-    for player in player_data:
-        team_code = player[0]
-        if math.isclose(team_code, 0.0, abs_tol=1e-6):
-            dx = player[1] - ball_loc[0]
-            dy = player[2] - ball_loc[1]
-            dist = math.sqrt(dx**2 + dy**2)
-            if dist < min_distance:
-                min_distance = dist
-
-    # Use the closest distance to the ball to compute reward
-    # You can adjust the reward scaling as needed
-    reward += max(0, 100 - min_distance)  # Smaller distance = higher reward
-
-    return reward  
-
+    
+    # 2. Goal scored
+    if 1195 <= ball_loc[0] <= 1210 and 250 <= ball_loc[1] <= 450:
+        reward += 25
+    
+    # 3. Own goal
+    elif 0 <= ball_loc[0] <= 15 and 250 <= ball_loc[1] <= 450:
+        reward -= 25
+    
+    return reward
 
 class ActorCriticNet(nn.Module):
+    # NOTE: Structure done for now 
     """
     A simple Actor-Critic network.
     It outputs both action_mean (the policy) and value (the critic).
     """
     def __init__(self, obs_dim, act_dim, hidden_size=128):
         super().__init__()
-        """self.actor = nn.Sequential(
-            nn.Linear(obs_dim, hidden_size),   # Input layer
-            nn.ReLU(),
-            nn.Dropout(p=0.1),
-            
-            nn.Linear(hidden_size, hidden_size),  # First added hidden layer
-            nn.ReLU(),
-            nn.Dropout(p=0.1),
-            
-            nn.Linear(hidden_size, act_dim)       # Output layer
-        )
-
-        self.critic = nn.Sequential(
-            nn.Linear(obs_dim, hidden_size),   # Input layer
-            nn.ReLU(),
-            nn.Dropout(p=0.1),
-            
-            nn.Linear(hidden_size, hidden_size),  # First added hidden layer
-            nn.ReLU(),
-            nn.Dropout(p=0.1),
-            
-            nn.Linear(hidden_size, 1)            # Output layer (single value for value estimation)
-        )"""
         self.actor = nn.Sequential(
             nn.Linear(obs_dim, hidden_size),    # 9 -> 128
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size), # 128 -> 128
             nn.ReLU(), 
             nn.Linear(hidden_size, act_dim),     # 128 -> 4
-            nn.Tanh()  # Bound outputs to [-1,1]
+            nn.Tanh()   # NOTE: Temporarely, later change the approach
         )
         
         self.critic = nn.Sequential(
@@ -274,47 +140,45 @@ class ActorCriticNet(nn.Module):
             nn.Linear(hidden_size, 1)           # 128 -> 1
         )
 
-
     def forward(self, x):
-        # x is a batch of observations
-        policy_logits = self.actor(x)
+        "Takes in the actin and calculates the log-probabilities of actions "
+        "and estimated value of the action"
+        action_mean = self.actor(x)
         value = self.critic(x)
-        return policy_logits, value
+        return action_mean, value
 
 class PPOBuffer:
     """
     A simple buffer to store trajectories for PPO.
     """
-    def __init__(self, obs_dim, act_dim, size, gamma=0.8, lam=0.95):
+    def __init__(self, obs_dim, act_dim, size, gamma=0.99, lam=0.95):
         # večja lambda pomeni večjo varianco in bolj dolgotrajen trening
-        self.obs_buf = np.zeros((size, obs_dim), dtype=np.float32)
-        self.act_buf = np.zeros((size, act_dim), dtype=np.float32)
-        self.adv_buf = np.zeros(size, dtype=np.float32)
-        self.rew_buf = np.zeros(size, dtype=np.float32)
-        self.ret_buf = np.zeros(size, dtype=np.float32)
-        self.val_buf = np.zeros(size, dtype=np.float32)
-        self.logp_buf = np.zeros(size, dtype=np.float32)
+        self.obs_buf = np.zeros((size, obs_dim), dtype=np.float32)      # Observations
+        self.act_buf = np.zeros((size, act_dim), dtype=np.float32)      # actions 
+        self.adv_buf = np.zeros(size, dtype=np.float32)                 # Advantages
+        self.rew_buf = np.zeros(size, dtype=np.float32)                 # Rewards 
+        self.ret_buf = np.zeros(size, dtype=np.float32)                 # Returns
+        self.val_buf = np.zeros(size, dtype=np.float32)                 # Value estimates
+        self.logp_buf = np.zeros(size, dtype=np.float32)                # log probs
 
-        self.gamma = gamma
-        self.lam = lam
+        self.gamma = gamma  # Discount
+        self.lam = lam      # GAE
         self.ptr, self.path_start_idx, self.max_size = 0, 0, size
 
     def store(self, obs, act, rew, val, logp):
-        """
-            Single step appender for the buffer, it records one transition (obs, act, rew, val, logp) at a time and
-            advances the pointer. The data is later used to compute GAE-Lambda advantage and rewards-to-go.
-            The buffer has a fixed size, and if it overflows, an error is raised so it remains continious
-        """
- 
+        """Store one step of interaction."""
         if self.ptr >= self.max_size:
-            raise RuntimeError(f"Buffer overflow! ptr={self.ptr}, max_size={self.max_size}")
+            # Signal that buffer is full - training should happen
+            print(f"[PPOBuffer] Buffer full at {self.ptr} steps")
+            return False  # Indicate buffer is full
         
-        self.obs_buf[self.ptr] = obs    # observation at time t. Used as imput for actor-critic durig training
-        self.act_buf[self.ptr] = act    # Action at time t, to evaluate the the policy loss on the taken action
-        self.rew_buf[self.ptr] = rew    # Reward at time t, used to compute the advantage and rewards-to-go
-        self.val_buf[self.ptr] = val    # Value at time t, used to compute the advantage
-        self.logp_buf[self.ptr] = logp  # Log probability of the action at time t, used to compute the policy loss
+        self.obs_buf[self.ptr] = obs
+        self.act_buf[self.ptr] = act
+        self.rew_buf[self.ptr] = rew
+        self.val_buf[self.ptr] = val
+        self.logp_buf[self.ptr] = logp
         self.ptr += 1
+        return True  # Indicate successful storage
 
     def finish_path(self, last_val=0):
         """
@@ -370,14 +234,6 @@ class PPOBuffer:
         self.ptr, self.path_start_idx = 0, 0  # reset pointer
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in data.items()}
 
-def mlp_gaussian_likelihood(action, mean, log_std):
-    """
-    Compute log likelihood of a Gaussian distribution with diagonal covariance
-    (log_std is a vector).
-    """
-    pre_sum = -0.5 * (((action - mean) / (torch.exp(log_std)))**2 + 2*log_std + np.log(2*np.pi))
-    return torch.sum(pre_sum, axis=1)
-
 class PPOAgent:
     """
     PPO RL agent that:
@@ -409,18 +265,13 @@ class PPOAgent:
         self.model_save_path = model_save_path
         self.l2_lambda = l2_lambda  # L2 regularization strength
 
-        self.prev_ball = 0
-        self.prev_vy = 0
+
+        self.prev_vel = None
         self.active_regions = None  # Initialize active_regions
         self.MAX_EPISODE_STEPS = 100
         self.episode_steps = 0
 
-        self.delay_steps = delay_step
-        self.obs_buffer = [None] * self.delay_steps
-        self.action_buffer = [None] * self.delay_steps
-        self.reward_buffer = [None] * self.delay_steps
-        self.value_buffer = [None] * self.delay_steps
-        self.logp_buffer = [None] * self.delay_steps
+        
 
         with open('geometry.json') as f:
             self.geometry = json.load(f)
@@ -459,8 +310,6 @@ class PPOAgent:
         # For training mode vs. inference mode
         self.training_enabled = True
 
-
-
     def save_model(self, path=None):
         if path is None:
             path = self.model_save_path
@@ -491,7 +340,6 @@ class PPOAgent:
 
         return obs
 
-
     def compute_action(self, obs):
         """
         Given a single observation (numpy array),
@@ -503,16 +351,18 @@ class PPOAgent:
         std = torch.exp(log_std)
 
         # Sample from Gaussian
-        action = mean + std * torch.randn_like(mean)
-        logp = mlp_gaussian_likelihood(action, mean, log_std)
+        action_raw = mean + std * torch.randn_like(mean)
+        action_clipped = torch.clamp(action_raw, -1.0, 1.0)
+
+        logp = mlp_gaussian_likelihood(action_raw, mean, log_std)
 
         # Squeeze out the batch dimension
-        action = action.detach().cpu().numpy()[0]
+        action = action_clipped.detach().cpu().numpy()[0]
         value  = value_t.detach().cpu().numpy()[0,0]
         logp   = logp.detach().cpu().numpy()[0]
 
         # Action in [-1,1], but the raw Gaussian might exceed that.
-        action = np.clip(action, -1.0, 1.0)
+        #action = np.clip(action, -1.0, 1.0)
         return action, value, logp
 
     def train_on_buffer(self):
@@ -520,6 +370,13 @@ class PPOAgent:
         Run PPO update once we have a full buffer (N steps).
         """
         data = self.buf.get()  # get everything as torch tensors
+
+        # Add validation
+        if data is None:
+            print("[Warning] No data in buffer to train on")
+            return
+    
+
         obs = data["obs"].to(self.device)
         act = data["act"].to(self.device)
         ret = data["ret"].to(self.device)
@@ -530,6 +387,8 @@ class PPOAgent:
             print("NaN in logp_old!")
 
         for i in range(self.train_iters):
+
+            # Forward pass
             mean, value = self.ac(obs)
             log_std = self.log_std.expand_as(mean)
             std = torch.exp(log_std)
@@ -539,13 +398,6 @@ class PPOAgent:
 
             # Ratio for surrogate loss
             ratio = torch.exp(logp_pi - logp_old)
-
-            # Clipped surrogate objective
-            clip_adv = torch.where(
-                ratio > (1 + self.clip_ratio),
-                adv,
-                torch.where(ratio < (1 - self.clip_ratio), adv, adv)
-            )
 
             obj = ratio * adv
             clipped_obj = torch.clamp(ratio, 1 - self.clip_ratio, 1 + self.clip_ratio) * adv
@@ -568,85 +420,81 @@ class PPOAgent:
                 print(f"[PPO] Early stopping at iter={i} due to reaching max kl.")
                 break
 
-
-    # ------------------------------------------------------------------
-    # The main interface: "process_data(camera)" for each step in the sim
-    # ------------------------------------------------------------------
     def process_data(self, camera):
         # Extract the current observation
         obs, bxy, vxy = self.extract_observation(camera)
 
-        # Store the current observation in the buffer
-        self.obs_buffer.append(obs)
-        self.obs_buffer.pop(0)
 
+        
+        #pprint(obs)
+        #print("obs")
+        #pprint(bxy)
+        #print("bxy")
+        #pprint(vxy)
+        #print("vxy")
+
+
+        # If not training, just run the policy forward pass
         if not self.training_enabled:
-            # If not training, just run the policy forward pass
-            action, _, _ = self.compute_action(self.obs_buffer[-1])
-        else:
-            # Training: collect the step
-            if self.last_obs is not None:
-                # We have a previous observation; store the reward for that step
-                reward = 0.0  # or update from your environment’s collision/score trackers
-                reward, self.active_regions = detect_collision_and_reward(vxy[1], self.prev_ball, vxy[0], bxy[0], self.active_regions)
-                reward += reward_movement(vxy, bxy, obs)
+            action, _, _ = self.compute_action(obs)
+            commands = self.scale_to_motor_commands(action)
+            return commands
 
-                reward = np.clip(reward, -1000, 1000)
+    
+        # Training: collect the step
+        if self.last_obs is not None:
+            # Calculate the reward for the previous step (s_t-1, a_t-1 -> r_t)
+            reward = simple_reward(bxy, vxy[0], self.prev_vel)
+            reward = np.clip(reward, -1000, 1000)       # Clippanje rewarda, se lahko potem še spreminja
 
-                # Store the current action, value, and logp in the buffer
-                self.action_buffer.append(self.last_action)
-                self.action_buffer.pop(0)
-                self.value_buffer.append(self.last_val)
-                self.value_buffer.pop(0)
-                self.logp_buffer.append(self.last_logp)
-                self.logp_buffer.pop(0)
-
-                # Store the reward in the buffer
-                self.reward_buffer.append(reward)
-                self.reward_buffer.pop(0)
-
-                # Use the delayed reward for training
-                delayed_reward = self.reward_buffer[-1]
-
-                if (self.obs_buffer[-2] is not None and
-                    self.action_buffer[-2] is not None and
-                    self.value_buffer[-2] is not None and
-                    self.logp_buffer[-2] is not None):
-
-                    # Store the transition in the buffer
-                    self.buf.store(self.obs_buffer[-2], self.action_buffer[-2], delayed_reward, self.value_buffer[-2], self.logp_buffer[-2])
-
-            # Compute the action for the current step
-            action, value, logp = self.compute_action(self.obs_buffer[-1])
-
-            if not np.all(np.isfinite(action)):
-                print("NaN or Inf detected in action:", action)
-                action = np.zeros_like(action)  # fallback to safe value
-
-            if self.episode_steps >= self.MAX_EPISODE_STEPS:
-                print("Training")
-                self.finish_episode()
-                self.episode_steps = 0
+            # Shranitev celotne tranzicije (s_t-1, a_t-1, r_t, V_t-1)
+            stored = self.buf.store(self.last_obs, self.last_action, reward, self.last_val, self.last_logp)
+            
+            if not stored:
+                # Buffer is full - must train immediately
+                _, final_value, _ = self.compute_action(obs)
+                self.buf.finish_path(last_val=final_value)
+                print(f"[Training] Buffer full, training now...")
+                self.train_on_buffer()
+                # Reset episode tracking
+                self.episode_count += 1
+                self.current_step = 0
+                self.ep_reward = 0.0
+                self.last_obs = None
+                self.last_action = None
+                self.last_val = None
+                self.last_logp = None
+                # Don't return - continue to get action for current obs
             else:
-                self.episode_steps += 1
+                self.ep_reward += reward
 
-            # Store the current action, value, and logp for the next step
-            self.last_action = action
-            self.last_val = value
-            self.last_logp = logp
-            self.prev_ball = vxy[0]
+        # Preveritev terminacije epizode
+        if self.episode_steps >= self.MAX_EPISODE_STEPS:
+            # Zadnja napovedana vrednost za GAE izračun
+            _, final_value, _ = self.compute_action(obs)
+            self.finish_episode(last_value=final_value)
+            self.episode_steps = 0
+        else:
+            self.episode_steps += 1
 
-            # Keep track for next step
-            self.last_obs = self.obs_buffer[-1]
-            self.current_step += 1
-            self.ep_reward += reward #self.action_buffer[-2]  # add reward from this step if you have it
+        # Izračun akcije za trenutno stanje
+        action, value, logp = self.compute_action(obs)
 
-        # Scale the raw action in [-1,1] to your motor commands
+        if not np.all(np.isfinite(action)):
+            print("Nan or Inf detected in action:", action)
+            action = np.zeros_like(action)  # fallback to safe value
+
+
+        self.prev_vel = vxy[0]
+        # store for next iteration
+        self.last_obs = obs
+        self.last_action = action
+        self.last_val = value
+        self.last_logp = logp
+        self.current_step += 1
+
         commands = self.scale_to_motor_commands(action)
-
-        # Return the motor commands so the simulator can drive the rods
         return commands
-
 
     def extract_observation(self, camera):
         """
@@ -787,12 +635,12 @@ class PPOAgent:
 
         # Example scaling:
         rot_target   = 0.5 * action[0]  # in [-1,1]
-        rot_velocity = 0.2 * (action[1] + 1) / 8  # scale [-1,1]→[0,1], then multiply by max 0.5
-        trans_target = 0.2 * ((action[2] + 1) / 2)  # scale [-1,1]→[0,1], you might want full 0..1 0.5
+        rot_velocity = 0.4 * (action[1] + 1) / 4  # scale [-1,1]→[0,1], then multiply by max 0.5
+        trans_target = 0.5 * ((action[2] + 1) / 2)  # scale [-1,1]→[0,1], you might want full 0..1 0.5
         trans_velocity = 1.0 * (action[3] + 1) / 2   # scale [-1,1]→[0,1]
 
         cmd = {
-            "driveID": 4,
+            "driveID": 3,
             "rotationTargetPosition": rot_target,
             "rotationVelocity": rot_velocity,
             "translationTargetPosition": trans_target,
@@ -809,7 +657,7 @@ class PPOAgent:
                 "translationVelocity": 0.0
             },
             {
-                "driveID": 3,
+                "driveID": 4,
                 "rotationTargetPosition": 0.0,
                 "rotationVelocity": 0.0,
                 "translationTargetPosition": 0.5,
@@ -828,31 +676,37 @@ class PPOAgent:
         return commands
 
     def finish_episode(self, last_value=0):
+        """Fixed episode finishing with proper buffer managment"""
+
+        # Only finish path if we have data in the buffer
+        if self.buf.ptr > self.buf.path_start_idx:
+            self.buf.finish_path(last_val=last_value)
+            self.episode_rewards.append(self.ep_reward)
+
+
+            # Train when buffer is sufficiently full (≥80% capacity)
+            buffer_fill = self.buf.ptr / self.buf.max_size
+            if buffer_fill >= 0.8:
+                print(f"[Training] Buffer {buffer_fill*100:.1f}% full ({self.buf.ptr}/{self.buf.max_size}), Episode {self.episode_count}")
+                self.train_on_buffer() # -> calls buf.get() which resets ptr internally
+
+
+
         self.episode_count += 1
-        # Let the buffer compute GAE, returns, etc.
-        self.buf.finish_path(last_val=last_value)
-        self.episode_rewards.append(self.ep_reward)
-
-        # If we filled our buffer, we do a PPO update
-        print("Buffer:", self.buf.ptr)
-        if self.buf.ptr >= self.buf.max_size:
-            self.train_on_buffer()
-            self.buf.ptr = 0
-
-        # Housekeeping
         self.current_step = 0
         self.ep_reward = 0.0
         self.last_obs = None
+        # Reset episode-specific variables
+        self.last_action = None
+        self.last_val = None
+        self.last_logp = None
 
-        # Clear the buffers
-        # self.obs_buffer = [None] * self.delay_steps
-        # self.action_buffer = [None] * self.delay_steps
-        # self.reward_buffer = [None] * self.delay_steps
-        # self.value_buffer = [None] * self.delay_steps
-        # self.logp_buffer = [None] * self.delay_steps
 
-        # Save model every N episodes
+
+        # Save model periodically
         if self.episode_count % self.save_model_every == 0:
+            avg_reward = np.mean(self.episode_rewards[-100:]) if self.episode_rewards else 0
+            print(f"Episode {self.episode_count}, Avg Reward (last 100): {avg_reward:.2f}")
             self.save_model()
 
 
@@ -864,6 +718,8 @@ if __name__ == "__main__":
 
     # Possibly load an existing model
     agent.load_model()
+
+    episode =0
 
     try:
         while True:
