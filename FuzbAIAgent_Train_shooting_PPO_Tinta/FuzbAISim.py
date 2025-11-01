@@ -54,7 +54,8 @@ class FuzbAISim:
         self.p2 = PlayerAgent()
 
         # Camera delay settings
-        self.simulatedDelay = 0.030
+        #self.simulatedDelay = 0.030
+        self.simulatedDelay = 0.00  # NOTE: Temporarely set the delay to 0, implement delay tracker into the agent
         self.delayedMemory = []
         self.maxMemory = 0.5 # Maximum delay time
 
@@ -198,7 +199,8 @@ class FuzbAISim:
         zone3 = (0.5, 0.7)    # Target area for zone 2
         zone4 = (0.2, 0.5)    # Target area for zone 1
 
-        zone_list = [zone1, zone2, zone3, zone4]  # Include all zones
+        #zone_list = [zone1, zone2, zone3, zone4]  # Include all zones
+        zone_list = [zone1]
         x_range = random.choice(zone_list)
 
         custom_x = random.uniform(*x_range)
@@ -276,12 +278,12 @@ class FuzbAISim:
 
     def loadSimulator(self, printJointInfo = False):
         print("Loading simulator...")
-        #physicsClient = p.connect(p.GUI)    # graphical version
-        physicsClient = p.connect(p.DIRECT) # non-graphical version
+        physicsClient = p.connect(p.GUI)    # graphical version
+        #physicsClient = p.connect(p.DIRECT) # non-graphical version
 
         #p.configureDebugVisualizer(p.COV_ENABLE_WIREFRAME,0)
         #p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS,1)
-        #p.configureDebugVisualizer(p.COV_ENABLE_GUI,0)
+        p.configureDebugVisualizer(p.COV_ENABLE_GUI,0)
         #p.configureDebugVisualizer(p.COV_ENABLE_RENDERING,1)
         #p.configureDebugVisualizer(p.COV_ENABLE_KEYBOARD_SHORTCUTS,1)
         #p.configureDebugVisualizer(p.COV_ENABLE_MOUSE_PICKING,1)
@@ -304,14 +306,14 @@ class FuzbAISim:
         # Import collision model - miza
         print("Loading FuzbAI table model...")
         visualShapeId = p.createVisualShape(shapeType=p.GEOM_MESH,
-                                            fileName="FuzbAIAgent_Train_shooting_PPO_Tinta/meshes/Miza.obj",
+                                            fileName="meshes/Miza.obj",
                                             rgbaColor=[1, 1, 1, 1],
                                             specularColor=[0.4, .4, 0],
                                             visualFramePosition=[0,0,0],
                                             meshScale=[1e-5, 1e-5, 1e-5]) # Very small visual model
                                         
         collisionShapeId = p.createCollisionShape(shapeType=p.GEOM_MESH,
-                                            fileName="FuzbAIAgent_Train_shooting_PPO_Tinta/meshes/Miza.obj",
+                                            fileName="meshes/Miza.obj",
                                             flags=p.GEOM_FORCE_CONCAVE_TRIMESH,
                                             collisionFramePosition=shift,
                                             meshScale=meshScale)
@@ -325,7 +327,7 @@ class FuzbAISim:
                                             useMaximalCoordinates=True)
         
         # Import main URDF model
-        self.mizaId = p.loadURDF("FuzbAIAgent_Train_shooting_PPO_Tinta/urdf/miza_garlando.urdf",mizaStartPos, mizaStartOrientation, useFixedBase=1)
+        self.mizaId = p.loadURDF("urdf/miza_garlando.urdf",mizaStartPos, mizaStartOrientation, useFixedBase=1)
 
         if printJointInfo:
             jointsNum = p.getNumJoints(self.mizaId)
@@ -556,6 +558,7 @@ class FuzbAISim:
         self.isRunning = False
 
 if __name__ == "__main__":
+    print("Working with up-to-date code")
     sim = FuzbAISim()
     sim.run()
 

@@ -85,6 +85,12 @@ def mlp_gaussian_likelihood(action, mean, log_std):
 def simple_reward(ball_loc, ball_x_speed_now, ball_x_speed_before):
     """Minimal reward to verify training works"""
     reward = 0
+    reward_breakdown = {
+        'velocity_change': 0,
+        'goal_scored': 0,
+        'own_goal': 0,
+        'speed_boost': 0
+    }
     
     # 1. Ball moving right = good (toward opponent goal)
     #if ball_vel[0] > 0:
@@ -94,29 +100,75 @@ def simple_reward(ball_loc, ball_x_speed_now, ball_x_speed_before):
         reward += 0
     elif ball_x_speed_before != None:
         # If the agent kicks the ball towards its own goal and it did not happen by bouncing off the right end of the pitch
-        # Negative reward
-        if (ball_x_speed_now < 0) and (ball_x_speed_before > 0) and not (1195 <= ball_loc[0] <= 1210):
-            reward -= 5
 
-        if (ball_x_speed_now > 0) and (ball_x_speed_before < 0) and not (0 <= ball_loc[0] <= 15):
-            reward += 5
+        # Negative reward for kicking the ball in our goal
+        if (ball_x_speed_now < ball_x_speed_before) and (ball_x_speed_now < 0):
+            if (ball_x_speed_before < 0) and (ball_x_speed_now < 0):
+                if (ball_x_speed_now < (ball_x_speed_before * 5)) and (750 <= ball_loc[0] <= 950):
+                    reward_breakdown['velocity_change'] = -5
+                    reward -= 5
+                    print(f"Ball kicked in the wrong direction")
+                    print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
 
-        if ball_x_speed_now > (ball_x_speed_before * 2):
-            reward += 5
+            elif (ball_x_speed_before > 0) and (ball_x_speed_now < 0) and (750 <= ball_loc[0] <= 950):
+                absolute_before = abs(ball_x_speed_before)
+                if ball_x_speed_now > (-absolute_before * 3):
+                    reward_breakdown['velocity_change'] = -5
+                    reward -= 5
+                    print(f"Ball kicked in the wrong direction from the correct direction")
+                    print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
 
+        ####################################################################################################
+
+        # Positive reward for kicking the ball in opponents goal
+        if (ball_x_speed_now > ball_x_speed_before) and (ball_x_speed_now > 0):
+            if (ball_x_speed_before > 0) and (ball_x_speed_now > 0):
+                if (ball_x_speed_now > (ball_x_speed_before * 5)) and (750 <= ball_loc[0] <= 950):
+                    reward_breakdown['velocity_change'] = 5
+                    reward += 5
+                    print(f"Ball kicked in the correct direction")
+                    print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
+
+            elif (ball_x_speed_before < 0) and (ball_x_speed_now > 0) and (750 <= ball_loc[0] <= 950):
+                absolute_before = abs(ball_x_speed_before)
+                if ball_x_speed_now > (absolute_before * 3):
+                    reward_breakdown['velocity_change'] = 5
+                    reward += 5
+                    print(f"Ball kicked in the correct direction from the incorrect direction")
+                    print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
+                    
+
+
+            #print("Ball kicked in the correct direction: positive reward +5")
+            #print(f"Ball kicked at location: {ball_loc}")
+
+        #if ball_x_speed_now > (ball_x_speed_before * 2):
+        #    reward_breakdown['speed_boost'] = 5
+        #    reward += 5
+        #    print("Speed increase: positive reward +5")
+        pass
+
+    #print(f"current_v: {ball_x_speed_now}, last_v: {ball_x_speed_before}")
+    
+    #print(ball_loc)
     
     # 2. Goal scored
     if 1195 <= ball_loc[0] <= 1210 and 250 <= ball_loc[1] <= 450:
+        reward_breakdown['goal_scored'] = 25
         reward += 25
+        print("Goal scored: positive reward +25")
     
     # 3. Own goal
     elif 0 <= ball_loc[0] <= 15 and 250 <= ball_loc[1] <= 450:
+        reward_breakdown['own_goal'] = -25
         reward -= 25
+        print("Own goal scored: negative reward -25")
     
+    print("="*20)
+    print("="*20)
     return reward
 
 class ActorCriticNet(nn.Module):
-    # NOTE: Structure done for now 
     """
     A simple Actor-Critic network.
     It outputs both action_mean (the policy) and value (the critic).
@@ -307,6 +359,28 @@ class PPOAgent:
         self.episode_rewards = []
         self.reward = 0
 
+        # Episode statistics
+        self.episode_stats = []  # Store detailed stats for each episode
+        self.current_episode_goals = 0
+        self.current_episode_own_goals = 0
+        self.current_episode_positive_kicks = 0
+        self.current_episode_negative_kicks = 0
+        self.current_episode_rewards = []  # Track reward breakdown
+
+        # Training progress tracking
+        self.training_logs = {
+            'episode': [],
+            'total_reward': [],
+            'avg_reward': [],
+            'goals_scored': [],
+            'own_goals': [],
+            'episode_length': [],
+            'policy_loss': [],
+            'value_loss': [],
+            'kl_divergence': []
+        }
+
+
         # For training mode vs. inference mode
         self.training_enabled = True
 
@@ -347,14 +421,17 @@ class PPOAgent:
         """
         obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
         mean, value_t = self.ac(obs_t)
-        log_std = self.log_std.unsqueeze(0).expand_as(mean)
+
+
+        log_std = torch.clamp(self.log_std, min=-5.0, max=2.0).unsqueeze(0).expand_as(mean)
         std = torch.exp(log_std)
 
         # Sample from Gaussian
         action_raw = mean + std * torch.randn_like(mean)
         action_clipped = torch.clamp(action_raw, -1.0, 1.0)
 
-        logp = mlp_gaussian_likelihood(action_raw, mean, log_std)
+        # Computing logp of the action executed
+        logp = mlp_gaussian_likelihood(action_clipped, mean, log_std)
 
         # Squeeze out the batch dimension
         action = action_clipped.detach().cpu().numpy()[0]
@@ -424,16 +501,6 @@ class PPOAgent:
         # Extract the current observation
         obs, bxy, vxy = self.extract_observation(camera)
 
-
-        
-        #pprint(obs)
-        #print("obs")
-        #pprint(bxy)
-        #print("bxy")
-        #pprint(vxy)
-        #print("vxy")
-
-
         # If not training, just run the policy forward pass
         if not self.training_enabled:
             action, _, _ = self.compute_action(obs)
@@ -447,6 +514,19 @@ class PPOAgent:
             reward = simple_reward(bxy, vxy[0], self.prev_vel)
             reward = np.clip(reward, -1000, 1000)       # Clippanje rewarda, se lahko potem še spreminja
 
+            # Track reward breakdown
+            #self.current_episode_rewards.append(reward_breakdown)
+            #
+            # Track specific events
+            #if reward_breakdown['goal_scored'] > 0:
+            #    self.current_episode_goals += 1
+            #if reward_breakdown['own_goal'] < 0:
+            #    self.current_episode_own_goals += 1
+            #if reward_breakdown['velocity_change'] > 0:
+            #    self.current_episode_positive_kicks += 1
+            #elif reward_breakdown['velocity_change'] < 0:
+            #    self.current_episode_negative_kicks += 1
+
             # Shranitev celotne tranzicije (s_t-1, a_t-1, r_t, V_t-1)
             stored = self.buf.store(self.last_obs, self.last_action, reward, self.last_val, self.last_logp)
             
@@ -456,9 +536,12 @@ class PPOAgent:
                 self.buf.finish_path(last_val=final_value)
                 print(f"[Training] Buffer full, training now...")
                 self.train_on_buffer()
+
+
                 # Reset episode tracking
                 self.episode_count += 1
                 self.current_step = 0
+                self.episode_steps = 0
                 self.ep_reward = 0.0
                 self.last_obs = None
                 self.last_action = None
@@ -635,12 +718,12 @@ class PPOAgent:
 
         # Example scaling:
         rot_target   = 0.5 * action[0]  # in [-1,1]
-        rot_velocity = 0.4 * (action[1] + 1) / 4  # scale [-1,1]→[0,1], then multiply by max 0.5
-        trans_target = 0.5 * ((action[2] + 1) / 2)  # scale [-1,1]→[0,1], you might want full 0..1 0.5
+        rot_velocity = 0.5 * (action[1] + 1) / 4  # scale [-1,1]→[0,1], then multiply by max 0.5
+        trans_target = 0.8 * ((action[2] + 1) / 2)  # scale [-1,1]→[0,1], you might want full 0..1 0.5
         trans_velocity = 1.0 * (action[3] + 1) / 2   # scale [-1,1]→[0,1]
 
         cmd = {
-            "driveID": 3,
+            "driveID": 4,
             "rotationTargetPosition": rot_target,
             "rotationVelocity": rot_velocity,
             "translationTargetPosition": trans_target,
@@ -657,7 +740,7 @@ class PPOAgent:
                 "translationVelocity": 0.0
             },
             {
-                "driveID": 4,
+                "driveID": 3,
                 "rotationTargetPosition": 0.0,
                 "rotationVelocity": 0.0,
                 "translationTargetPosition": 0.5,
@@ -737,4 +820,4 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
         print("Training interrupted. Saving model...")
-        agent.save_model("actor.pth", "critic.pth")
+        agent.save_model("model.pth")
