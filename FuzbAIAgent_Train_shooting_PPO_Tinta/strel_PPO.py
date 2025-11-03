@@ -7,6 +7,8 @@ import os
 import requests
 import math
 import json
+import csv
+from datetime import datetime
 from pprint import pprint
 
 
@@ -108,7 +110,7 @@ def simple_reward(ball_loc, ball_x_speed_now, ball_x_speed_before):
                     reward_breakdown['velocity_change'] = -5
                     reward -= 5
                     print(f"Ball kicked in the wrong direction")
-                    print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
+                    #print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
 
             elif (ball_x_speed_before > 0) and (ball_x_speed_now < 0) and (750 <= ball_loc[0] <= 950):
                 absolute_before = abs(ball_x_speed_before)
@@ -116,9 +118,9 @@ def simple_reward(ball_loc, ball_x_speed_now, ball_x_speed_before):
                     reward_breakdown['velocity_change'] = -5
                     reward -= 5
                     print(f"Ball kicked in the wrong direction from the correct direction")
-                    print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
+                    #print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
 
-        ####################################################################################################
+        
 
         # Positive reward for kicking the ball in opponents goal
         if (ball_x_speed_now > ball_x_speed_before) and (ball_x_speed_now > 0):
@@ -127,7 +129,7 @@ def simple_reward(ball_loc, ball_x_speed_now, ball_x_speed_before):
                     reward_breakdown['velocity_change'] = 5
                     reward += 5
                     print(f"Ball kicked in the correct direction")
-                    print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
+                    #print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
 
             elif (ball_x_speed_before < 0) and (ball_x_speed_now > 0) and (750 <= ball_loc[0] <= 950):
                 absolute_before = abs(ball_x_speed_before)
@@ -135,7 +137,7 @@ def simple_reward(ball_loc, ball_x_speed_now, ball_x_speed_before):
                     reward_breakdown['velocity_change'] = 5
                     reward += 5
                     print(f"Ball kicked in the correct direction from the incorrect direction")
-                    print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
+                    #print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
                     
 
 
@@ -165,7 +167,7 @@ def simple_reward(ball_loc, ball_x_speed_now, ball_x_speed_before):
         print("Own goal scored: negative reward -25")
     
 
-    return reward
+    return reward, reward_breakdown
 
 class ActorCriticNet(nn.Module):
     """
@@ -364,7 +366,10 @@ class PPOAgent:
         self.current_episode_own_goals = 0
         self.current_episode_positive_kicks = 0
         self.current_episode_negative_kicks = 0
-        self.current_episode_rewards = []  # Track reward breakdown
+        self.current_episode_step_rewards = []  # Track reward at each step
+
+        self.csv_filename = f"training_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        self._initialize_csv()
 
         # Training progress tracking
         self.training_logs = {
@@ -382,6 +387,27 @@ class PPOAgent:
 
         # For training mode vs. inference mode
         self.training_enabled = True
+
+    def _initialize_csv(self):
+        """Create CSV file with headers"""
+        with open(self.csv_filename, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'Episode',
+                'Total_Reward',
+                'Steps',
+                'Goals_Scored',
+                'Own_Goals',
+                'Positive_Kicks',
+                'Negative_Kicks',
+                'Avg_Reward_Per_Step',
+                'Max_Step_Reward',
+                'Min_Step_Reward',
+                'Velocity_Change_Rewards',
+                'Goal_Rewards',
+                'Own_Goal_Penalties'
+            ])
+        print(f"[Logging] CSV file created: {self.csv_filename}")
 
     def save_model(self, path=None):
         if path is None:
@@ -510,21 +536,21 @@ class PPOAgent:
         # Training: collect the step
         if self.last_obs is not None:
             # Calculate the reward for the previous step (s_t-1, a_t-1 -> r_t)
-            reward = simple_reward(bxy, vxy[0], self.prev_vel)
+            reward, reward_breakdown = simple_reward(bxy, vxy[0], self.prev_vel)
             reward = np.clip(reward, -1000, 1000)       # Clippanje rewarda, se lahko potem še spreminja
 
-            # Track reward breakdown
-            #self.current_episode_rewards.append(reward_breakdown)
-            #
-            # Track specific events
-            #if reward_breakdown['goal_scored'] > 0:
-            #    self.current_episode_goals += 1
-            #if reward_breakdown['own_goal'] < 0:
-            #    self.current_episode_own_goals += 1
-            #if reward_breakdown['velocity_change'] > 0:
-            #    self.current_episode_positive_kicks += 1
-            #elif reward_breakdown['velocity_change'] < 0:
-            #    self.current_episode_negative_kicks += 1
+            # NEW: Track step-level reward
+            self.current_episode_step_rewards.append(reward)
+            
+            # NEW: Track specific events
+            if reward_breakdown['goal_scored'] > 0:
+                self.current_episode_goals += 1
+            if reward_breakdown['own_goal'] < 0:
+                self.current_episode_own_goals += 1
+            if reward_breakdown['velocity_change'] > 0:
+                self.current_episode_positive_kicks += 1
+            elif reward_breakdown['velocity_change'] < 0:
+                self.current_episode_negative_kicks += 1
 
             # Shranitev celotne tranzicije (s_t-1, a_t-1, r_t, V_t-1)
             stored = self.buf.store(self.last_obs, self.last_action, reward, self.last_val, self.last_logp)
@@ -546,7 +572,6 @@ class PPOAgent:
                 self.last_action = None
                 self.last_val = None
                 self.last_logp = None
-                # Don't return - continue to get action for current obs
             else:
                 self.ep_reward += reward
 
@@ -766,6 +791,17 @@ class PPOAgent:
             self.episode_rewards.append(self.ep_reward)
 
 
+            # NEW: Calculate and store episode statistics
+            stats = self._calculate_episode_stats()
+            self.episode_stats.append(stats)
+            
+            # NEW: Log to CSV
+            self._log_episode_to_csv(stats)
+            
+            # NEW: Print report
+            self._print_episode_report(stats)
+
+
             # Train when buffer is sufficiently full (≥80% capacity)
             buffer_fill = self.buf.ptr / self.buf.max_size
             if buffer_fill >= 0.8:
@@ -783,6 +819,22 @@ class PPOAgent:
         self.last_val = None
         self.last_logp = None
 
+        self.current_episode_goals = 0
+        self.current_episode_own_goals = 0
+        self.current_episode_positive_kicks = 0
+        self.current_episode_negative_kicks = 0
+        self.current_episode_step_rewards = []
+
+        # Save model periodically
+        if self.episode_count % self.save_model_every == 0:
+            avg_reward = np.mean(self.episode_rewards[-100:]) if self.episode_rewards else 0
+            print(f"\n{'='*70}")
+            print(f"Checkpoint: Episode {self.episode_count}")
+            print(f"Average Reward (last 100): {avg_reward:.2f}")
+            print(f"{'='*70}\n")
+            self.save_model()
+            self._save_summary_stats()
+
 
 
         # Save model periodically
@@ -791,7 +843,99 @@ class PPOAgent:
             print(f"Episode {self.episode_count}, Avg Reward (last 100): {avg_reward:.2f}")
             self.save_model()
 
+    def _save_summary_stats(self):
+        """Save summary statistics to a separate file"""
+        if not self.episode_stats:
+            return
+        
+        summary_filename = f"training_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        
+        total_episodes = len(self.episode_stats)
+        total_goals = sum(ep['goals_scored'] for ep in self.episode_stats)
+        total_own_goals = sum(ep['own_goals'] for ep in self.episode_stats)
+        avg_reward = np.mean([ep['total_reward'] for ep in self.episode_stats])
+        
+        with open(summary_filename, 'w') as f:
+            f.write("="*70 + "\n")
+            f.write("TRAINING SUMMARY\n")
+            f.write("="*70 + "\n\n")
+            f.write(f"Total Episodes:        {total_episodes}\n")
+            f.write(f"Total Goals Scored:    {total_goals}\n")
+            f.write(f"Total Own Goals:       {total_own_goals}\n")
+            f.write(f"Average Reward:        {avg_reward:.2f}\n")
+            f.write(f"Best Episode Reward:   {max(ep['total_reward'] for ep in self.episode_stats):.2f}\n")
+            f.write(f"Worst Episode Reward:  {min(ep['total_reward'] for ep in self.episode_stats):.2f}\n")
+            f.write("\n")
+            f.write(f"Last 100 Episodes Avg: {np.mean([ep['total_reward'] for ep in self.episode_stats[-100:]]):.2f}\n")
+            f.write("="*70 + "\n")
+        
+        print(f"[Logging] Summary saved to {summary_filename}")
 
+    def _calculate_episode_stats(self):
+        """Calculate detailed statistics for the completed episode"""
+        step_rewards = np.array(self.current_episode_step_rewards)
+        
+        stats = {
+            'episode': self.episode_count,
+            'total_reward': self.ep_reward,
+            'steps': self.current_step,
+            'goals_scored': self.current_episode_goals,
+            'own_goals': self.current_episode_own_goals,
+            'positive_kicks': self.current_episode_positive_kicks,
+            'negative_kicks': self.current_episode_negative_kicks,
+            'avg_reward_per_step': np.mean(step_rewards) if len(step_rewards) > 0 else 0,
+            'max_step_reward': np.max(step_rewards) if len(step_rewards) > 0 else 0,
+            'min_step_reward': np.min(step_rewards) if len(step_rewards) > 0 else 0,
+            'velocity_change_rewards': self.current_episode_positive_kicks * 5 - self.current_episode_negative_kicks * 5,
+            'goal_rewards': self.current_episode_goals * 25,
+            'own_goal_penalties': self.current_episode_own_goals * 25
+        }
+        
+        return stats
+
+    def _log_episode_to_csv(self, stats):
+        """Append episode statistics to CSV file"""
+        with open(self.csv_filename, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                stats['episode'],
+                f"{stats['total_reward']:.2f}",
+                stats['steps'],
+                stats['goals_scored'],
+                stats['own_goals'],
+                stats['positive_kicks'],
+                stats['negative_kicks'],
+                f"{stats['avg_reward_per_step']:.2f}",
+                f"{stats['max_step_reward']:.2f}",
+                f"{stats['min_step_reward']:.2f}",
+                f"{stats['velocity_change_rewards']:.2f}",
+                f"{stats['goal_rewards']:.2f}",
+                f"{stats['own_goal_penalties']:.2f}"
+            ])
+
+    def _print_episode_report(self, stats):
+        """Print detailed episode report to console"""
+        print(f"\n{'─'*70}")
+        print(f"Episode {stats['episode']} Complete")
+        print(f"{'─'*70}")
+        print(f"Total Reward:          {stats['total_reward']:>8.2f}")
+        print(f"Steps:                 {stats['steps']:>8}")
+        print(f"Avg Reward/Step:       {stats['avg_reward_per_step']:>8.2f}")
+        print(f"")
+        print(f"Goals Scored:          {stats['goals_scored']:>8}")
+        print(f"Own Goals:             {stats['own_goals']:>8}")
+        print(f"Positive Kicks:        {stats['positive_kicks']:>8}")
+        print(f"Negative Kicks:        {stats['negative_kicks']:>8}")
+        print(f"")
+        print(f"Max Step Reward:       {stats['max_step_reward']:>8.2f}")
+        print(f"Min Step Reward:       {stats['min_step_reward']:>8.2f}")
+        
+        if len(self.episode_rewards) >= 10:
+            avg_10 = np.mean(self.episode_rewards[-10:])
+            print(f"")
+            print(f"Avg Total Reward (last 10): {avg_10:.2f}")
+        
+        print(f"{'─'*70}\n")
 # --------------------------------------------
 # If you want to run standalone:
 if __name__ == "__main__":
