@@ -193,8 +193,8 @@ class FuzbAISim:
 
     def ResetBallToLocation(self):
         # Randomize the drop position within specified ranges
-        y_range = (0.3, 0.4)  # Full width of the field
-        zone1 = (1.0, 1.1)    # Target area for zone 4
+        y_range = (0.2, 0.6)  # Full width of the field
+        zone1 = (0.85, 1.05)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
         zone2 = (0.7, 1.0)    # Target area for zone 3
         zone3 = (0.5, 0.7)    # Target area for zone 2
         zone4 = (0.2, 0.5)    # Target area for zone 1
@@ -217,8 +217,21 @@ class FuzbAISim:
         speed = random.uniform(*speed_range)
 
         # Select a random direction from the list
-        directions_list = ['left', 'right', 'up', 'down', 'diagonal-right-up', 'diagonal-left-up', 'diagonal-right-down', 'diagonal-left-down']
-        direction = random.choice(directions_list)
+        # NOTE: Default implementation without the context where the ball willbe positioned
+        #directions_list = ['left', 'up', 'down', 'diagonal-right-up', 'diagonal-left-up', 'diagonal-right-down', 'diagonal-left-down']  # 'right' removed as it is scoring unintended goals
+        #direction = random.choice(directions_list)
+        
+        print(x_range)
+
+        #direction = 'right'
+        if x_range == (0.85, 1.05):
+            if custom_x > 1.0:
+                directions_list = ['left', 'up', 'down', 'diagonal-left-up','diagonal-left-down']
+                direction = random.choice(directions_list)
+
+            elif custom_x < 1.0:
+                directions_list = ['up', 'down', 'diagonal-right-down', 'diagonal-right-up']
+                direction = random.choice(directions_list)
 
         # Define direction vectors
         rnd_vector_x = random.uniform(0.1, 1)

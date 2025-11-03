@@ -146,7 +146,7 @@ def simple_reward(ball_loc, ball_x_speed_now, ball_x_speed_before):
         #    reward_breakdown['speed_boost'] = 5
         #    reward += 5
         #    print("Speed increase: positive reward +5")
-        pass
+        
 
     #print(f"current_v: {ball_x_speed_now}, last_v: {ball_x_speed_before}")
     
@@ -164,8 +164,7 @@ def simple_reward(ball_loc, ball_x_speed_now, ball_x_speed_before):
         reward -= 25
         print("Own goal scored: negative reward -25")
     
-    print("="*20)
-    print("="*20)
+
     return reward
 
 class ActorCriticNet(nn.Module):
