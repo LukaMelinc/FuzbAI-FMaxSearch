@@ -4,3 +4,4 @@
 *.pth
 FuzbAISimWrapper
 fuzbai
+*.csv

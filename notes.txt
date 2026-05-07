@@ -1,0 +1,26 @@
+0. Uredit logiranje - iteracija, dogodki, skupna nagrada, preglednost
+1. dodati bootstraping pri učenju, da se ne uči samo na prazen zrak
+2. Normirat nagrado na približno 1, razmerje med veliko in malo nagrado x10
+3. Začet s čist preprostim, da se da žogo pred gol in da jo brcne notr
+4. Pogledat, a se da še zmanjšat mrežo
+5. Logiranje eventov in rewardov skozi trening
+6. Ugotovit, če se da hitrost deducirat iz pozicij, primerjanje hitrosti izmerjene in hitrosti iz pozicij,
+če oni dodajajo kakšen čuden šum, da se izognemo dodatnemu šumu
+7. Preverit, kaj je stanje z zamikom, a se ga to da umaknit
+8. Dodaj izpisovanje podatkov med treningom - število pretečenih korakov, nagrada, ...
+
+
+NAČRT
+1. Nastavit, da na začetku proba brcnit mirujočo žogo v gol in da se tega nauči, da verificiramo učenje
+1.1 Ob temu ugotavljat hiperparametre - velikost hidden layerjev mreže, število hidden layerjev mreže
+2. Ko enkrat to dela, se sproba stopnjevanje težavnosti strela - na začetku mirujoča žogica pr miru, potem
+na različnih mestih, kasneje majhna hitrost in potem še premiki v vse stvari - stopnjevanje težavnosti
+3. Dodajanje bootstrapinga - posnetek dobrih iteracij in sporadično dodajanje v učno množico
+4. Doda naj se penalty, ko maha naokoli, da ne bo randomly mahal naokoli, ampak bo direkt brcnil žogico, da 
+se da ločit namen od randoma
+
+VPRAŠANJA
+1. Ko ti akcija v trenutku t-5 edina vpliva na doseganje rewarda in akcije t-4 do t-1 niso pripomogle k temu, hkrati pa dobijo 
+reward, kako to hendlat, da se bo vedelo, da je akcija ob t-5 prinesla reward, ne pa toliko ostale
+-> Baseline pomaga. Če žogica leti proti golu in je zelo blizu, bo baseline (pričakovan reward) itak visok in če se doseže gol
+se ne bo veliko naučil, ker je advantage majhen
