@@ -8,6 +8,8 @@ from strel_PPO import PPOAgent
 import random
 import traceback
 
+from log_utils import setup_logging
+
 class FuzbAISim:
     def __init__(self):
         print(" ______         _             _____ ")
@@ -38,6 +40,12 @@ class FuzbAISim:
         self.ballVelNoise = 0.01
 
         self.defaultBallPos = [0.718,0.71,0.3]
+
+        # Threshold of num of steps to end the iteration
+        self.max_num_steps = 30
+        self.current_step = 0
+
+        self.stepDisp = None
 
         # Player object indices in the URDF tree model
         self.redPlayers = [ 2, 5, 6, 14, 15, 16, 17, 18, 28, 29, 30 ]
@@ -130,6 +138,10 @@ class FuzbAISim:
 
         return {"camData": [cam1, cam2], "camDataOK": [True, True], "score": score}
 
+    def reset_step_counter(self):
+        self.current_step = 0
+        self.showCurrentStep()
+
     def showScore(self):
         if self.scoreDisp is not None:
             p.removeUserDebugItem(self.scoreDisp)
@@ -165,6 +177,17 @@ class FuzbAISim:
                                             textSize=1.5,
                                             parentObjectUniqueId=self.mizaId)
 
+    def showCurrentStep(self):
+        replace_id = self.stepDisp if self.stepDisp is not None else -1
+        self.stepDisp = p.addUserDebugText(
+            f"Step {self.current_step}/{self.max_num_steps}",
+            [-0.1, -0.60, 0.1],
+            textColorRGB=[0, 0, 0],
+            textSize=1.5,
+            parentObjectUniqueId=self.mizaId,
+            replaceItemUniqueId=replace_id,
+        )
+
 
     def sampleCameras(self, t):
         self.delayedMemory.append((t, self.getCameraDict(1), self.getCameraDict(2)))
@@ -189,12 +212,11 @@ class FuzbAISim:
 
 
     ### --- Function for spawning ball at specified location --- ###
-    import random
 
     def ResetBallToLocation(self):
         # Randomize the drop position within specified ranges
         y_range = (0.2, 0.6)  # Full width of the field
-        zone1 = (0.85, 1.05)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
+        zone1 = (0.9, 1.0)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
         zone2 = (0.7, 1.0)    # Target area for zone 3
         zone3 = (0.5, 0.7)    # Target area for zone 2
         zone4 = (0.2, 0.5)    # Target area for zone 1
@@ -213,18 +235,17 @@ class FuzbAISim:
         p.resetBasePositionAndOrientation(self.ball, custom_ball_pos, p.getQuaternionFromEuler([0, 0, 0]))
 
         # Random speed within the defined range
-        speed_range = (0.12, 0.15)
+        speed_range = (0.0,0.0)
         speed = random.uniform(*speed_range)
 
         # Select a random direction from the list
         # NOTE: Default implementation without the context where the ball willbe positioned
-        #directions_list = ['left', 'up', 'down', 'diagonal-right-up', 'diagonal-left-up', 'diagonal-right-down', 'diagonal-left-down']  # 'right' removed as it is scoring unintended goals
-        #direction = random.choice(directions_list)
+        directions_list = ['left', 'up', 'down', 'diagonal-right-up', 'diagonal-left-up', 'diagonal-right-down', 'diagonal-left-down']  # 'right' removed as it is scoring unintended goals
+        direction = random.choice(directions_list)
         
-        print(x_range)
 
         #direction = 'right'
-        if x_range == (0.85, 1.05):
+        if x_range == (0.90, 1.00):
             if custom_x > 1.0:
                 directions_list = ['left', 'up', 'down', 'diagonal-left-up','diagonal-left-down']
                 direction = random.choice(directions_list)
@@ -401,7 +422,9 @@ class FuzbAISim:
         PARAM_positionGain = 0.2
         PARAM_velocityGain = 4.5
 
-        try:    
+        try:   
+
+            """ Code that checks, if a goal was scored in the step """ 
             while self.isRunning:    
                 self.ballPos, ballOrn = p.getBasePositionAndOrientation(self.ball)        
                 self.ballVel = p.getBaseVelocity(self.ball)
@@ -432,7 +455,8 @@ class FuzbAISim:
 
                 self.t = time.time() - t0
 
-                if math.sqrt(self.ballVel[0][0]**2 + self.ballVel[0][1]**2) > 0.05:
+                # Condition if the ball does not move enough for three steps, the ball is still and the episode ends - currently defunct
+                """if math.sqrt(self.ballVel[0][0]**2 + self.ballVel[0][1]**2) > 0.05:
                     ball_moving = self.t
 
                 if self.t - ball_moving > 3:
@@ -444,7 +468,7 @@ class FuzbAISim:
                     self.ResetBallToLocation()
                     self.round += 1
                     #print("Round:", self.round)
-
+                """
 
                 angles = []
                 rodPoses = []     
@@ -463,7 +487,12 @@ class FuzbAISim:
                 rotVel = 174.74649915501303
 
                 # Process the agents...
-                if self.t - prev_t > 0.02:  
+                if self.t - prev_t > 0.02: 
+
+                    self.current_step += 1
+                    self.showCurrentStep()
+
+
                     try:     
                         if self.status_player1 == 0:             
                             motors1 = self.p1.process_data(self.getDelayedCamera(1, self.t - self.simulatedDelay))
@@ -519,12 +548,19 @@ class FuzbAISim:
                     except:
                         print("Exception in agent 2")
 
-                    prev_t = self.t        
+                    prev_t = self.t   
+
+                    if self.current_step >= self.max_num_steps:
+                        self.ResetBallToLocation()
+                        self.round += 1
+                        self.reset_step_counter()     
 
                 self.sampleCameras(self.t)
                 #print("States: ", rodPositions, rodAngles)
                 #print(p.getLinkState(mizaId, 3))
 
+
+                # Checks, if the goal was scored to end the iteration
                 keys = p.getKeyboardEvents()
                 if self.t - prev_key_t > 0.1:
                     for k, v in keys.items():        
@@ -572,6 +608,7 @@ class FuzbAISim:
 
 if __name__ == "__main__":
     print("Working with up-to-date code")
+    setup_logging()
     sim = FuzbAISim()
     sim.run()
 

@@ -11,6 +11,10 @@ import csv
 from datetime import datetime
 from pprint import pprint
 
+from actor_critic.main import ActorCriticNet
+from memory.main import PPOBuffer
+from reward.single_bar_shoting import simple_reward
+
 
 HOST_ADDRESS = '127.0.0.1:23336'  # IP or Host for your environment
 
@@ -84,208 +88,6 @@ def mlp_gaussian_likelihood(action, mean, log_std):
     #pre_sum = -0.5 * (((action - mean) / (torch.exp(log_std)))**2 + 2*log_std + np.log(2*np.pi))
     return torch.sum(pre_sum, axis=1)
 
-def simple_reward(ball_loc, ball_x_speed_now, ball_x_speed_before):
-    """Minimal reward to verify training works"""
-    reward = 0
-    reward_breakdown = {
-        'velocity_change': 0,
-        'goal_scored': 0,
-        'own_goal': 0,
-        'speed_boost': 0
-    }
-    
-    # 1. Ball moving right = good (toward opponent goal)
-    #if ball_vel[0] > 0:
-    #    reward += ball_vel[0]
-
-    if ball_x_speed_before == None:
-        reward += 0
-    elif ball_x_speed_before != None:
-        # If the agent kicks the ball towards its own goal and it did not happen by bouncing off the right end of the pitch
-
-        # Negative reward for kicking the ball in our goal
-        if (ball_x_speed_now < ball_x_speed_before) and (ball_x_speed_now < 0):
-            if (ball_x_speed_before < 0) and (ball_x_speed_now < 0):
-                if (ball_x_speed_now < (ball_x_speed_before * 5)) and (750 <= ball_loc[0] <= 950):
-                    reward_breakdown['velocity_change'] = -5
-                    reward -= 5
-                    print(f"Ball kicked in the wrong direction")
-                    #print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
-
-            elif (ball_x_speed_before > 0) and (ball_x_speed_now < 0) and (750 <= ball_loc[0] <= 950):
-                absolute_before = abs(ball_x_speed_before)
-                if ball_x_speed_now > (-absolute_before * 3):
-                    reward_breakdown['velocity_change'] = -5
-                    reward -= 5
-                    print(f"Ball kicked in the wrong direction from the correct direction")
-                    #print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
-
-        
-
-        # Positive reward for kicking the ball in opponents goal
-        if (ball_x_speed_now > ball_x_speed_before) and (ball_x_speed_now > 0):
-            if (ball_x_speed_before > 0) and (ball_x_speed_now > 0):
-                if (ball_x_speed_now > (ball_x_speed_before * 5)) and (750 <= ball_loc[0] <= 950):
-                    reward_breakdown['velocity_change'] = 5
-                    reward += 5
-                    print(f"Ball kicked in the correct direction")
-                    #print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
-
-            elif (ball_x_speed_before < 0) and (ball_x_speed_now > 0) and (750 <= ball_loc[0] <= 950):
-                absolute_before = abs(ball_x_speed_before)
-                if ball_x_speed_now > (absolute_before * 3):
-                    reward_breakdown['velocity_change'] = 5
-                    reward += 5
-                    print(f"Ball kicked in the correct direction from the incorrect direction")
-                    #print(f"last_v: {ball_x_speed_before}, current_v: {ball_x_speed_now}")
-                    
-
-
-            #print("Ball kicked in the correct direction: positive reward +5")
-            #print(f"Ball kicked at location: {ball_loc}")
-
-        #if ball_x_speed_now > (ball_x_speed_before * 2):
-        #    reward_breakdown['speed_boost'] = 5
-        #    reward += 5
-        #    print("Speed increase: positive reward +5")
-        
-
-    #print(f"current_v: {ball_x_speed_now}, last_v: {ball_x_speed_before}")
-    
-    #print(ball_loc)
-    
-    # 2. Goal scored
-    if 1195 <= ball_loc[0] <= 1210 and 250 <= ball_loc[1] <= 450:
-        reward_breakdown['goal_scored'] = 25
-        reward += 25
-        print("Goal scored: positive reward +25")
-    
-    # 3. Own goal
-    elif 0 <= ball_loc[0] <= 15 and 250 <= ball_loc[1] <= 450:
-        reward_breakdown['own_goal'] = -25
-        reward -= 25
-        print("Own goal scored: negative reward -25")
-    
-
-    return reward, reward_breakdown
-
-class ActorCriticNet(nn.Module):
-    """
-    A simple Actor-Critic network.
-    It outputs both action_mean (the policy) and value (the critic).
-    """
-    def __init__(self, obs_dim, act_dim, hidden_size=128):
-        super().__init__()
-        self.actor = nn.Sequential(
-            nn.Linear(obs_dim, hidden_size),    # 9 -> 128
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size), # 128 -> 128
-            nn.ReLU(), 
-            nn.Linear(hidden_size, act_dim),     # 128 -> 4
-            nn.Tanh()   # NOTE: Temporarely, later change the approach
-        )
-        
-        self.critic = nn.Sequential(
-            nn.Linear(obs_dim, hidden_size),    # 9 -> 128
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size), # 128 -> 128
-            nn.ReLU(),
-            nn.Linear(hidden_size, 1)           # 128 -> 1
-        )
-
-    def forward(self, x):
-        "Takes in the actin and calculates the log-probabilities of actions "
-        "and estimated value of the action"
-        action_mean = self.actor(x)
-        value = self.critic(x)
-        return action_mean, value
-
-class PPOBuffer:
-    """
-    A simple buffer to store trajectories for PPO.
-    """
-    def __init__(self, obs_dim, act_dim, size, gamma=0.99, lam=0.95):
-        # večja lambda pomeni večjo varianco in bolj dolgotrajen trening
-        self.obs_buf = np.zeros((size, obs_dim), dtype=np.float32)      # Observations
-        self.act_buf = np.zeros((size, act_dim), dtype=np.float32)      # actions 
-        self.adv_buf = np.zeros(size, dtype=np.float32)                 # Advantages
-        self.rew_buf = np.zeros(size, dtype=np.float32)                 # Rewards 
-        self.ret_buf = np.zeros(size, dtype=np.float32)                 # Returns
-        self.val_buf = np.zeros(size, dtype=np.float32)                 # Value estimates
-        self.logp_buf = np.zeros(size, dtype=np.float32)                # log probs
-
-        self.gamma = gamma  # Discount
-        self.lam = lam      # GAE
-        self.ptr, self.path_start_idx, self.max_size = 0, 0, size
-
-    def store(self, obs, act, rew, val, logp):
-        """Store one step of interaction."""
-        if self.ptr >= self.max_size:
-            # Signal that buffer is full - training should happen
-            print(f"[PPOBuffer] Buffer full at {self.ptr} steps")
-            return False  # Indicate buffer is full
-        
-        self.obs_buf[self.ptr] = obs
-        self.act_buf[self.ptr] = act
-        self.rew_buf[self.ptr] = rew
-        self.val_buf[self.ptr] = val
-        self.logp_buf[self.ptr] = logp
-        self.ptr += 1
-        return True  # Indicate successful storage
-
-    def finish_path(self, last_val=0):
-        """
-        Call this at the end of a trajectory (episode).
-        Computes advantage/returns for the path.
-        """
-        path_slice = slice(self.path_start_idx, self.ptr)
-        rews = np.append(self.rew_buf[path_slice], last_val)
-        vals = np.append(self.val_buf[path_slice], last_val)
-
-        # Compute GAE-Lambda advantage
-        adv = 0
-        for i in reversed(range(len(rews) - 1)):
-            delta = rews[i] + self.gamma * vals[i+1] - vals[i]
-            adv = delta + self.gamma * self.lam * adv
-            self.adv_buf[path_slice][i] = adv
-
-        # Compute returns
-        self.ret_buf[path_slice] = self.adv_buf[path_slice] + self.val_buf[path_slice]
-
-        self.path_start_idx = self.ptr
-
-    def get(self):
-        """
-            Gets the collected data from the buffer into tensor for training, normalizes the advantages
-            and resets the buffer pointers.
-            Call this at the end of an epoch to get all of the data from the buffer, with advantages normalized
-            to mean 0 and std 1.
-            Also resets some pointers in the buffer.
-        """
-        
-        actual_size = self.ptr
-        if actual_size == 0:
-            return None
-        
-        indices = np.arange(actual_size)
-
-        # Normalize the advantages
-        if actual_size > 1:
-            adv_mean = np.mean(self.adv_buf[indices])
-            adv_std  = np.std(self.adv_buf[indices])
-            if adv_std > 1e-8:
-                self.adv_buf[indices] = (self.adv_buf[indices] - adv_mean) / (adv_std + 1e-8)
-
-
-        data = dict(obs=self.obs_buf[indices],
-                    act=self.act_buf[indices],
-                    ret=self.ret_buf[indices],
-                    adv=self.adv_buf[indices],
-                    logp=self.logp_buf[indices]
-                    )
-
-        self.ptr, self.path_start_idx = 0, 0  # reset pointer
-        return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in data.items()}
 
 class PPOAgent:
     """
@@ -626,6 +428,8 @@ class PPOAgent:
         ball_y = (CD0["ball_y"] - 350) / 350  # Center around table middle [-1,1]
         ball_vx = np.clip(CD0["ball_vx"] / 5.0, -2, 2)  # Velocity normalized
         ball_vy = np.clip(CD0["ball_vy"] / 5.0, -2, 2)
+
+        print(f"pos (x, y): {ball_x:.3f} {ball_y:.3f}, ball velocity (x, y): {ball_vx:.3f} {ball_vy:.3f}")
 
         # Find controlled rod in geometry
         controlled_rod_info = None

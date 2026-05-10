@@ -7,7 +7,10 @@
 6. Ugotovit, če se da hitrost deducirat iz pozicij, primerjanje hitrosti izmerjene in hitrosti iz pozicij,
 če oni dodajajo kakšen čuden šum, da se izognemo dodatnemu šumu
 7. Preverit, kaj je stanje z zamikom, a se ga to da umaknit
-8. Dodaj izpisovanje podatkov med treningom - število pretečenih korakov, nagrada, ...
+8. Dodaj izpisovanje podatkov med treningom - število pretečenih korakov, nagrada, ... <---
+9. Dodaj končanje po določenem številu korakov
+10. Preverit celoten PPO pristop - učenje, velikos tvufferja, trenutke učenja, ...
+11. Dodaj nagrado za to, da je model igralca z nogami čim bolj pri tleh - da ne vrti konstantno, ampak da so lepo postavljene na tla
 
 
 NAČRT
