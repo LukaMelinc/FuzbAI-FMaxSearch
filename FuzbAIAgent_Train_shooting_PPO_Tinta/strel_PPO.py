@@ -429,7 +429,7 @@ class PPOAgent:
         ball_vx = np.clip(CD0["ball_vx"] / 5.0, -2, 2)  # Velocity normalized
         ball_vy = np.clip(CD0["ball_vy"] / 5.0, -2, 2)
 
-        print(f"pos (x, y): {ball_x:.3f} {ball_y:.3f}, ball velocity (x, y): {ball_vx:.3f} {ball_vy:.3f}")
+        #print(f"pos (x, y): {ball_x:.3f} {ball_y:.3f}, ball velocity (x, y): {ball_vx:.5f} {ball_vy:.5f}")
 
         # Find controlled rod in geometry
         controlled_rod_info = None

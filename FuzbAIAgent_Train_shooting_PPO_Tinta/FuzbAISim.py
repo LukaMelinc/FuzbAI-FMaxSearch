@@ -45,6 +45,21 @@ class FuzbAISim:
         self.max_num_steps = 30
         self.current_step = 0
 
+        # Control loop period (seconds). One "step" for the agent completes when this time has elapsed.
+        # Increase this to make each step take longer (e.g. 0.05 for ~20 Hz, 0.1 for ~10 Hz).
+        self.control_dt = 0.5
+
+        # Debug: print when a "kick" (contact) happens with any red player.
+        # This uses ground-truth contacts from PyBullet (not noisy vision speed).
+        self.debug_print_red_kicks = True
+        self.debug_red_kick_force_threshold = 2.0
+        self.debug_red_kick_cooldown_s = 0.05
+        self._last_debug_red_kick_t = -1e9
+
+        # Diagnostic: if True, prints the strongest ball contact (any body/link)
+        # so it's easy to see what PyBullet is actually reporting.
+        self.debug_print_any_ball_contact = True
+
         self.stepDisp = None
 
         # Player object indices in the URDF tree model
@@ -90,7 +105,7 @@ class FuzbAISim:
 
     def getCameraDict(self, player = 1):
         ball_x, ball_y = 1000*self.ballPos[0] - 115, 730 - 1000*self.ballPos[1]
-        ball_vx, ball_vy = self.ballVel[0][0] + (random.random() - 0.5) * self.ballVelNoise, -self.ballVel[0][1] + (random.random() - 0.5) * self.ballVelNoise
+        ball_vx, ball_vy = self.ballVel[0][0], -self.ballVel[0][1]
 
         # Simple camera model
         camPos = [ [ 100, 350 ],  [ 1100, 350 ]] # Camera position
@@ -137,6 +152,52 @@ class FuzbAISim:
             score = self.score[::-1]
 
         return {"camData": [cam1, cam2], "camDataOK": [True, True], "score": score}
+
+    def _debug_print_red_kick(self):
+        if not self.debug_print_red_kicks:
+            return
+
+        # Cooldown to avoid spamming while in continuous contact
+        if (self.t - self._last_debug_red_kick_t) < self.debug_red_kick_cooldown_s:
+            return
+
+        cps = p.getContactPoints(bodyA=self.ball)
+        if not cps:
+            return
+
+        def _normal_force(cp):
+            return cp[9] if len(cp) > 9 else 0.0
+
+        # Optional diagnostic: print the strongest contact, skipping table mesh collision body
+        if self.debug_print_any_ball_contact:
+            filtered = [cp for cp in cps if cp[2] != getattr(self, "mizaCollisionId", None)]
+            if not filtered:
+                return
+            strongest = max(filtered, key=_normal_force)
+            body_b = strongest[2]
+            link_b = strongest[4]
+            fn = _normal_force(strongest)
+            link_name = None
+            if body_b == getattr(self, "mizaId", None) and isinstance(link_b, int) and link_b >= 0:
+                try:
+                    link_name = p.getJointInfo(self.mizaId, link_b)[1].decode("utf-8")
+                except Exception:
+                    link_name = None
+            which_body = "mizaId" if body_b == getattr(self, "mizaId", None) else ("mizaCollisionId" if body_b == getattr(self, "mizaCollisionId", None) else str(body_b))
+            print(f"[CONTACT] ball contact  t={self.t:.3f}s  bodyB={which_body}  linkB={link_b}  name={link_name}  Fn={fn:.3f}")
+
+        # Filter: red-player kick
+        for cp in cps:
+            if len(cp) < 10:
+                continue
+            body_b = cp[2]
+            link_b = cp[4]
+            normal_force = cp[9]
+
+            if body_b == self.mizaId and link_b in self.redPlayers and normal_force >= self.debug_red_kick_force_threshold:
+                print(f"[CONTACT] RED KICK  t={self.t:.3f}s  link={link_b}  Fn={normal_force:.3f}")
+                self._last_debug_red_kick_t = self.t
+                return
 
     def reset_step_counter(self):
         self.current_step = 0
@@ -359,6 +420,8 @@ class FuzbAISim:
                                             baseVisualShapeIndex=visualShapeId,
                                             basePosition=[0,0,0],
                                             useMaximalCoordinates=True)
+
+        self.mizaCollisionId = mizaCollisionId
         
         # Import main URDF model
         self.mizaId = p.loadURDF("urdf/miza_garlando.urdf",mizaStartPos, mizaStartOrientation, useFixedBase=1)
@@ -455,6 +518,9 @@ class FuzbAISim:
 
                 self.t = time.time() - t0
 
+                # Debug contact print (red kick)
+                self._debug_print_red_kick()
+
                 # Condition if the ball does not move enough for three steps, the ball is still and the episode ends - currently defunct
                 """if math.sqrt(self.ballVel[0][0]**2 + self.ballVel[0][1]**2) > 0.05:
                     ball_moving = self.t
@@ -487,7 +553,7 @@ class FuzbAISim:
                 rotVel = 174.74649915501303
 
                 # Process the agents...
-                if self.t - prev_t > 0.02: 
+                if self.t - prev_t > self.control_dt:
 
                     self.current_step += 1
                     self.showCurrentStep()
