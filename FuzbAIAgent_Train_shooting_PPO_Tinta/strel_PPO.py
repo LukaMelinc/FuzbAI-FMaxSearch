@@ -97,7 +97,7 @@ class PPOAgent:
       - Uses a buffer to accumulate experiences for PPO updates.
     """
     def __init__(self,
-                 obs_dim=9, #obs_dim=36,         # ball = x, y, vx, vy; player = 2 x 11 x 3
+                 obs_dim=10, # ball(4) + rod(5) + ball_kicked(1)
                  act_dim=4, #act_dim=4,          # 1 rod × 4 numbers each
                  hidden_size=512,
                  steps_per_env=256,  # how many steps per iteration
@@ -122,6 +122,7 @@ class PPOAgent:
 
 
         self.prev_vel = None
+        self.prev_score = None
         self.active_regions = None  # Initialize active_regions
         self.MAX_EPISODE_STEPS = 100
         self.episode_steps = 0
@@ -165,51 +166,15 @@ class PPOAgent:
         # Episode statistics
         self.episode_stats = []  # Store detailed stats for each episode
         self.current_episode_goals = 0
-        self.current_episode_own_goals = 0
-        self.current_episode_positive_kicks = 0
-        self.current_episode_negative_kicks = 0
+        self.current_episode_opponent_goals = 0
+        self.current_episode_ball_kicks = 0
+        self.current_episode_x_threshold_terminations = 0
         self.current_episode_step_rewards = []  # Track reward at each step
-
-        self.csv_filename = f"training_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        self._initialize_csv()
-
-        # Training progress tracking
-        self.training_logs = {
-            'episode': [],
-            'total_reward': [],
-            'avg_reward': [],
-            'goals_scored': [],
-            'own_goals': [],
-            'episode_length': [],
-            'policy_loss': [],
-            'value_loss': [],
-            'kl_divergence': []
-        }
-
 
         # For training mode vs. inference mode
         self.training_enabled = True
 
-    def _initialize_csv(self):
-        """Create CSV file with headers"""
-        with open(self.csv_filename, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                'Episode',
-                'Total_Reward',
-                'Steps',
-                'Goals_Scored',
-                'Own_Goals',
-                'Positive_Kicks',
-                'Negative_Kicks',
-                'Avg_Reward_Per_Step',
-                'Max_Step_Reward',
-                'Min_Step_Reward',
-                'Velocity_Change_Rewards',
-                'Goal_Rewards',
-                'Own_Goal_Penalties'
-            ])
-        print(f"[Logging] CSV file created: {self.csv_filename}")
+
 
     def save_model(self, path=None):
         if path is None:
@@ -328,6 +293,20 @@ class PPOAgent:
         # Extract the current observation
         obs, bxy, vxy = self.extract_observation(camera)
 
+        # Events from environment
+        ball_kicked = bool(camera.get("ball_kicked", False))
+        terminated_by_x_threshold = bool(camera.get("terminated_by_x_threshold", False))
+
+        # Goal detection via score delta (more reliable than ball position thresholds)
+        score = camera.get("score", None)
+        goal_scored = False
+        opponent_goal_scored = False
+        if isinstance(score, (list, tuple)) and len(score) >= 2:
+            if self.prev_score is not None:
+                goal_scored = score[0] > self.prev_score[0]
+                opponent_goal_scored = score[1] > self.prev_score[1]
+            self.prev_score = list(score)
+
         # If not training, just run the policy forward pass
         if not self.training_enabled:
             action, _, _ = self.compute_action(obs)
@@ -338,21 +317,25 @@ class PPOAgent:
         # Training: collect the step
         if self.last_obs is not None:
             # Calculate the reward for the previous step (s_t-1, a_t-1 -> r_t)
-            reward, reward_breakdown = simple_reward(bxy, vxy[0], self.prev_vel)
+            reward, reward_breakdown = simple_reward(
+                goal_scored=goal_scored,
+                ball_kicked=ball_kicked,
+                terminated_by_x_threshold=terminated_by_x_threshold,
+            )
             reward = np.clip(reward, -1000, 1000)       # Clippanje rewarda, se lahko potem še spreminja
 
             # NEW: Track step-level reward
             self.current_episode_step_rewards.append(reward)
             
             # NEW: Track specific events
-            if reward_breakdown['goal_scored'] > 0:
+            if goal_scored:
                 self.current_episode_goals += 1
-            if reward_breakdown['own_goal'] < 0:
-                self.current_episode_own_goals += 1
-            if reward_breakdown['velocity_change'] > 0:
-                self.current_episode_positive_kicks += 1
-            elif reward_breakdown['velocity_change'] < 0:
-                self.current_episode_negative_kicks += 1
+            if opponent_goal_scored:
+                self.current_episode_opponent_goals += 1
+            if ball_kicked:
+                self.current_episode_ball_kicks += 1
+            if terminated_by_x_threshold:
+                self.current_episode_x_threshold_terminations += 1
 
             # Shranitev celotne tranzicije (s_t-1, a_t-1, r_t, V_t-1)
             stored = self.buf.store(self.last_obs, self.last_action, reward, self.last_val, self.last_logp)
@@ -377,14 +360,20 @@ class PPOAgent:
             else:
                 self.ep_reward += reward
 
+            # Early episode termination on x-threshold termination
+            if terminated_by_x_threshold:
+                self.finish_episode(last_value=0)
+                self.episode_steps = 0
+
         # Preveritev terminacije epizode
-        if self.episode_steps >= self.MAX_EPISODE_STEPS:
-            # Zadnja napovedana vrednost za GAE izračun
-            _, final_value, _ = self.compute_action(obs)
-            self.finish_episode(last_value=final_value)
-            self.episode_steps = 0
-        else:
-            self.episode_steps += 1
+        if not terminated_by_x_threshold:
+            if self.episode_steps >= self.MAX_EPISODE_STEPS:
+                # Zadnja napovedana vrednost za GAE izračun
+                _, final_value, _ = self.compute_action(obs)
+                self.finish_episode(last_value=final_value)
+                self.episode_steps = 0
+            else:
+                self.episode_steps += 1
 
         # Izračun akcije za trenutno stanje
         action, value, logp = self.compute_action(obs)
@@ -420,10 +409,6 @@ class PPOAgent:
         CD0 = camera["camData"][0] if camera["camData"][0] is not None else camera["camData"][1]
 
         # Ball
-        """bx = CD0["ball_x"]
-        by = CD0["ball_y"]
-        bvx = CD0["ball_vx"]
-        bvy = CD0["ball_vy"]"""
         ball_x = (CD0["ball_x"] - 605) / 605  # Center around table middle [-1,1]
         ball_y = (CD0["ball_y"] - 350) / 350  # Center around table middle [-1,1]
         ball_vx = np.clip(CD0["ball_vx"] / 5.0, -2, 2)  # Velocity normalized
@@ -469,73 +454,25 @@ class PPOAgent:
         angle_normalized = np.clip(rod_angle / 45.0, -1, 1)  # Assuming ±45° range
         
         # Combine: Ball(4) + Rod(5) = 9 total
+        ball_kicked = float(camera.get("ball_kicked", False))
+
+        # Combine: Ball(4) + Rod(5) + ball_kicked(1) = 10 total
         obs = np.array([
             ball_x, ball_y, ball_vx, ball_vy,           # Ball state (4)
             team,                                        # Rod team (1)
             ball_rod_dist_x, ball_rod_dist_y,           # Relative position (2)
             rod_y_normalized,                            # Rod position (1) 
-            angle_normalized                             # Rod angle (1)
+            angle_normalized,                            # Rod angle (1)
+            ball_kicked                                  # Ball contact flag (1)
         ], dtype=np.float32)
         
         # Verify size
-        assert len(obs) == 9, f"Expected obs_dim=9, got {len(obs)}"
+        assert len(obs) == 10, f"Expected obs_dim=10, got {len(obs)}"
         
         return obs, (CD0["ball_x"], CD0["ball_y"]), (CD0["ball_vx"], CD0["ball_vy"])
 
 
-        """for rod in rods:
-            rod_id = rod["id"]
-            team = rod["team"]
-            rod_x = rod["position"]
-            travel_range = rod["travel"]
-            num_players = rod["players"]
-            first_offset = rod["first_offset"]
-            spacing = rod["spacing"]
-
-            rod_position_calib = CD0["rod_position_calib"][rod_id - 1]
-            rod_angle = CD0["rod_angle"][rod_id - 1]
-
-            # If the calibration is stored as a list, just grab the first element
-            if isinstance(rod_position_calib, list):
-                rod_position_calib = rod_position_calib[0]
-
-            # Convert the normalized rod_position_calib to actual table coordinates
-            rod_y_base = rod_position_calib * travel_range
-            print(num_players)
-            
-            player_positions.append({
-                "rod_id": rod_id,
-                "team": team,
-                "position": (rod_x, rod_y_base),
-                "angle": rod_angle
-            })
-            
-            """"""for i in range(num_players):
-                player_y = rod_y_base + first_offset + i * spacing
-                player_positions.append({
-                    "rod_id": rod_id,
-                    "team": team,
-                    "position": (rod_x, player_y), # TODO: X - JA / NE?
-                    "angle": rod_angle
-                })""""""
-
-        # Flatten it all
-        team_encoding = {"red": 0.0, "blue": 1.0}
-        player_numeric_positions = [
-            [team_encoding[p["team"]], p["position"][0], p["position"][1], p["angle"]] for p in player_positions
-        ]
-        # position[0] is x distance of that rod from the x axis
-        # position[1] is the travel of the rod
-
-        # Convert to NumPy array
-        player_positions_array = np.array(player_numeric_positions, dtype=np.float32)
-
-        # Flatten and concatenate everything
-        obs = np.concatenate(([bx, by, bvx, bvy], player_positions_array.flatten()), dtype=np.float32)
-        obs = self.normalize_observation(obs)
-        print(obs)
-        print("---")
-        return obs, (bx, by), (bvx, bvy)"""
+    
 
     def scale_to_motor_commands(self, action):
         """
@@ -594,18 +531,6 @@ class PPOAgent:
             self.buf.finish_path(last_val=last_value)
             self.episode_rewards.append(self.ep_reward)
 
-
-            # NEW: Calculate and store episode statistics
-            stats = self._calculate_episode_stats()
-            self.episode_stats.append(stats)
-            
-            # NEW: Log to CSV
-            self._log_episode_to_csv(stats)
-            
-            # NEW: Print report
-            self._print_episode_report(stats)
-
-
             # Train when buffer is sufficiently full (≥80% capacity)
             buffer_fill = self.buf.ptr / self.buf.max_size
             if buffer_fill >= 0.8:
@@ -624,9 +549,9 @@ class PPOAgent:
         self.last_logp = None
 
         self.current_episode_goals = 0
-        self.current_episode_own_goals = 0
-        self.current_episode_positive_kicks = 0
-        self.current_episode_negative_kicks = 0
+        self.current_episode_opponent_goals = 0
+        self.current_episode_ball_kicks = 0
+        self.current_episode_x_threshold_terminations = 0
         self.current_episode_step_rewards = []
 
         # Save model periodically
@@ -637,7 +562,6 @@ class PPOAgent:
             print(f"Average Reward (last 100): {avg_reward:.2f}")
             print(f"{'='*70}\n")
             self.save_model()
-            self._save_summary_stats()
 
 
 
@@ -647,99 +571,7 @@ class PPOAgent:
             print(f"Episode {self.episode_count}, Avg Reward (last 100): {avg_reward:.2f}")
             self.save_model()
 
-    def _save_summary_stats(self):
-        """Save summary statistics to a separate file"""
-        if not self.episode_stats:
-            return
-        
-        summary_filename = f"training_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        
-        total_episodes = len(self.episode_stats)
-        total_goals = sum(ep['goals_scored'] for ep in self.episode_stats)
-        total_own_goals = sum(ep['own_goals'] for ep in self.episode_stats)
-        avg_reward = np.mean([ep['total_reward'] for ep in self.episode_stats])
-        
-        with open(summary_filename, 'w') as f:
-            f.write("="*70 + "\n")
-            f.write("TRAINING SUMMARY\n")
-            f.write("="*70 + "\n\n")
-            f.write(f"Total Episodes:        {total_episodes}\n")
-            f.write(f"Total Goals Scored:    {total_goals}\n")
-            f.write(f"Total Own Goals:       {total_own_goals}\n")
-            f.write(f"Average Reward:        {avg_reward:.2f}\n")
-            f.write(f"Best Episode Reward:   {max(ep['total_reward'] for ep in self.episode_stats):.2f}\n")
-            f.write(f"Worst Episode Reward:  {min(ep['total_reward'] for ep in self.episode_stats):.2f}\n")
-            f.write("\n")
-            f.write(f"Last 100 Episodes Avg: {np.mean([ep['total_reward'] for ep in self.episode_stats[-100:]]):.2f}\n")
-            f.write("="*70 + "\n")
-        
-        print(f"[Logging] Summary saved to {summary_filename}")
 
-    def _calculate_episode_stats(self):
-        """Calculate detailed statistics for the completed episode"""
-        step_rewards = np.array(self.current_episode_step_rewards)
-        
-        stats = {
-            'episode': self.episode_count,
-            'total_reward': self.ep_reward,
-            'steps': self.current_step,
-            'goals_scored': self.current_episode_goals,
-            'own_goals': self.current_episode_own_goals,
-            'positive_kicks': self.current_episode_positive_kicks,
-            'negative_kicks': self.current_episode_negative_kicks,
-            'avg_reward_per_step': np.mean(step_rewards) if len(step_rewards) > 0 else 0,
-            'max_step_reward': np.max(step_rewards) if len(step_rewards) > 0 else 0,
-            'min_step_reward': np.min(step_rewards) if len(step_rewards) > 0 else 0,
-            'velocity_change_rewards': self.current_episode_positive_kicks * 5 - self.current_episode_negative_kicks * 5,
-            'goal_rewards': self.current_episode_goals * 25,
-            'own_goal_penalties': self.current_episode_own_goals * 25
-        }
-        
-        return stats
-
-    def _log_episode_to_csv(self, stats):
-        """Append episode statistics to CSV file"""
-        with open(self.csv_filename, 'a', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                stats['episode'],
-                f"{stats['total_reward']:.2f}",
-                stats['steps'],
-                stats['goals_scored'],
-                stats['own_goals'],
-                stats['positive_kicks'],
-                stats['negative_kicks'],
-                f"{stats['avg_reward_per_step']:.2f}",
-                f"{stats['max_step_reward']:.2f}",
-                f"{stats['min_step_reward']:.2f}",
-                f"{stats['velocity_change_rewards']:.2f}",
-                f"{stats['goal_rewards']:.2f}",
-                f"{stats['own_goal_penalties']:.2f}"
-            ])
-
-    def _print_episode_report(self, stats):
-        """Print detailed episode report to console"""
-        print(f"\n{'─'*70}")
-        print(f"Episode {stats['episode']} Complete")
-        print(f"{'─'*70}")
-        print(f"Total Reward:          {stats['total_reward']:>8.2f}")
-        print(f"Steps:                 {stats['steps']:>8}")
-        print(f"Avg Reward/Step:       {stats['avg_reward_per_step']:>8.2f}")
-        print(f"")
-        print(f"Goals Scored:          {stats['goals_scored']:>8}")
-        print(f"Own Goals:             {stats['own_goals']:>8}")
-        print(f"Positive Kicks:        {stats['positive_kicks']:>8}")
-        print(f"Negative Kicks:        {stats['negative_kicks']:>8}")
-        print(f"")
-        print(f"Max Step Reward:       {stats['max_step_reward']:>8.2f}")
-        print(f"Min Step Reward:       {stats['min_step_reward']:>8.2f}")
-        
-        if len(self.episode_rewards) >= 10:
-            avg_10 = np.mean(self.episode_rewards[-10:])
-            print(f"")
-            print(f"Avg Total Reward (last 10): {avg_10:.2f}")
-        
-        print(f"{'─'*70}\n")
 # --------------------------------------------
 # If you want to run standalone:
 if __name__ == "__main__":

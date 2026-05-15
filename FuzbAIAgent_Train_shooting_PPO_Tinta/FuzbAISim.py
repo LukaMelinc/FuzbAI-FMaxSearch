@@ -11,7 +11,7 @@ import traceback
 from log_utils import setup_logging
 
 class FuzbAISim:
-    def __init__(self):
+    def __init__(self, episode_end_ball_x_threshold_mm: float = 200.0, kick_observed_rod_id: int = 4):
         print(" ______         _             _____ ")
         print("|  ____|       | |      /\   |_   _|")
         print("| |__ _   _ ___| |__   /  \    | |  ")
@@ -41,6 +41,17 @@ class FuzbAISim:
 
         self.defaultBallPos = [0.718,0.71,0.3]
 
+        # Episode termination: end the episode if camera/geometry ball_x (mm) is below this threshold.
+        # This is computed with the same mapping as in getCameraDict(): ball_x_mm = 1000*ballPos[0] - 115.
+        self.episode_end_ball_x_threshold_mm = float(episode_end_ball_x_threshold_mm)
+
+        # Kick observation: detect ball contact on the specified rod's player links.
+        # For your current experiment this is rod 4.
+        self.kick_observed_rod_id = int(kick_observed_rod_id)
+        self._kick_player_links = set()
+        self._ball_kicked_latch = False
+        self._x_threshold_terminated_latch = False
+
         # Threshold of num of steps to end the iteration
         self.max_num_steps = 30
         self.current_step = 0
@@ -52,7 +63,7 @@ class FuzbAISim:
         # Debug: print when a "kick" (contact) happens with any red player.
         # This uses ground-truth contacts from PyBullet (not noisy vision speed).
         self.debug_print_red_kicks = True
-        self.debug_red_kick_force_threshold = 2.0
+        self.debug_red_kick_force_threshold = 1.0
         self.debug_red_kick_cooldown_s = 0.05
         self._last_debug_red_kick_t = -1e9
 
@@ -103,6 +114,68 @@ class FuzbAISim:
         self.round = 0 # Štetje rund učenja
         self.save_interval = 100
 
+    def _ball_x_mm_camera(self) -> float:
+        # Must match getCameraDict mapping
+        return 1000.0 * float(self.ballPos[0]) - 115.0
+
+    def _init_kick_player_links(self):
+        """Resolve which PyBullet link indices correspond to the observed rod's players."""
+        self._kick_player_links = set()
+        try:
+            joints_num = p.getNumJoints(self.mizaId)
+            rod_prefix = f"rod{self.kick_observed_rod_id}_rigid"
+            for ji in range(joints_num):
+                jinfo = p.getJointInfo(self.mizaId, ji)
+                # jointName is bytes at index 1
+                jname = None
+                try:
+                    jname = jinfo[1].decode("utf-8")
+                except Exception:
+                    jname = str(jinfo[1])
+                if jname.lower().startswith(rod_prefix):
+                    # In PyBullet, the joint index corresponds to the child link index.
+                    self._kick_player_links.add(ji)
+        except Exception:
+            # Fallback: keep empty set; kick flag will remain False.
+            self._kick_player_links = set()
+
+    def _update_kick_latch(self):
+        """Latch True if the ball contacts the observed rod's player links in this interval."""
+        if self._ball_kicked_latch:
+            return
+        if not self._kick_player_links:
+            return
+
+        cps = p.getContactPoints(bodyA=self.ball)
+        if not cps:
+            return
+
+        for cp in cps:
+            if len(cp) < 10:
+                continue
+            body_b = cp[2]
+            link_b = cp[4]
+            normal_force = cp[9]
+            if body_b == self.mizaId and link_b in self._kick_player_links and normal_force >= self.debug_red_kick_force_threshold:
+                self._ball_kicked_latch = True
+                return
+
+    def _update_x_threshold_termination(self):
+        """If ball_x is below threshold, latch termination and reset the ball (start new episode)."""
+        if self._x_threshold_terminated_latch:
+            return
+
+        try:
+            ball_x_mm = self._ball_x_mm_camera()
+        except Exception:
+            return
+
+        if ball_x_mm < self.episode_end_ball_x_threshold_mm:
+            self._x_threshold_terminated_latch = True
+            self.ResetBallToLocation()
+            self.round += 1
+            self.reset_step_counter()
+
     def getCameraDict(self, player = 1):
         ball_x, ball_y = 1000*self.ballPos[0] - 115, 730 - 1000*self.ballPos[1]
         ball_vx, ball_vy = self.ballVel[0][0], -self.ballVel[0][1]
@@ -151,7 +224,14 @@ class FuzbAISim:
         else:
             score = self.score[::-1]
 
-        return {"camData": [cam1, cam2], "camDataOK": [True, True], "score": score}
+        return {
+            "camData": [cam1, cam2],
+            "camDataOK": [True, True],
+            "score": score,
+            # New observation/event flags
+            "ball_kicked": bool(self._ball_kicked_latch),
+            "terminated_by_x_threshold": bool(self._x_threshold_terminated_latch),
+        }
 
     def _debug_print_red_kick(self):
         if not self.debug_print_red_kicks:
@@ -426,6 +506,9 @@ class FuzbAISim:
         # Import main URDF model
         self.mizaId = p.loadURDF("urdf/miza_garlando.urdf",mizaStartPos, mizaStartOrientation, useFixedBase=1)
 
+        # Resolve link indices for kick detection on the controlled rod
+        self._init_kick_player_links()
+
         if printJointInfo:
             jointsNum = p.getNumJoints(self.mizaId)
             for i in range(jointsNum):
@@ -517,6 +600,10 @@ class FuzbAISim:
 
 
                 self.t = time.time() - t0
+
+                # Update event latches (used by observation + reward)
+                self._update_kick_latch()
+                self._update_x_threshold_termination()
 
                 # Debug contact print (red kick)
                 self._debug_print_red_kick()
@@ -615,6 +702,10 @@ class FuzbAISim:
                         print("Exception in agent 2")
 
                     prev_t = self.t   
+
+                    # Clear per-step latches after agents have consumed the observation stream
+                    self._ball_kicked_latch = False
+                    self._x_threshold_terminated_latch = False
 
                     if self.current_step >= self.max_num_steps:
                         self.ResetBallToLocation()

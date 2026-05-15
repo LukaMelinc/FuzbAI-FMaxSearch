@@ -36,6 +36,16 @@ class FuzbAISim:
 
         self.defaultBallPos = [0.718,0.71,0.3]
 
+        # Debug: print when a "kick" (contact) happens with any red player.
+        # This uses ground-truth contacts from PyBullet (not noisy vision speed).
+        self.debug_print_red_kicks = True
+        self.debug_red_kick_force_threshold = 2.0
+        self.debug_red_kick_cooldown_s = 0.05
+        self._last_debug_red_kick_t = -1e9
+
+        # Diagnostic: if True, prints the strongest ball contact (any body/link)
+        self.debug_print_any_ball_contact = True
+
         # Player object indices in the URDF tree model
         self.redPlayers = [ 2, 5, 6, 14, 15, 16, 17, 18, 28, 29, 30 ]
         self.bluePlayers = [ 9, 10, 11, 21, 22, 23, 24, 25, 33, 34, 37 ]
@@ -122,6 +132,49 @@ class FuzbAISim:
             score = self.score[::-1]
 
         return {"camData": [cam1, cam2], "camDataOK": [True, True], "score": score}
+
+    def _debug_print_red_kick(self):
+        if not self.debug_print_red_kicks:
+            return
+
+        if (self.t - self._last_debug_red_kick_t) < self.debug_red_kick_cooldown_s:
+            return
+
+        cps = p.getContactPoints(bodyA=self.ball)
+        if not cps:
+            return
+
+        def _normal_force(cp):
+            return cp[9] if len(cp) > 9 else 0.0
+
+        if self.debug_print_any_ball_contact:
+            filtered = [cp for cp in cps if cp[2] != getattr(self, "mizaCollisionId", None)]
+            if not filtered:
+                return
+            strongest = max(filtered, key=_normal_force)
+            body_b = strongest[2]
+            link_b = strongest[4]
+            fn = _normal_force(strongest)
+            link_name = None
+            if body_b == getattr(self, "mizaId", None) and isinstance(link_b, int) and link_b >= 0:
+                try:
+                    link_name = p.getJointInfo(self.mizaId, link_b)[1].decode("utf-8")
+                except Exception:
+                    link_name = None
+            which_body = "mizaId" if body_b == getattr(self, "mizaId", None) else ("mizaCollisionId" if body_b == getattr(self, "mizaCollisionId", None) else str(body_b))
+            print(f"[CONTACT] ball contact  t={self.t:.3f}s  bodyB={which_body}  linkB={link_b}  name={link_name}  Fn={fn:.3f}")
+
+        for cp in cps:
+            if len(cp) < 10:
+                continue
+            body_b = cp[2]
+            link_b = cp[4]
+            normal_force = cp[9]
+
+            if body_b == self.mizaId and link_b in self.redPlayers and normal_force >= self.debug_red_kick_force_threshold:
+                print(f"[CONTACT] RED KICK  t={self.t:.3f}s  link={link_b}  Fn={normal_force:.3f}")
+                self._last_debug_red_kick_t = self.t
+                return
 
     def showScore(self):
         if self.scoreDisp is not None:
@@ -238,6 +291,8 @@ class FuzbAISim:
                                             baseVisualShapeIndex=visualShapeId,
                                             basePosition=[0,0,0],
                                             useMaximalCoordinates=True)
+
+        self.mizaCollisionId = mizaCollisionId
         
         # Import main URDF model
         self.mizaId = p.loadURDF("urdf/miza_garlando.urdf",mizaStartPos, mizaStartOrientation, useFixedBase=1)
@@ -327,6 +382,9 @@ class FuzbAISim:
                     self.nudgeBall()
                 
                 self.t = time.time() - t0
+
+                # Debug contact print (red kick)
+                self._debug_print_red_kick()
 
                 if math.sqrt(self.ballVel[0][0]**2 + self.ballVel[0][1]**2) > 0.05:
                     ball_moving = self.t

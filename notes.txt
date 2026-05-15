@@ -27,3 +27,11 @@ VPRAŠANJA
 reward, kako to hendlat, da se bo vedelo, da je akcija ob t-5 prinesla reward, ne pa toliko ostale
 -> Baseline pomaga. Če žogica leti proti golu in je zelo blizu, bo baseline (pričakovan reward) itak visok in če se doseže gol
 se ne bo veliko naučil, ker je advantage majhen
+
+NAČRT - simple primiru shooting
+0. Dodat v zajem ali je kontakt z žogo
+1. nadgradit ball contact -> +2
+2. nagradit gol -> +10
+3. kaznovat žoga v svojo polovico -> -1.5 :: Takrat tudi končat epizodo
+4. Popravit in spisat PPO na novo (zajem podatkov, buffer, trening, ko se konča epizoda in polni buffer)
+
