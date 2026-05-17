@@ -320,7 +320,7 @@ class FuzbAISim:
 
     def ResetBallToLocation(self):
         # Randomize the drop position within specified ranges
-        y_range = (0.2, 0.6)  # Full width of the field
+        y_range = (0.39, 0.40)  # Full width of the field
         zone1 = (0.9, 1.0)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
         zone2 = (0.7, 1.0)    # Target area for zone 3
         zone3 = (0.5, 0.7)    # Target area for zone 2

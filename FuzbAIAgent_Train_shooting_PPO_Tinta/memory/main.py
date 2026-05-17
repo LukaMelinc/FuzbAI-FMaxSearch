@@ -85,6 +85,7 @@ class PPOBuffer:
                     logp=self.logp_buf[indices]
                     )
 
-        self.ptr, self.path_start_idx = 0, 0  # reset pointer
+        # Resetira pointer na začetek (pobriše buffer)
+        self.ptr, self.path_start_idx = 0, 0  
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in data.items()}
 

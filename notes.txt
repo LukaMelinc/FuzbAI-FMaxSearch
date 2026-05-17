@@ -1,3 +1,10 @@
+ODPRTI PROBLEMI
+1. Nesinhronizcija zabeleženih stepov, epizod z stanjem v simu - prehiteva
+2. Simulator ne posodobi v simulaciji števila epizode vsakič
+3. Ne nauči se!!!
+
+
+TODO
 0. Uredit logiranje - iteracija, dogodki, skupna nagrada, preglednost
 1. dodati bootstraping pri učenju, da se ne uči samo na prazen zrak
 2. Normirat nagrado na približno 1, razmerje med veliko in malo nagrado x10
@@ -34,4 +41,5 @@ NAČRT - simple primiru shooting
 2. nagradit gol -> +10
 3. kaznovat žoga v svojo polovico -> -1.5 :: Takrat tudi končat epizodo
 4. Popravit in spisat PPO na novo (zajem podatkov, buffer, trening, ko se konča epizoda in polni buffer)
+
 

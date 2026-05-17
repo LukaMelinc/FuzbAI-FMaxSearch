@@ -140,7 +140,7 @@ class PPOAgent:
         self.ac.to(self.device)
 
         # Separate or shared log_std for continuous actions
-        self.log_std = nn.Parameter(-1*torch.zeros(act_dim, dtype=torch.float32, device=self.device), requires_grad=True)
+        self.log_std = nn.Parameter(-1*torch.ones(act_dim, dtype=torch.float32, device=self.device), requires_grad=True)
         self.log_std = self.log_std.to(self.device)
 
         # Optimizer
@@ -373,10 +373,6 @@ class PPOAgent:
                 self.episode_steps = 0
                 episode_finished_this_sample = True
 
-            # Episode boundary when simulator resets the ball
-            #if (not terminated_by_x_threshold) and end_episode:
-            #    self.finish_episode(last_value=0)
-            #    self.episode_steps = 0
 
         else:
             print(f"=====First step, no reward yet =====")
@@ -431,7 +427,6 @@ class PPOAgent:
         ball_vx = np.clip(CD0["ball_vx"] / 5.0, -2, 2)  # Velocity normalized
         ball_vy = np.clip(CD0["ball_vy"] / 5.0, -2, 2)
 
-        #print(f"pos (x, y): {ball_x:.3f} {ball_y:.3f}, ball velocity (x, y): {ball_vx:.5f} {ball_vy:.5f}")
 
         # Find controlled rod in geometry
         controlled_rod_info = None
@@ -444,9 +439,26 @@ class PPOAgent:
             raise ValueError(f"Rod {self.controlled_rod_id} not found in geometry")
         
         # Controlled rod state (5 values)
-        rod_idx = self.controlled_rod_id - 1  # Convert to 0-based index
+        """
+        Blue rod idx: 
+        2: Attack, 4: Middle, 6: Defender 7: Goalkeeper
+
+        Red rod idx:
+        0: Goalkeeper, 1: defender, 3: middle, 5: attack
+        """
+        rod_idx = 5#self.controlled_rod_id - 1  # Convert to 0-based index
         rod_pos_calib = CD0["rod_position_calib"][rod_idx]
         rod_angle = CD0["rod_angle"][rod_idx]
+
+        #pos_list = []
+        #for i in range(8):
+        #    pos_list.append(round(CD0["rod_position_calib"][i], 3))
+        #    pos_list.append(round(CD0["rod_angle"][i], 3))
+
+        #print(f"Rod positions and angles: {pos_list}")
+        #print(f"rod pos: {rod_pos_calib}, rod angle: {rod_angle}")
+    
+
         
         if isinstance(rod_pos_calib, list):
             rod_pos_calib = rod_pos_calib[0]
@@ -463,12 +475,13 @@ class PPOAgent:
         ball_y_world = CD0["ball_y"] 
         rod_y_world = rod_pos_calib * controlled_rod_info["travel"]
         
-        # Distance from ball to controlled rod
+        # Distance from ball to controlled rod - a to sploh rabit na dolgi rok?
         ball_rod_dist_x = (ball_x_world - rod_x_world) / 605  # Normalized [-1,1]
         ball_rod_dist_y = (ball_y_world - rod_y_world) / 350  # Normalized [-1,1]
         
         # Rod angle normalized
         angle_normalized = np.clip(rod_angle / 45.0, -1, 1)  # Assuming ±45° range
+        #print(f"rod angle and normalized: {rod_y_normalized}, {angle_normalized}")
         
         # Combine: Ball(4) + Rod(5) = 9 total
         ball_kicked = float(camera.get("ball_kicked", False))
