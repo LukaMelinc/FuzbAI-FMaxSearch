@@ -1,6 +1,7 @@
 import pybullet as p
 import pybullet_data
 import time, datetime
+from pprint import pprint
 import threading
 import math
 from FuzbAIAgent_Example import PlayerAgent
@@ -11,7 +12,7 @@ import traceback
 from log_utils import setup_logging
 
 class FuzbAISim:
-    def __init__(self, episode_end_ball_x_threshold_mm: float = 200.0, kick_observed_rod_id: int = 4):
+    def __init__(self, episode_end_ball_x_threshold_mm: float = 600.0, kick_observed_rod_id: int = 4):
         print(" ______         _             _____ ")
         print("|  ____|       | |      /\   |_   _|")
         print("| |__ _   _ ___| |__   /  \    | |  ")
@@ -51,6 +52,10 @@ class FuzbAISim:
         self._kick_player_links = set()
         self._ball_kicked_latch = False
         self._x_threshold_terminated_latch = False
+        # Episode boundary latch: set True when the ball gets reset (agent uses it to call finish_episode)
+        self.end_episode_latch = False
+        # Don't end an episode on the initial ball placement at startup
+        self._end_episode_armed = False
 
         # Threshold of num of steps to end the iteration
         self.max_num_steps = 30
@@ -92,6 +97,7 @@ class FuzbAISim:
         self.simulatedDelay = 0.00  # NOTE: Temporarely set the delay to 0, implement delay tracker into the agent
         self.delayedMemory = []
         self.maxMemory = 0.5 # Maximum delay time
+        
 
         # Deadband settings
         self.prevRefPositions = [0]*8
@@ -141,24 +147,27 @@ class FuzbAISim:
 
     def _update_kick_latch(self):
         """Latch True if the ball contacts the observed rod's player links in this interval."""
-        if self._ball_kicked_latch:
-            return
-        if not self._kick_player_links:
+
+        #self._ball_kicked_latch = False
+
+        # Cooldown to avoid spamming while in continuous contact
+        if (self.t - self._last_debug_red_kick_t) < self.debug_red_kick_cooldown_s:
             return
 
         cps = p.getContactPoints(bodyA=self.ball)
         if not cps:
             return
 
-        for cp in cps:
-            if len(cp) < 10:
-                continue
-            body_b = cp[2]
-            link_b = cp[4]
-            normal_force = cp[9]
-            if body_b == self.mizaId and link_b in self._kick_player_links and normal_force >= self.debug_red_kick_force_threshold:
-                self._ball_kicked_latch = True
+        # Optional diagnostic: print the strongest contact, skipping table mesh collision body
+        if self.debug_print_any_ball_contact:
+            filtered = [cp for cp in cps if cp[2] != getattr(self, "mizaCollisionId", None)]
+            if not filtered:
                 return
+
+            print(f"Ball kicked")
+            self._ball_kicked_latch = True
+            self._last_debug_red_kick_t = self.t
+            return
 
     def _update_x_threshold_termination(self):
         """If ball_x is below threshold, latch termination and reset the ball (start new episode)."""
@@ -176,7 +185,7 @@ class FuzbAISim:
             self.round += 1
             self.reset_step_counter()
 
-    def getCameraDict(self, player = 1):
+    def getCameraDict(self, player = 1): 
         ball_x, ball_y = 1000*self.ballPos[0] - 115, 730 - 1000*self.ballPos[1]
         ball_vx, ball_vy = self.ballVel[0][0], -self.ballVel[0][1]
 
@@ -219,11 +228,13 @@ class FuzbAISim:
                 "ball_vx": ball_vx, "ball_vy": ball_vy, "ball_size": ballSize[1], 
                 "rod_position_calib": rp, "rod_angle": ra }
 
+        # Game score (like 14:13 or 24:29), not reward score
         if player == 1:
             score = self.score.copy()  # Copy otherwise all sampled data will contain the same reference to an array which will update itself.
         else:
             score = self.score[::-1]
 
+   
         return {
             "camData": [cam1, cam2],
             "camDataOK": [True, True],
@@ -231,53 +242,8 @@ class FuzbAISim:
             # New observation/event flags
             "ball_kicked": bool(self._ball_kicked_latch),
             "terminated_by_x_threshold": bool(self._x_threshold_terminated_latch),
+            "end_episode": bool(self.end_episode_latch),
         }
-
-    def _debug_print_red_kick(self):
-        if not self.debug_print_red_kicks:
-            return
-
-        # Cooldown to avoid spamming while in continuous contact
-        if (self.t - self._last_debug_red_kick_t) < self.debug_red_kick_cooldown_s:
-            return
-
-        cps = p.getContactPoints(bodyA=self.ball)
-        if not cps:
-            return
-
-        def _normal_force(cp):
-            return cp[9] if len(cp) > 9 else 0.0
-
-        # Optional diagnostic: print the strongest contact, skipping table mesh collision body
-        if self.debug_print_any_ball_contact:
-            filtered = [cp for cp in cps if cp[2] != getattr(self, "mizaCollisionId", None)]
-            if not filtered:
-                return
-            strongest = max(filtered, key=_normal_force)
-            body_b = strongest[2]
-            link_b = strongest[4]
-            fn = _normal_force(strongest)
-            link_name = None
-            if body_b == getattr(self, "mizaId", None) and isinstance(link_b, int) and link_b >= 0:
-                try:
-                    link_name = p.getJointInfo(self.mizaId, link_b)[1].decode("utf-8")
-                except Exception:
-                    link_name = None
-            which_body = "mizaId" if body_b == getattr(self, "mizaId", None) else ("mizaCollisionId" if body_b == getattr(self, "mizaCollisionId", None) else str(body_b))
-            print(f"[CONTACT] ball contact  t={self.t:.3f}s  bodyB={which_body}  linkB={link_b}  name={link_name}  Fn={fn:.3f}")
-
-        # Filter: red-player kick
-        for cp in cps:
-            if len(cp) < 10:
-                continue
-            body_b = cp[2]
-            link_b = cp[4]
-            normal_force = cp[9]
-
-            if body_b == self.mizaId and link_b in self.redPlayers and normal_force >= self.debug_red_kick_force_threshold:
-                print(f"[CONTACT] RED KICK  t={self.t:.3f}s  link={link_b}  Fn={normal_force:.3f}")
-                self._last_debug_red_kick_t = self.t
-                return
 
     def reset_step_counter(self):
         self.current_step = 0
@@ -329,9 +295,11 @@ class FuzbAISim:
             replaceItemUniqueId=replace_id,
         )
 
-
     def sampleCameras(self, t):
         self.delayedMemory.append((t, self.getCameraDict(1), self.getCameraDict(2)))
+        #print(self.delayedMemory[-1])
+        #print(f"Len of delayed memory: {len(self.delayedMemory)}")
+        #pprint(self.delayedMemory)
 
         while len(self.delayedMemory) > 0 and t - self.delayedMemory[0][0] > self.maxMemory:
             self.delayedMemory.pop(0)
@@ -346,10 +314,6 @@ class FuzbAISim:
     
         # Return first (the oldest) by default
         return self.delayedMemory[0][player]
-
-    def nudgeBall(self):
-        velocityNoise = 0.1
-        p.resetBaseVelocity(self.ball, linearVelocity=[random.random()*velocityNoise,random.random()*velocityNoise,0])
 
 
     ### --- Function for spawning ball at specified location --- ###
@@ -416,6 +380,10 @@ class FuzbAISim:
 
         # Apply velocity to the ball
         p.resetBaseVelocity(self.ball, linearVelocity=velocity, angularVelocity=[0, 0, 0])
+
+        # Mark episode end (but not on initial startup placement)
+        if self._end_episode_armed:
+            self.end_episode_latch = True
 
         self.showRound()
 
@@ -557,9 +525,11 @@ class FuzbAISim:
 
         self.showScore()
         self.showRound()
-        #self.nudgeBall()
         self.ResetBallToLocation()
         self.showPlayerStatus()
+        # Arm end_episode latch only after initial setup reset
+        self.end_episode_latch = False
+        self._end_episode_armed = True
 
         prev_key_t = 0
 
@@ -605,24 +575,6 @@ class FuzbAISim:
                 self._update_kick_latch()
                 self._update_x_threshold_termination()
 
-                # Debug contact print (red kick)
-                self._debug_print_red_kick()
-
-                # Condition if the ball does not move enough for three steps, the ball is still and the episode ends - currently defunct
-                """if math.sqrt(self.ballVel[0][0]**2 + self.ballVel[0][1]**2) > 0.05:
-                    ball_moving = self.t
-
-                if self.t - ball_moving > 3:
-                    
-                    # Save the model at regular intervals
-                    if self.round % self.save_interval == 0:
-                        self.p1.save_model("ball_control_model.pth")
-
-                    self.ResetBallToLocation()
-                    self.round += 1
-                    #print("Round:", self.round)
-                """
-
                 angles = []
                 rodPoses = []     
                 
@@ -648,7 +600,8 @@ class FuzbAISim:
 
                     try:     
                         if self.status_player1 == 0:             
-                            motors1 = self.p1.process_data(self.getDelayedCamera(1, self.t - self.simulatedDelay))
+                            # Robust (no-delay) training: feed the current snapshot directly.
+                            motors1 = self.p1.process_data(self.getCameraDict(1))
                         else:
                             # Use the external motor data...
                             motors1 = self.motorCommandsExternal1
@@ -676,7 +629,8 @@ class FuzbAISim:
 
                     try:                                               
                         if self.status_player2 == 0:             
-                            motors2 = self.p2.process_data(self.getDelayedCamera(2, self.t - self.simulatedDelay))
+                            # Robust (no-delay) training: feed the current snapshot directly.
+                            motors2 = self.p2.process_data(self.getCameraDict(2))
                         else:
                             # Use the external motor data...
                             motors2 = self.motorCommandsExternal2
@@ -701,20 +655,24 @@ class FuzbAISim:
                     except:
                         print("Exception in agent 2")
 
-                    prev_t = self.t   
+                    prev_t = self.t
+
+                    episode_ended_this_control_step = bool(
+                        self._x_threshold_terminated_latch or self.end_episode_latch
+                    )
 
                     # Clear per-step latches after agents have consumed the observation stream
                     self._ball_kicked_latch = False
                     self._x_threshold_terminated_latch = False
+                    self.end_episode_latch = False
 
-                    if self.current_step >= self.max_num_steps:
+                    if (not episode_ended_this_control_step) and self.current_step >= self.max_num_steps:
                         self.ResetBallToLocation()
                         self.round += 1
                         self.reset_step_counter()     
 
+                # Zajemanje podatkov (gol, konec, podatki iz kamer)
                 self.sampleCameras(self.t)
-                #print("States: ", rodPositions, rodAngles)
-                #print(p.getLinkState(mizaId, 3))
 
 
                 # Checks, if the goal was scored to end the iteration

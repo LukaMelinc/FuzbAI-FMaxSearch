@@ -124,7 +124,7 @@ class PPOAgent:
         self.prev_vel = None
         self.prev_score = None
         self.active_regions = None  # Initialize active_regions
-        self.MAX_EPISODE_STEPS = 100
+        self.MAX_EPISODE_STEPS = 30
         self.episode_steps = 0
 
         
@@ -173,8 +173,6 @@ class PPOAgent:
 
         # For training mode vs. inference mode
         self.training_enabled = True
-
-
 
     def save_model(self, path=None):
         if path is None:
@@ -290,14 +288,19 @@ class PPOAgent:
                 break
 
     def process_data(self, camera):
+
         # Extract the current observation
         obs, bxy, vxy = self.extract_observation(camera)
 
-        # Events from environment
+        # Events from environment - zajem podatkov o brci žoge in terminaciji zaradi premajhne x vrednosti
         ball_kicked = bool(camera.get("ball_kicked", False))
         terminated_by_x_threshold = bool(camera.get("terminated_by_x_threshold", False))
+        end_episode = bool(camera.get("end_episode", False))
 
+        if end_episode:
+            print(f"Enviroment singals episode end.")
         # Goal detection via score delta (more reliable than ball position thresholds)
+        # Za potrditev gola
         score = camera.get("score", None)
         goal_scored = False
         opponent_goal_scored = False
@@ -308,6 +311,7 @@ class PPOAgent:
             self.prev_score = list(score)
 
         # If not training, just run the policy forward pass
+        # Not important during training, doesn't execute
         if not self.training_enabled:
             action, _, _ = self.compute_action(obs)
             commands = self.scale_to_motor_commands(action)
@@ -315,14 +319,16 @@ class PPOAgent:
 
     
         # Training: collect the step
+        episode_finished_this_sample = False
         if self.last_obs is not None:
+
             # Calculate the reward for the previous step (s_t-1, a_t-1 -> r_t)
             reward, reward_breakdown = simple_reward(
                 goal_scored=goal_scored,
                 ball_kicked=ball_kicked,
                 terminated_by_x_threshold=terminated_by_x_threshold,
             )
-            reward = np.clip(reward, -1000, 1000)       # Clippanje rewarda, se lahko potem še spreminja
+            print(f"Reward calculate for step {self.episode_steps}, at episode: {self.episode_count}, calculated reward: {reward}")
 
             # NEW: Track step-level reward
             self.current_episode_step_rewards.append(reward)
@@ -357,21 +363,32 @@ class PPOAgent:
                 self.last_action = None
                 self.last_val = None
                 self.last_logp = None
+                episode_finished_this_sample = True
             else:
                 self.ep_reward += reward
 
             # Early episode termination on x-threshold termination
-            if terminated_by_x_threshold:
+            if (not episode_finished_this_sample) and (terminated_by_x_threshold or end_episode):
                 self.finish_episode(last_value=0)
                 self.episode_steps = 0
+                episode_finished_this_sample = True
+
+            # Episode boundary when simulator resets the ball
+            #if (not terminated_by_x_threshold) and end_episode:
+            #    self.finish_episode(last_value=0)
+            #    self.episode_steps = 0
+
+        else:
+            print(f"=====First step, no reward yet =====")
 
         # Preveritev terminacije epizode
-        if not terminated_by_x_threshold:
+        if not episode_finished_this_sample and not terminated_by_x_threshold:
             if self.episode_steps >= self.MAX_EPISODE_STEPS:
                 # Zadnja napovedana vrednost za GAE izračun
                 _, final_value, _ = self.compute_action(obs)
                 self.finish_episode(last_value=final_value)
                 self.episode_steps = 0
+                episode_finished_this_sample = True
             else:
                 self.episode_steps += 1
 
@@ -470,9 +487,6 @@ class PPOAgent:
         assert len(obs) == 10, f"Expected obs_dim=10, got {len(obs)}"
         
         return obs, (CD0["ball_x"], CD0["ball_y"]), (CD0["ball_vx"], CD0["ball_vy"])
-
-
-    
 
     def scale_to_motor_commands(self, action):
         """
