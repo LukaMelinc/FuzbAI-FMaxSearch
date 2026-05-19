@@ -88,6 +88,14 @@ def mlp_gaussian_likelihood(action, mean, log_std):
     #pre_sum = -0.5 * (((action - mean) / (torch.exp(log_std)))**2 + 2*log_std + np.log(2*np.pi))
     return torch.sum(pre_sum, axis=1)
 
+def atanh(x):
+    return 0.5 * (torch.log1p(x) - torch.log1p(-x))
+
+def squashed_gaussian_likelihood(pre_tanh_action, squashed_action, mean, log_std):
+    gaussian_logp = mlp_gaussian_likelihood(pre_tanh_action, mean, log_std)
+    correction = torch.sum(torch.log(1 - squashed_action.pow(2) + 1e-6), axis=1)
+    return gaussian_logp - correction
+
 
 class PPOAgent:
     """
@@ -124,7 +132,6 @@ class PPOAgent:
         self.prev_vel = None
         self.prev_score = None
         self.active_regions = None  # Initialize active_regions
-        self.MAX_EPISODE_STEPS = 30
         self.episode_steps = 0
 
         
@@ -162,6 +169,7 @@ class PPOAgent:
         self.last_obs = None     # store last observation
         self.episode_rewards = []
         self.reward = 0
+        self.total_steps = 0
 
         # Episode statistics
         self.episode_stats = []  # Store detailed stats for each episode
@@ -173,6 +181,9 @@ class PPOAgent:
 
         # For training mode vs. inference mode
         self.training_enabled = True
+
+    def policy_log_std(self, mean):
+        return torch.clamp(self.log_std, min=-5.0, max=2.0).unsqueeze(0).expand_as(mean)
 
     def save_model(self, path=None):
         if path is None:
@@ -213,23 +224,20 @@ class PPOAgent:
         mean, value_t = self.ac(obs_t)
 
 
-        log_std = torch.clamp(self.log_std, min=-5.0, max=2.0).unsqueeze(0).expand_as(mean)
+        log_std = self.policy_log_std(mean)
         std = torch.exp(log_std)
 
-        # Sample from Gaussian
-        action_raw = mean + std * torch.randn_like(mean)
-        action_clipped = torch.clamp(action_raw, -1.0, 1.0)
+        pre_tanh_action = mean + std * torch.randn_like(mean)
+        action_t = torch.tanh(pre_tanh_action)
 
         # Computing logp of the action executed
-        logp = mlp_gaussian_likelihood(action_clipped, mean, log_std)
+        logp = squashed_gaussian_likelihood(pre_tanh_action, action_t, mean, log_std)
 
         # Squeeze out the batch dimension
-        action = action_clipped.detach().cpu().numpy()[0]
+        action = action_t.detach().cpu().numpy()[0]
         value  = value_t.detach().cpu().numpy()[0,0]
         logp   = logp.detach().cpu().numpy()[0]
 
-        # Action in [-1,1], but the raw Gaussian might exceed that.
-        #action = np.clip(action, -1.0, 1.0)
         return action, value, logp
 
     def train_on_buffer(self):
@@ -257,11 +265,12 @@ class PPOAgent:
 
             # Forward pass
             mean, value = self.ac(obs)
-            log_std = self.log_std.expand_as(mean)
-            std = torch.exp(log_std)
+            log_std = self.policy_log_std(mean)
 
             # Compute log probability for the new actions
-            logp_pi = mlp_gaussian_likelihood(act, mean, log_std)
+            safe_act = torch.clamp(act, -1.0 + 1e-6, 1.0 - 1e-6)
+            pre_tanh_act = atanh(safe_act)
+            logp_pi = squashed_gaussian_likelihood(pre_tanh_act, safe_act, mean, log_std)
 
             # Ratio for surrogate loss
             ratio = torch.exp(logp_pi - logp_old)
@@ -289,8 +298,12 @@ class PPOAgent:
 
     def process_data(self, camera):
 
+        self.total_steps += 1
+        if self.total_steps % 250 == 0:
+            print(f"Processing step {self.total_steps} at episode {self.episode_count}, step in episode: {self.episode_steps}")
+
         # Extract the current observation
-        obs, bxy, vxy = self.extract_observation(camera)
+        obs, bxy, vxy, rod_angle = self.extract_observation(camera)
 
         # Events from environment - zajem podatkov o brci žoge in terminaciji zaradi premajhne x vrednosti
         ball_kicked = bool(camera.get("ball_kicked", False))
@@ -327,6 +340,7 @@ class PPOAgent:
                 goal_scored=goal_scored,
                 ball_kicked=ball_kicked,
                 terminated_by_x_threshold=terminated_by_x_threshold,
+                rod_angle=rod_angle
             )
             print(f"Reward calculate for step {self.episode_steps}, at episode: {self.episode_count}, calculated reward: {reward}")
 
@@ -377,16 +391,8 @@ class PPOAgent:
         else:
             print(f"=====First step, no reward yet =====")
 
-        # Preveritev terminacije epizode
-        if not episode_finished_this_sample and not terminated_by_x_threshold:
-            if self.episode_steps >= self.MAX_EPISODE_STEPS:
-                # Zadnja napovedana vrednost za GAE izračun
-                _, final_value, _ = self.compute_action(obs)
-                self.finish_episode(last_value=final_value)
-                self.episode_steps = 0
-                episode_finished_this_sample = True
-            else:
-                self.episode_steps += 1
+        if not episode_finished_this_sample:
+            self.episode_steps += 1
 
         # Izračun akcije za trenutno stanje
         action, value, logp = self.compute_action(obs)
@@ -449,6 +455,7 @@ class PPOAgent:
         rod_idx = 5#self.controlled_rod_id - 1  # Convert to 0-based index
         rod_pos_calib = CD0["rod_position_calib"][rod_idx]
         rod_angle = CD0["rod_angle"][rod_idx]
+        
 
         #pos_list = []
         #for i in range(8):
@@ -480,8 +487,7 @@ class PPOAgent:
         ball_rod_dist_y = (ball_y_world - rod_y_world) / 350  # Normalized [-1,1]
         
         # Rod angle normalized
-        angle_normalized = np.clip(rod_angle / 45.0, -1, 1)  # Assuming ±45° range
-        #print(f"rod angle and normalized: {rod_y_normalized}, {angle_normalized}")
+        angle_normalized = np.clip(rod_angle / 32.0, -1, 1)  # Assuming ±45° range
         
         # Combine: Ball(4) + Rod(5) = 9 total
         ball_kicked = float(camera.get("ball_kicked", False))
@@ -499,7 +505,7 @@ class PPOAgent:
         # Verify size
         assert len(obs) == 10, f"Expected obs_dim=10, got {len(obs)}"
         
-        return obs, (CD0["ball_x"], CD0["ball_y"]), (CD0["ball_vx"], CD0["ball_vy"])
+        return obs, (CD0["ball_x"], CD0["ball_y"]), (CD0["ball_vx"], CD0["ball_vy"]), angle_normalized
 
     def scale_to_motor_commands(self, action):
         """
@@ -533,14 +539,14 @@ class PPOAgent:
             },
             {
                 "driveID": 3,
-                "rotationTargetPosition": 0.0,
+                "rotationTargetPosition": 0.5,
                 "rotationVelocity": 0.0,
                 "translationTargetPosition": 0.5,
                 "translationVelocity": 0.0
             },
             {
                 "driveID": 1,
-                "rotationTargetPosition": 0.0,
+                "rotationTargetPosition": 0.5,
                 "rotationVelocity": 0.0,
                 "translationTargetPosition": 0.5,
                 "translationVelocity": 0.0

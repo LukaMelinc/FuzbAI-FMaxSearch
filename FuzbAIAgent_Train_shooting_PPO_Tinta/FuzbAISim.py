@@ -58,12 +58,12 @@ class FuzbAISim:
         self._end_episode_armed = False
 
         # Threshold of num of steps to end the iteration
-        self.max_num_steps = 30
+        self.max_num_steps = 40
         self.current_step = 0
 
         # Control loop period (seconds). One "step" for the agent completes when this time has elapsed.
         # Increase this to make each step take longer (e.g. 0.05 for ~20 Hz, 0.1 for ~10 Hz).
-        self.control_dt = 0.5
+        self.control_dt = 0.05
 
         # Debug: print when a "kick" (contact) happens with any red player.
         # This uses ground-truth contacts from PyBullet (not noisy vision speed).
@@ -151,6 +151,7 @@ class FuzbAISim:
         #self._ball_kicked_latch = False
 
         # Cooldown to avoid spamming while in continuous contact
+        #print(f"current time:{self.t}, last red kick time:{self._last_debug_red_kick_t}, cooldown: {self.debug_red_kick_cooldown_s}")
         if (self.t - self._last_debug_red_kick_t) < self.debug_red_kick_cooldown_s:
             return
 
@@ -566,6 +567,8 @@ class FuzbAISim:
 
                     # Safe drop coordinates within table limits
                     self.ResetBallToLocation()
+                    self.round += 1
+                    self.reset_step_counter()
                 
 
 
