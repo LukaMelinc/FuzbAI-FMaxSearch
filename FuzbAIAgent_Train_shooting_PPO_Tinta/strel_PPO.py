@@ -118,18 +118,28 @@ class PPOAgent:
                  target_kl=0.01,
                  delay_step=2,
                  save_model_every=100,   # save every N episodes
-                 model_save_path="ppo_foos.pth",
+                 model_save_path="./trained_models/ppo_foos.pth",   # Path for loading the model form
                  training_log_export_every=10,
                  l2_lambda=5e-4,
-                 controlled_rod_id=4):      # L2 regularization strength
+                 controlled_rod_id=4,
+                 training_enabeled=True,
+                 load_model=False,
+                 inference=False):      # L2 regularization strength
 
         self.controlled_rod_id = controlled_rod_id
         self.obs_dim = obs_dim
         self.act_dim = act_dim
         self.save_model_every = save_model_every
-        self.model_save_path = model_save_path
+        self.model_save_path = model_save_path      # Path from where a trained model is loaded
+        self.model_name = "shooting_ppo_single_rod"
         self.training_log_export_every = training_log_export_every
         self.l2_lambda = l2_lambda  # L2 regularization strength
+        self.inference = inference
+        self.should_load_model = load_model
+        self.training_enabled = training_enabeled # For training mode vs. inference mode
+        if self.inference and self.training_enabled:
+            print("[PPOAgent] Inference mode enabled, disabling training.")
+            self.training_enabled = False
 
 
         self.prev_vel = None
@@ -184,15 +194,20 @@ class PPOAgent:
         self.current_episode_x_threshold_terminations = 0
         self.current_episode_step_rewards = []  # Track reward at each step
 
-        # For training mode vs. inference mode
-        self.training_enabled = True
+        if self.should_load_model:
+            self.load_model()
+        
 
     def policy_log_std(self, mean):
         return torch.clamp(self.log_std, min=-5.0, max=2.0).unsqueeze(0).expand_as(mean)
 
     def save_model(self, path=None):
         if path is None:
-            path = self.model_save_path
+            save_dir = self.model_save_path
+            if os.path.splitext(save_dir)[1]:
+                save_dir = os.path.dirname(save_dir) or "."
+            os.makedirs(save_dir, exist_ok=True)
+            path = os.path.join(save_dir, f"{self.model_name}_steps_{self.total_steps}.pth")
         torch.save({
             "actor_critic_state_dict": self.ac.state_dict(),
             "log_std": self.log_std.detach().cpu(),
@@ -201,6 +216,11 @@ class PPOAgent:
         print(f"[PPOAgent] Model saved to {path}")
 
     def load_model(self, path=None):
+
+        #if not self.inference:
+        #    print("Agent in training mode, skipping model load.")
+        #    return
+        
         if path is None:
             path = self.model_save_path
         if os.path.exists(path):
@@ -231,23 +251,26 @@ class PPOAgent:
 
         return obs
 
-    def compute_action(self, obs):
+    def compute_action(self, obs, deterministic=False):
         """
         Given a single observation (numpy array),
         return an action in [-1,1], value estimate, and log probability.
         """
-        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
-        mean, value_t = self.ac(obs_t)
+        with torch.no_grad():
+            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+            mean, value_t = self.ac(obs_t)
 
+            log_std = self.policy_log_std(mean)
+            if deterministic:
+                pre_tanh_action = mean
+            else:
+                std = torch.exp(log_std)
+                pre_tanh_action = mean + std * torch.randn_like(mean)
 
-        log_std = self.policy_log_std(mean)
-        std = torch.exp(log_std)
+            action_t = torch.tanh(pre_tanh_action)
 
-        pre_tanh_action = mean + std * torch.randn_like(mean)
-        action_t = torch.tanh(pre_tanh_action)
-
-        # Computing logp of the action executed
-        logp = squashed_gaussian_likelihood(pre_tanh_action, action_t, mean, log_std)
+            # Computing logp of the action executed
+            logp = squashed_gaussian_likelihood(pre_tanh_action, action_t, mean, log_std)
 
         # Squeeze out the batch dimension
         action = action_t.detach().cpu().numpy()[0]
@@ -361,7 +384,7 @@ class PPOAgent:
         # If not training, just run the policy forward pass
         # Not important during training, doesn't execute
         if not self.training_enabled:
-            action, _, _ = self.compute_action(obs)
+            action, _, _ = self.compute_action(obs, deterministic=self.inference)
             commands = self.scale_to_motor_commands(action)
             return commands
 
@@ -621,16 +644,6 @@ class PPOAgent:
         self.current_episode_ball_kicks = 0
         self.current_episode_x_threshold_terminations = 0
         self.current_episode_step_rewards = []
-
-        # Save model periodically
-        if self.episode_count % self.save_model_every == 0:
-            avg_reward = np.mean(self.episode_rewards[-100:]) if self.episode_rewards else 0
-            print(f"\n{'='*70}")
-            print(f"Checkpoint: Episode {self.episode_count}")
-            print(f"Average Reward (last 100): {avg_reward:.2f}")
-            print(f"{'='*70}\n")
-            self.save_model()
-
 
 
         # Save model periodically
