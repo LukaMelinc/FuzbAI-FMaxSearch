@@ -12,6 +12,7 @@ from datetime import datetime
 from pprint import pprint
 
 from actor_critic.main import ActorCriticNet
+from export.main import Export
 from memory.main import PPOBuffer
 from reward.single_bar_shoting import simple_reward
 
@@ -118,6 +119,7 @@ class PPOAgent:
                  delay_step=2,
                  save_model_every=100,   # save every N episodes
                  model_save_path="ppo_foos.pth",
+                 training_log_export_every=10,
                  l2_lambda=5e-4,
                  controlled_rod_id=4):      # L2 regularization strength
 
@@ -126,6 +128,7 @@ class PPOAgent:
         self.act_dim = act_dim
         self.save_model_every = save_model_every
         self.model_save_path = model_save_path
+        self.training_log_export_every = training_log_export_every
         self.l2_lambda = l2_lambda  # L2 regularization strength
 
 
@@ -170,6 +173,8 @@ class PPOAgent:
         self.episode_rewards = []
         self.reward = 0
         self.total_steps = 0
+        self.training_count = 0
+        self.training_export = Export()
 
         # Episode statistics
         self.episode_stats = []  # Store detailed stats for each episode
@@ -188,14 +193,25 @@ class PPOAgent:
     def save_model(self, path=None):
         if path is None:
             path = self.model_save_path
-        torch.save(self.ac.state_dict(), path)
+        torch.save({
+            "actor_critic_state_dict": self.ac.state_dict(),
+            "log_std": self.log_std.detach().cpu(),
+            "training_count": self.training_count,
+        }, path)
         print(f"[PPOAgent] Model saved to {path}")
 
     def load_model(self, path=None):
         if path is None:
             path = self.model_save_path
         if os.path.exists(path):
-            self.ac.load_state_dict(torch.load(path))
+            checkpoint = torch.load(path, map_location=self.device)
+            if isinstance(checkpoint, dict) and "actor_critic_state_dict" in checkpoint:
+                self.ac.load_state_dict(checkpoint["actor_critic_state_dict"])
+                if "log_std" in checkpoint:
+                    self.log_std.data.copy_(checkpoint["log_std"].to(self.device))
+                self.training_count = int(checkpoint.get("training_count", self.training_count))
+            else:
+                self.ac.load_state_dict(checkpoint)
             print(f"[PPOAgent] Model loaded from {path}")
         else:
             print("[PPOAgent] No saved model found, skipping load.")
@@ -244,12 +260,22 @@ class PPOAgent:
         """
         Run PPO update once we have a full buffer (N steps).
         """
+        buffer_sample_count = int(self.buf.ptr)
+        accumulated_reward = float(np.sum(self.buf.rew_buf[:buffer_sample_count]))
+
         data = self.buf.get()  # get everything as torch tensors
 
         # Add validation
         if data is None:
             print("[Warning] No data in buffer to train on")
             return
+
+        self.training_count += 1
+        self.training_export.add_training_result(
+            training_number=self.training_count,
+            accumulated_reward=accumulated_reward,
+            sample_count=buffer_sample_count,
+        )
     
 
         obs = data["obs"].to(self.device)
@@ -295,6 +321,15 @@ class PPOAgent:
             if kl > 1.5 * self.target_kl:
                 print(f"[PPO] Early stopping at iter={i} due to reaching max kl.")
                 break
+
+        print(
+            f"[Training] #{self.training_count}: accumulated reward "
+            f"{accumulated_reward:.3f} over {buffer_sample_count} samples"
+        )
+
+        if self.training_count % self.training_log_export_every == 0:
+            self.training_export.export_csv()
+            self.save_model()
 
     def process_data(self, camera):
 

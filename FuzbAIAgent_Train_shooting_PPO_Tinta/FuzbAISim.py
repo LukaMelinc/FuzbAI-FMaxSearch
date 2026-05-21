@@ -67,7 +67,7 @@ class FuzbAISim:
 
         # Control loop period (seconds). One "step" for the agent completes when this time has elapsed.
         # Increase this to make each step take longer (e.g. 0.05 for ~20 Hz, 0.1 for ~10 Hz).
-        self.control_dt = 0.1
+        self.control_dt = 0.05
 
         # Debug: print when a "kick" (contact) happens with any red player.
         # This uses ground-truth contacts from PyBullet (not noisy vision speed).
@@ -802,5 +802,10 @@ if __name__ == "__main__":
     sim = FuzbAISim()
     sim.run()
 
-    while sim.isRunning:
-        pass
+    try:
+        while sim.isRunning:
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        sim.stop()
+        if sim.simThread is not None:
+            sim.simThread.join()
