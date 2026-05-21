@@ -310,8 +310,8 @@ class PPOAgent:
         terminated_by_x_threshold = bool(camera.get("terminated_by_x_threshold", False))
         end_episode = bool(camera.get("end_episode", False))
 
-        if end_episode:
-            print(f"Enviroment singals episode end.")
+        #if end_episode:
+            #print(f"Enviroment singals episode end.")
         # Goal detection via score delta (more reliable than ball position thresholds)
         # Za potrditev gola
         score = camera.get("score", None)

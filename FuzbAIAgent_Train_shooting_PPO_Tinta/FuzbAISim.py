@@ -12,7 +12,7 @@ import traceback
 from log_utils import setup_logging
 
 class FuzbAISim:
-    def __init__(self, episode_end_ball_x_threshold_mm: float = 600.0, kick_observed_rod_id: int = 4):
+    def __init__(self, episode_end_ball_x_threshold_mm: float = 600.0, kick_observed_rod_id: int = 6):
         print(" ______         _             _____ ")
         print("|  ____|       | |      /\   |_   _|")
         print("| |__ _   _ ___| |__   /  \    | |  ")
@@ -47,9 +47,13 @@ class FuzbAISim:
         self.episode_end_ball_x_threshold_mm = float(episode_end_ball_x_threshold_mm)
 
         # Kick observation: detect ball contact on the specified rod's player links.
-        # For your current experiment this is rod 4.
+        # The PPO shooting agent currently emits driveID=4. Player 1 maps that
+        # through driveMap=[0, 1, 3, 5], so the physical axis is 5, i.e. rod 6.
+        # Watching rod 4 here missed real kicks because it was checking the wrong
+        # player links.
         self.kick_observed_rod_id = int(kick_observed_rod_id)
         self._kick_player_links = set()
+        self._link_names_by_index = {}
         self._ball_kicked_latch = False
         self._x_threshold_terminated_latch = False
         # Episode boundary latch: set True when the ball gets reset (agent uses it to call finish_episode)
@@ -63,18 +67,38 @@ class FuzbAISim:
 
         # Control loop period (seconds). One "step" for the agent completes when this time has elapsed.
         # Increase this to make each step take longer (e.g. 0.05 for ~20 Hz, 0.1 for ~10 Hz).
-        self.control_dt = 0.05
+        self.control_dt = 0.1
 
         # Debug: print when a "kick" (contact) happens with any red player.
         # This uses ground-truth contacts from PyBullet (not noisy vision speed).
         self.debug_print_red_kicks = True
-        self.debug_red_kick_force_threshold = 1.0
+        # Count any contact with the watched player links. A force threshold of 1.0
+        # was too strict for debugging because PyBullet can report small/brief
+        # contacts even when the ball visibly changes direction.
+        self.debug_red_kick_force_threshold = 0.0
         self.debug_red_kick_cooldown_s = 0.05
         self._last_debug_red_kick_t = -1e9
 
-        # Diagnostic: if True, prints the strongest ball contact (any body/link)
-        # so it's easy to see what PyBullet is actually reporting.
-        self.debug_print_any_ball_contact = True
+        # Diagnostic only: this no longer controls kick detection. The latch below
+        # must work even when debug printing is disabled. Keep this off by default
+        # because non-kick contacts can happen every physics step and flood logs.
+        self.debug_print_any_ball_contact = False
+        self._warned_empty_kick_links = False
+
+        # Manual stepping lets us check contacts immediately after each physics
+        # update. With real-time simulation, a short ball/player contact can happen
+        # and disappear between Python polling intervals.
+        self.physics_timestep = 1.0 / 240.0
+        # Run several physics updates per Python loop. We still call
+        # _update_kick_latch() after every physics step, so short contacts are not
+        # missed, but the expensive Python-side observation/control code runs less
+        # often. Increase this for faster training; lower it if GUI viewing feels
+        # too jumpy.
+        self.physics_steps_per_loop = 4
+        # Manual stepping should not sleep by default during training. The old
+        # 1 ms sleep happened every physics tick and made explicit stepping feel
+        # much slower than PyBullet real-time mode.
+        self.gui_sleep_s = 0.0
 
         self.stepDisp = None
 
@@ -127,20 +151,32 @@ class FuzbAISim:
     def _init_kick_player_links(self):
         """Resolve which PyBullet link indices correspond to the observed rod's players."""
         self._kick_player_links = set()
+        self._link_names_by_index = {}
         try:
             joints_num = p.getNumJoints(self.mizaId)
             rod_prefix = f"rod{self.kick_observed_rod_id}_rigid"
             for ji in range(joints_num):
                 jinfo = p.getJointInfo(self.mizaId, ji)
-                # jointName is bytes at index 1
+                # jointName is bytes at index 1, linkName is bytes at index 12.
                 jname = None
+                link_name = None
                 try:
                     jname = jinfo[1].decode("utf-8")
                 except Exception:
                     jname = str(jinfo[1])
+                try:
+                    link_name = jinfo[12].decode("utf-8")
+                except Exception:
+                    link_name = str(jinfo[12])
+                self._link_names_by_index[ji] = link_name
                 if jname.lower().startswith(rod_prefix):
                     # In PyBullet, the joint index corresponds to the child link index.
                     self._kick_player_links.add(ji)
+            if self.debug_print_red_kicks:
+                print(
+                    f"Kick detection watches rod {self.kick_observed_rod_id} "
+                    f"player links: {sorted(self._kick_player_links)}"
+                )
         except Exception:
             # Fallback: keep empty set; kick flag will remain False.
             self._kick_player_links = set()
@@ -148,27 +184,57 @@ class FuzbAISim:
     def _update_kick_latch(self):
         """Latch True if the ball contacts the observed rod's player links in this interval."""
 
-        #self._ball_kicked_latch = False
-
         # Cooldown to avoid spamming while in continuous contact
         #print(f"current time:{self.t}, last red kick time:{self._last_debug_red_kick_t}, cooldown: {self.debug_red_kick_cooldown_s}")
         if (self.t - self._last_debug_red_kick_t) < self.debug_red_kick_cooldown_s:
             return
 
-        cps = p.getContactPoints(bodyA=self.ball)
+        if not self._kick_player_links:
+            if self.debug_print_red_kicks and not self._warned_empty_kick_links:
+                print(
+                    "Kick detection has no player links to watch. "
+                    "Check kick_observed_rod_id and URDF joint names."
+                )
+                self._warned_empty_kick_links = True
+            return
+
+        # Query only contacts between the ball and the table URDF. The players are
+        # links on self.mizaId, while the separate concave table mesh is
+        # self.mizaCollisionId. This avoids counting wall/table contacts as kicks.
+        cps = p.getContactPoints(bodyA=self.ball, bodyB=self.mizaId)
         if not cps:
             return
 
-        # Optional diagnostic: print the strongest contact, skipping table mesh collision body
-        if self.debug_print_any_ball_contact:
-            filtered = [cp for cp in cps if cp[2] != getattr(self, "mizaCollisionId", None)]
-            if not filtered:
-                return
+        for cp in cps:
+            # Because bodyA is the ball and bodyB is self.mizaId, cp[4] is the
+            # contacted link index on the table URDF. We only count contacts with
+            # the observed rod's player links, not rods, bearings, walls, or base.
+            table_link = cp[4]
+            normal_force = cp[9]
+            is_observed_player = table_link in self._kick_player_links
+            is_solid_contact = normal_force >= self.debug_red_kick_force_threshold
 
-            print(f"Ball kicked")
+            if not (is_observed_player and is_solid_contact):
+                continue
+
             self._ball_kicked_latch = True
             self._last_debug_red_kick_t = self.t
+
+            # Debug printing is intentionally separate from latch logic. Turning
+            # logs off should never change the reward/event behavior.
+            if self.debug_print_red_kicks:
+                link_name = self._link_names_by_index.get(table_link, "unknown")
+                #print(f"Ball kicked by link {table_link} ({link_name}), force={normal_force:.3f}")
+
             return
+
+        if self.debug_print_any_ball_contact:
+            strongest = max(cps, key=lambda cp: cp[9])
+            link_name = self._link_names_by_index.get(strongest[4], "unknown")
+            print(
+                "Ball touched table URDF but not watched player link "
+                f"(link={strongest[4]} ({link_name}), force={strongest[9]:.3f})"
+            )
 
     def _update_x_threshold_termination(self):
         """If ball_x is below threshold, latch termination and reset the ball (start new episode)."""
@@ -502,10 +568,11 @@ class FuzbAISim:
 
         p.resetDebugVisualizerCamera(cameraDistance=1, cameraYaw=0,cameraPitch=-80, cameraTargetPosition=[0.72,0.375,0])
 
-        # Enable realtime simulation
-        p.setRealTimeSimulation(1)      # the argument represents the one second in the sim corresponds to real second
-        #p.setTimeStep(0.002)  # stability (500x per second)
-        #p.setTimeStep(1/200) # Not working with realtime simulation
+        # Use explicit stepping instead of real-time simulation. This makes contact
+        # events easier to catch because _update_kick_latch() runs immediately
+        # after each p.stepSimulation() call in the main loop.
+        p.setRealTimeSimulation(0)
+        p.setTimeStep(self.physics_timestep)
 
     def run(self):
         self.isRunning = True
@@ -516,7 +583,7 @@ class FuzbAISim:
         self.isRunning = False
 
     def __run(self):
-        t0 = time.time()
+        self.t = 0.0
 
         refPos = 0
         prev_t = 0
@@ -543,6 +610,15 @@ class FuzbAISim:
 
             """ Code that checks, if a goal was scored in the step """ 
             while self.isRunning:    
+                # Advance several small physics steps per Python loop. The contact
+                # latch is still updated immediately after each physics step, which
+                # preserves kick detection while avoiding one full Python control
+                # pass for every 1/240 s tick.
+                for _ in range(self.physics_steps_per_loop):
+                    p.stepSimulation()
+                    self.t += self.physics_timestep
+                    self._update_kick_latch()
+
                 self.ballPos, ballOrn = p.getBasePositionAndOrientation(self.ball)        
                 self.ballVel = p.getBaseVelocity(self.ball)
 
@@ -560,7 +636,7 @@ class FuzbAISim:
                         else:
                             # Red scored a goal
                             self.score[0] += 1
-                            print(f'Red scored goal ({self.score[0]}:{self.score[1]})')
+                            #print(f'Red scored goal ({self.score[0]}:{self.score[1]})')
 
                         self.showScore()
                         self.showRound()
@@ -570,12 +646,7 @@ class FuzbAISim:
                     self.round += 1
                     self.reset_step_counter()
                 
-
-
-                self.t = time.time() - t0
-
-                # Update event latches (used by observation + reward)
-                self._update_kick_latch()
+                # Update episode/reset latches after the latest sampled ball state.
                 self._update_x_threshold_termination()
 
                 angles = []
@@ -705,7 +776,8 @@ class FuzbAISim:
                 if len(keys) > 0:
                     prev_key_t = self.t
 
-                time.sleep(1e-3)
+                if self.gui_sleep_s > 0:
+                    time.sleep(self.gui_sleep_s)
 
             print("Stopping simulation...")
             p.disconnect()
