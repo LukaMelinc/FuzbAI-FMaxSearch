@@ -26,3 +26,7 @@ PLAN treninga strela
 1. Žoga pri miru vedno v isti točki
 2. Žoga se spawna po različnih točkah v pasu, začetna hitrost = 0
 3. Žoga z začetno hitrostjo vstopa v pas napadalne rdeče palice
+
+Backbone model - na vseh 
+kicking -> shooting 
+        -> passing

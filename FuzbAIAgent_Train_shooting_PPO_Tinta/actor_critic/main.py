@@ -5,7 +5,7 @@ class ActorCriticNet(nn.Module):
     A simple Actor-Critic network.
     It outputs both action_mean (the policy) and value (the critic).
     """
-    def __init__(self, obs_dim, act_dim, hidden_size=64):
+    def __init__(self, obs_dim, act_dim, hidden_size=128):
         super().__init__()
         self.actor = nn.Sequential(
             nn.Linear(obs_dim, hidden_size),    # 9 -> 128

@@ -113,7 +113,12 @@ class FuzbAISim:
         self.travels = [190, 356, 180, 116, 116, 180, 356, 190]
         self.redIndices = [0, 1, 3, 5]
 
-        self.p1 = PPOAgent()
+        self.p1 = PPOAgent(
+            #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/shooting_ppo_single_rod_steps_1170607.pth",
+            #load_model=True,
+            #inference=False,
+            training_enabeled=True
+        )
         self.p2 = PlayerAgent()
 
         # Camera delay settings

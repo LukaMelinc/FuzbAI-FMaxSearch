@@ -117,8 +117,8 @@ class PPOAgent:
                  train_iters=2,
                  target_kl=0.01,
                  delay_step=2,
-                 save_model_every=100,   # save every N episodes
-                 model_save_path="./trained_models/ppo_foos.pth",   # Path for loading the model form
+                 save_model_every=500,   # save every N episodes
+                 model_save_path="./trained_models/ppo_foos.pth",   # Path for loading the model from
                  training_log_export_every=10,
                  l2_lambda=5e-4,
                  controlled_rod_id=4,
@@ -294,11 +294,16 @@ class PPOAgent:
             return
 
         self.training_count += 1
-        self.training_export.add_training_result(
-            training_number=self.training_count,
-            accumulated_reward=accumulated_reward,
-            sample_count=buffer_sample_count,
-        )
+        # Collect PPO diagnostics for this update (averaged over train_iters)
+        update_metrics = {
+            "train_iters": int(self.train_iters),
+            "clip_ratio": float(self.clip_ratio),
+            "target_kl": float(self.target_kl),
+            "lr": float(self.optimizer.param_groups[0].get("lr", 0.0)),
+            "log_std_mean": float(self.log_std.detach().mean().item()),
+            "log_std_min": float(self.log_std.detach().min().item()),
+            "log_std_max": float(self.log_std.detach().max().item()),
+        }
     
 
         obs = data["obs"].to(self.device)
@@ -309,6 +314,22 @@ class PPOAgent:
 
         if not torch.isfinite(logp_old).all():
             print("NaN in logp_old!")
+
+        # Track per-iteration stats and average them at the end
+        stats = {
+            "loss_pi": [],
+            "loss_v": [],
+            "loss_total": [],
+            "approx_kl": [],
+            "clip_frac": [],
+            "entropy_gauss": [],
+            "ratio_mean": [],
+            "ratio_std": [],
+            "grad_norm": [],
+        }
+
+        iters_done = 0
+        early_stop = 0
 
         for i in range(self.train_iters):
 
@@ -324,6 +345,9 @@ class PPOAgent:
             # Ratio for surrogate loss
             ratio = torch.exp(logp_pi - logp_old)
 
+            # PPO clip fraction (how often the ratio goes outside the clip range)
+            clip_frac = ((ratio > (1 + self.clip_ratio)) | (ratio < (1 - self.clip_ratio))).float().mean()
+
             obj = ratio * adv
             clipped_obj = torch.clamp(ratio, 1 - self.clip_ratio, 1 + self.clip_ratio) * adv
 
@@ -336,14 +360,87 @@ class PPOAgent:
 
             self.optimizer.zero_grad()
             loss.backward()
+
+            # Global grad norm (helps detect exploding/vanishing grads)
+            with torch.no_grad():
+                grad_squares = []
+                for p in list(self.ac.parameters()) + [self.log_std]:
+                    if p.grad is None:
+                        continue
+                    grad_squares.append(torch.sum(p.grad.detach() ** 2))
+                if grad_squares:
+                    grad_norm = torch.sqrt(torch.sum(torch.stack(grad_squares))).item()
+                else:
+                    grad_norm = float("nan")
+
             self.optimizer.step()
             print("Backprop complete!")
 
             # Approximate KL divergence
             kl = torch.mean(logp_old - logp_pi).item()
+
+            # Gaussian entropy (pre-tanh) as a proxy for exploration
+            # H(N(mu, sigma)) = 0.5 * sum_d [1 + log(2*pi) + 2*log_std]
+            entropy = (0.5 * (1.0 + np.log(2.0 * np.pi)) + log_std).sum(dim=1).mean().item()
+
+            # Ratio stats
+            ratio_mean = ratio.mean().item()
+            ratio_std = ratio.std(unbiased=False).item()
+
+            # Record stats
+            stats["loss_pi"].append(loss_pi.item())
+            stats["loss_v"].append(loss_vf.item())
+            stats["loss_total"].append(loss.item())
+            stats["approx_kl"].append(float(kl))
+            stats["clip_frac"].append(clip_frac.item())
+            stats["entropy_gauss"].append(float(entropy))
+            stats["ratio_mean"].append(float(ratio_mean))
+            stats["ratio_std"].append(float(ratio_std))
+            stats["grad_norm"].append(float(grad_norm))
+
+            iters_done += 1
             if kl > 1.5 * self.target_kl:
                 print(f"[PPO] Early stopping at iter={i} due to reaching max kl.")
+                early_stop = 1
                 break
+
+        # Explained variance of the value function (1 is best, 0 means no better than predicting mean)
+        with torch.no_grad():
+            _, v_pred = self.ac(obs)
+            v_pred = v_pred.squeeze()
+            var_y = torch.var(ret)
+            if var_y.item() > 1e-8:
+                explained_var = (1.0 - torch.var(ret - v_pred) / var_y).item()
+            else:
+                explained_var = float("nan")
+
+        # Aggregate metrics
+        def _mean(xs):
+            return float(np.mean(xs)) if xs else float("nan")
+
+        update_metrics.update({
+            "iters_done": int(iters_done),
+            "early_stop": int(early_stop),
+            "loss_pi": _mean(stats["loss_pi"]),
+            "loss_v": _mean(stats["loss_v"]),
+            "loss_total": _mean(stats["loss_total"]),
+            "approx_kl": _mean(stats["approx_kl"]),
+            "clip_frac": _mean(stats["clip_frac"]),
+            "entropy_gauss": _mean(stats["entropy_gauss"]),
+            "ratio_mean": _mean(stats["ratio_mean"]),
+            "ratio_std": _mean(stats["ratio_std"]),
+            "grad_norm": _mean(stats["grad_norm"]),
+            "explained_variance": float(explained_var),
+            "ret_mean": float(ret.mean().item()),
+            "ret_std": float(ret.std(unbiased=False).item()),
+        })
+
+        self.training_export.add_training_result(
+            training_number=self.training_count,
+            accumulated_reward=accumulated_reward,
+            sample_count=buffer_sample_count,
+            metrics=update_metrics,
+        )
 
         print(
             f"[Training] #{self.training_count}: accumulated reward "
@@ -352,7 +449,7 @@ class PPOAgent:
 
         if self.training_count % self.training_log_export_every == 0:
             self.training_export.export_csv()
-            self.save_model()
+            #self.save_model()
 
     def process_data(self, camera):
 
