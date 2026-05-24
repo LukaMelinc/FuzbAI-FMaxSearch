@@ -55,7 +55,9 @@ class FuzbAISim:
         self._kick_player_links = set()
         self._link_names_by_index = {}
         self._ball_kicked_latch = False
+        self._kick_terminated_latch = False
         self._x_threshold_terminated_latch = False
+        self.terminate_episode_on_kick = True
         # Episode boundary latch: set True when the ball gets reset (agent uses it to call finish_episode)
         self.end_episode_latch = False
         # Don't end an episode on the initial ball placement at startup
@@ -223,6 +225,9 @@ class FuzbAISim:
                 continue
 
             self._ball_kicked_latch = True
+            if self.terminate_episode_on_kick:
+                self._kick_terminated_latch = True
+                self.end_episode_latch = True
             self._last_debug_red_kick_t = self.t
 
             # Debug printing is intentionally separate from latch logic. Turning
@@ -313,6 +318,7 @@ class FuzbAISim:
             "score": score,
             # New observation/event flags
             "ball_kicked": bool(self._ball_kicked_latch),
+            "terminated_by_kick": bool(self._kick_terminated_latch),
             "terminated_by_x_threshold": bool(self._x_threshold_terminated_latch),
             "end_episode": bool(self.end_episode_latch),
         }
@@ -390,7 +396,7 @@ class FuzbAISim:
 
     ### --- Function for spawning ball at specified location --- ###
 
-    def ResetBallToLocation(self):
+    def ResetBallToLocation(self, mark_episode_end=True):
         # Randomize the drop position within specified ranges
         y_range = (0.39, 0.40)  # Full width of the field
         zone1 = (0.9, 1.0)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
@@ -454,7 +460,7 @@ class FuzbAISim:
         p.resetBaseVelocity(self.ball, linearVelocity=velocity, angularVelocity=[0, 0, 0])
 
         # Mark episode end (but not on initial startup placement)
-        if self._end_episode_armed:
+        if mark_episode_end and self._end_episode_armed:
             self.end_episode_latch = True
 
         self.showRound()
@@ -737,15 +743,23 @@ class FuzbAISim:
                     prev_t = self.t
 
                     episode_ended_this_control_step = bool(
-                        self._x_threshold_terminated_latch or self.end_episode_latch
+                        self._kick_terminated_latch
+                        or self._x_threshold_terminated_latch
+                        or self.end_episode_latch
                     )
+                    reset_after_kick = bool(self._kick_terminated_latch)
 
                     # Clear per-step latches after agents have consumed the observation stream
                     self._ball_kicked_latch = False
+                    self._kick_terminated_latch = False
                     self._x_threshold_terminated_latch = False
                     self.end_episode_latch = False
 
-                    if (not episode_ended_this_control_step) and self.current_step >= self.max_num_steps:
+                    if reset_after_kick:
+                        self.ResetBallToLocation(mark_episode_end=False)
+                        self.round += 1
+                        self.reset_step_counter()
+                    elif (not episode_ended_this_control_step) and self.current_step >= self.max_num_steps:
                         self.ResetBallToLocation()
                         self.round += 1
                         self.reset_step_counter()     

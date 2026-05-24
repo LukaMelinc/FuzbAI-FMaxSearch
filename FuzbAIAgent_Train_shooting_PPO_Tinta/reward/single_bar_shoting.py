@@ -14,3 +14,37 @@ def simple_reward(*, goal_scored: bool, ball_kicked: bool, terminated_by_x_thres
     }
     reward = float(sum(reward_breakdown.values()))
     return reward, reward_breakdown
+
+
+def kicking_reward(
+    *,
+    ball_kicked: bool,
+    forward_ball_vx: float,
+    episode_timeout: bool = False,
+    time_penalty: float = -0.001,
+):
+    """Reward for teaching the rod to kick the ball forward.
+
+    Arguments use the agent's forward direction. If the raw simulator/camera x
+    axis points backward for the controlled rod, multiply vx/dx by -1 before
+    calling this function.
+
+    Reward spec:
+    - small negative reward every step, so faster kicks are preferred
+    - contact reward when the watched rod touches the ball
+    - positive reward for forward ball velocity after contact
+    - penalty for backward ball velocity after contact
+    - penalty for timeout without a useful kick
+    """
+    forward_velocity = max(0.0, float(forward_ball_vx))
+    backward_velocity = max(0.0, -float(forward_ball_vx))
+
+    reward_breakdown = {
+        "time_penalty": float(time_penalty),
+        "ball_kick": 0.2 if ball_kicked else 0.0,
+        "forward_velocity": 0.5 * forward_velocity,
+        "backward_velocity": -0.3 * backward_velocity,
+        "timeout": -0.3 if episode_timeout else 0.0,
+    }
+    reward = float(sum(reward_breakdown.values()))
+    return reward, reward_breakdown
