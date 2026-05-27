@@ -1,0 +1,7 @@
+STAGE2(POST_TRAINING)_kick_FAIL_640k
+    posttraining (BASE STAGE_1_shoting_still_ball) of kicking-STAGE2 -> training failed
+
+MODEL#6
+VEČJI BUFFER: 256->512
+VEČ BACKPROP ITERACJ: 2->4
+ODSTRANJEN TANH IZ KONCA ACTOR MREŽE

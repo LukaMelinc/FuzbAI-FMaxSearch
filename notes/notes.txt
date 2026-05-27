@@ -30,3 +30,6 @@ PLAN treninga strela
 Backbone model - na vseh 
 kicking -> shooting 
         -> passing
+
+POMEMBNO:
+poskusit z manjšo standardno deviacijo: 5.0 -> 2.0, da 

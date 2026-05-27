@@ -1,0 +1,967 @@
+
+Do not judge a run from a single raw metric curve. PPO metrics are noisy.
+Prefer rolling averages over 50-200 training updates.
+
+Useful first plots:
+
+- accumulated_reward, rolling mean
+- entropy_gauss
+- log_std_mean
+- explained_variance
+- loss_v
+- approx_kl
+- clip_frac
+- ratio_std
+
+A healthy run often looks like:
+
+- accumulated_reward increases over time
+- entropy_gauss decreases slowly or stabilizes
+- log_std_mean decreases slowly or stabilizes
+- explained_variance rises toward positive values
+- approx_kl stays below target_kl most of the time
+- clip_frac is not always zero and not constantly very high
+- ratio_mean stays close to 1.0
+- ratio_std stays small/moderate
+- grad_norm is finite and does not explode
+
+For this project, compare runs by reward and behavior first. Loss going down is
+not enough. A lower loss can simply mean the critic is predicting small returns
+or the policy update is very small.
+
+
+Metric reference
+================
+
+training_number
+---------------
+
+Meaning:
+Sequential number of the PPO update. It starts at 1 and increases every time
+train_on_buffer() successfully trains on collected data.
+
+Calculated as:
+self.training_count += 1 in train_on_buffer().
+
+How to interpret:
+This is the x-axis for training-update plots. It is not the same as environment
+step count or episode count.
+
+Rising:
+Normal. Training is progressing.
+
+Problems:
+If this stops increasing, the buffer is not reaching a training condition or
+training has stopped/crashed.
+
+
+accumulated_reward
+------------------
+
+Meaning:
+Sum of all rewards currently stored in the PPO buffer before the update.
+
+Calculated as:
+sum(self.buf.rew_buf[:buffer_sample_count])
+
+How to interpret:
+Higher is usually better, but be careful: this is not normalized by sample_count.
+If one update has more samples than another, accumulated_reward can be larger
+just because the buffer contained more transitions.
+
+Best use:
+Plot a rolling mean. Also look at ret_mean and sample_count.
+
+Rising:
+Usually good. The agent is collecting more reward per update.
+
+Falling:
+Usually bad if sustained. Could mean fewer kicks, weaker forward velocity, more
+backward kicks, or too much time penalty.
+
+Very unstable:
+Common in RL. If the rolling average rises, instability is acceptable. If the
+rolling average is flat while spikes appear, the policy may be relying on random
+accidental kicks.
+
+Important warning:
+Stage 1 fixed-ball training can show much higher accumulated_reward than Stage 2
+randomized-ball training because the task is easier and more repeatable.
+
+
+sample_count
+------------
+
+Meaning:
+Number of transitions used in this PPO update.
+
+Calculated as:
+buffer_sample_count = int(self.buf.ptr)
+
+How to interpret:
+This tells you how much data the PPO update used. With steps_per_env=512, many
+updates should be near 512 if training happens when the buffer is full. If
+training happens at episode endings or at 80 percent buffer fill, sample_count
+may be lower.
+
+Rising/falling:
+Not directly good or bad. It mostly reflects episode lengths and when training
+is triggered.
+
+Problems:
+Very low sample_count means updates are based on little data and will be noisy.
+Large variation in sample_count makes accumulated_reward harder to compare
+between rows.
+
+
+clip_ratio
+----------
+
+Meaning:
+PPO clipping threshold. This is a hyperparameter, not a learned result.
+
+Calculated as:
+self.clip_ratio, usually 0.2.
+
+How to interpret:
+PPO clips policy probability ratios outside [1 - clip_ratio, 1 + clip_ratio].
+For clip_ratio=0.2, ratios outside [0.8, 1.2] are clipped in the policy loss.
+
+Rising/falling:
+Should be stable unless you manually change it.
+
+Problems:
+Too high can allow large, unstable policy changes. Too low can make learning
+slow.
+
+
+target_kl
+---------
+
+Meaning:
+Target KL-divergence threshold used for early stopping.
+
+Calculated as:
+self.target_kl, usually 0.01 in this project.
+
+How to interpret:
+If approx_kl > 1.5 * target_kl, PPO can stop extra train iterations early.
+With target_kl=0.01, early stop triggers around approx_kl > 0.015.
+
+Rising/falling:
+Should be stable unless manually changed.
+
+Problems:
+Too low can stop learning too often. Too high can allow policy jumps.
+
+Note:
+Current logs may not include target_kl because it is commented out in
+update_metrics, but older reports do include it.
+
+
+lr
+--
+
+Meaning:
+Learning rate used by the Adam optimizer.
+
+Calculated as:
+self.optimizer.param_groups[0]["lr"] in older logs.
+
+How to interpret:
+Controls update size. Current default is 1e-4.
+
+Rising/falling:
+Usually stable unless you add scheduling.
+
+Problems:
+Too high: approx_kl, clip_frac, ratio_std, and grad_norm may spike; behavior may
+change suddenly.
+Too low: approx_kl and ratio_std may stay tiny; learning may be very slow.
+
+Note:
+Current logs may not include lr because it is commented out in update_metrics,
+but older reports do include it.
+
+
+train_iters
+-----------
+
+Meaning:
+Maximum number of PPO optimization passes over the same buffer data.
+
+Calculated as:
+self.train_iters.
+
+How to interpret:
+More train_iters means PPO tries to extract more learning from each collected
+batch, but it can also overfit stale data or push the policy too far.
+
+Rising/falling:
+Should be stable unless manually changed.
+
+Problems:
+Too low: under-training each batch, small policy improvement.
+Too high: approx_kl and clip_frac can grow; early_stop may trigger often.
+
+Note:
+Current logs may not include train_iters because it is commented out in
+update_metrics, but older reports do include it.
+
+
+iters_done
+----------
+
+Meaning:
+Number of PPO train iterations actually completed for this update.
+
+Calculated as:
+Incremented inside the train_iters loop. If early stopping happens, iters_done
+is smaller than train_iters.
+
+How to interpret:
+If iters_done equals train_iters, PPO used all planned optimization passes. If
+it is lower, early KL stopping likely interrupted the update.
+
+Rising/falling:
+Should usually be equal to train_iters.
+
+Problems:
+Constantly low iters_done means updates are too aggressive. Consider lowering
+lr, lowering train_iters, or checking reward/advantage scale.
+
+Note:
+Current logs may not include iters_done, but older reports do.
+
+
+early_stop
+----------
+
+Meaning:
+Whether PPO stopped the update early because approx_kl exceeded the threshold.
+
+Calculated as:
+early_stop = 1 if kl > 1.5 * target_kl inside the train loop, otherwise 0.
+
+How to interpret:
+0 means no early stop. 1 means the policy changed more than allowed by the KL
+limit during this update.
+
+Rising/frequent 1 values:
+Policy updates are too large or too unstable.
+
+Stable 0:
+Usually fine. But if approx_kl is always almost zero, learning may be too slow.
+
+Problems:
+Frequent early_stop can mean lr is too high, train_iters is too high, reward
+scale is too large/noisy, or the policy distribution is changing abruptly.
+
+Note:
+Current logs may not include early_stop because it is commented out in
+update_metrics, but older reports do include it.
+
+
+log_std_mean
+------------
+
+Meaning:
+Average log standard deviation of the Gaussian policy across action dimensions.
+This controls exploration before the tanh squashing.
+
+Calculated as:
+mean(self.log_std)
+
+The action is sampled as:
+pre_tanh_action = mean + exp(log_std) * random_noise
+action = tanh(pre_tanh_action)
+
+How to interpret:
+Convert log_std to standard deviation with exp(log_std).
+
+Examples:
+- log_std = -1.0  -> std approximately 0.368
+- log_std = -1.1  -> std approximately 0.333
+- log_std = -0.5  -> std approximately 0.607
+- log_std = -2.0  -> std approximately 0.135
+
+Rising:
+The policy is becoming more random/exploratory. This can help early exploration,
+but if it keeps rising while reward is not improving, the agent may be relying
+on random actions.
+
+Falling:
+The policy is becoming more deterministic/confident. This is often expected
+after the agent discovers a useful behavior.
+
+Stable:
+Can be fine. If stable near the initial value and learning is weak, exploration
+may not be adapting much.
+
+Problems:
+Rising entropy/log_std with flat reward is suspicious. Falling too far too early
+can also be bad because the agent stops exploring before it finds the behavior.
+
+
+log_std_min
+-----------
+
+Meaning:
+Smallest log_std among the action dimensions.
+
+Calculated as:
+min(self.log_std)
+
+How to interpret:
+Shows the least exploratory action dimension.
+
+Rising:
+Even the most deterministic action dimension is becoming more random.
+
+Falling:
+At least one action dimension is becoming more deterministic.
+
+Problems:
+If log_std_min is much lower than log_std_max, different action dimensions have
+very different exploration levels. This can be normal, but inspect which action
+dimension corresponds to rotation target, rotation speed, translation target,
+or translation speed.
+
+
+log_std_max
+-----------
+
+Meaning:
+Largest log_std among the action dimensions.
+
+Calculated as:
+max(self.log_std)
+
+How to interpret:
+Shows the most exploratory action dimension.
+
+Rising:
+At least one action dimension is becoming more random.
+
+Falling:
+The most random action dimension is becoming more deterministic.
+
+Problems:
+If log_std_max rises while reward is poor, one action dimension may be noisy and
+preventing stable control.
+
+
+entropy_gauss
+-------------
+
+Meaning:
+Entropy of the pre-tanh Gaussian policy. It is a proxy for policy randomness.
+Higher entropy means more random/exploratory actions.
+
+Calculated as:
+sum over action dimensions of:
+0.5 * (1 + log(2*pi)) + log_std
+
+Because act_dim=4, entropy is affected by all four action dimensions.
+
+How to interpret:
+entropy_gauss mostly follows log_std_mean. If log_std_mean rises, entropy_gauss
+rises. If log_std_mean falls, entropy_gauss falls.
+
+Rising:
+Policy is becoming more random. This can be useful early, but suspicious if the
+agent should already be exploiting a learned skill.
+
+Falling:
+Policy is becoming more confident/deterministic. In successful Stage 1-style
+training this is often expected.
+
+Stable:
+The exploration level is not changing much.
+
+Problems:
+- Rising entropy + rising reward: exploration may still be helping.
+- Rising entropy + flat/noisy reward: policy may be failing to learn a precise
+  behavior.
+- Falling entropy + falling reward: policy may be prematurely collapsing to a
+  bad behavior.
+
+Important:
+This is Gaussian entropy before tanh. The actual squashed action distribution is
+not exactly measured by this metric.
+
+
+loss_pi
+-------
+
+Meaning:
+Policy loss from the PPO clipped objective.
+
+Calculated as:
+ratio = exp(logp_pi - logp_old)
+obj = ratio * advantage
+clipped_obj = clamp(ratio, 1 - clip_ratio, 1 + clip_ratio) * advantage
+loss_pi = -mean(min(obj, clipped_obj))
+
+How to interpret:
+This is the actor/policy optimization objective. Lower is not always "better" in
+the same way supervised learning loss is better. PPO policy loss depends on
+normalized advantages and the current update, so it often hovers around zero.
+
+Rising/falling:
+Small changes around zero are normal.
+
+Problems:
+Large spikes can mean unstable advantages, unstable probability ratios, or too
+large policy updates.
+
+Important:
+Do not use loss_pi alone to decide if the agent is learning. Use reward,
+explained_variance, approx_kl, clip_frac, entropy, and actual behavior.
+
+
+loss_v
+------
+
+Meaning:
+Value-function loss. This measures how well the critic predicts returns.
+
+Calculated as:
+mean((ret - value_prediction)^2)
+
+How to interpret:
+Lower generally means the critic is fitting the returns better. A better critic
+usually gives better advantage estimates and more stable policy learning.
+
+Falling:
+Usually good, especially if explained_variance also rises.
+
+Rising:
+The critic is fitting returns worse. This can happen when the policy discovers
+new behavior and returns change, or when rewards are noisy.
+
+Stable:
+Can be fine, but check explained_variance.
+
+Problems:
+Low loss_v does not always mean a good critic. If return variance is tiny,
+predicting near the mean can give a low MSE but still be unhelpful. Always check
+explained_variance too.
+
+
+loss_total
+----------
+
+Meaning:
+Total loss optimized by the network.
+
+Calculated as:
+loss_total = loss_pi + 0.5 * loss_v + l2_lambda * l2_norm
+
+where:
+- loss_pi is the PPO policy loss
+- loss_v is value loss
+- l2_norm is sum of squared actor-critic parameters
+- l2_lambda is currently 5e-4
+
+How to interpret:
+This is the scalar sent to backpropagation. It combines actor, critic, and L2
+regularization.
+
+Falling:
+Often good, but not sufficient. It can fall even when behavior does not improve,
+especially if value targets become easier/smaller.
+
+Rising:
+Can indicate unstable critic targets, larger policy updates, or changing reward
+distribution.
+
+Problems:
+Do not treat this like supervised training loss. In RL, lower loss_total does
+not guarantee better policy behavior.
+
+
+approx_kl
+---------
+
+Meaning:
+Approximate KL divergence between the old policy that collected the data and
+the updated policy.
+
+Calculated as:
+mean(logp_old - logp_pi)
+
+How to interpret:
+Measures how much the policy changed during the update. PPO wants policy changes
+to be limited.
+
+Good range:
+Usually below target_kl. With target_kl=0.01, values around 0.001-0.01 are
+typically reasonable. Early stop happens around 0.015 in the current logic.
+
+Rising:
+Policy updates are getting larger.
+
+Falling / near zero:
+Policy updates are very small.
+
+Problems:
+- Very high: unstable updates, reduce lr or train_iters.
+- Always almost zero: learning may be too conservative, or advantages are weak.
+- Negative values can occur because this is an approximation/noisy sample
+  estimate. Small negative values are not automatically a problem.
+
+
+clip_frac
+---------
+
+Meaning:
+Fraction of samples where PPO clipped the probability ratio.
+
+Calculated as:
+mean((ratio > 1 + clip_ratio) OR (ratio < 1 - clip_ratio))
+
+With clip_ratio=0.2, this counts samples with ratio < 0.8 or ratio > 1.2.
+
+How to interpret:
+Shows how often PPO had to limit the policy update.
+
+Rising:
+More samples are being clipped, so updates are more aggressive.
+
+Falling / zero:
+Few or no samples are clipped, so policy changes are small.
+
+Healthy values:
+There is no exact perfect value, but constantly 0.0 can mean very small updates,
+while very high values can mean unstable updates.
+
+Problems:
+- High clip_frac with high approx_kl: update too aggressive.
+- Always zero with flat reward: policy may not be learning enough from data.
+
+
+ratio_mean
+----------
+
+Meaning:
+Average probability ratio between the new policy and old policy for sampled
+actions.
+
+Calculated as:
+mean(exp(logp_pi - logp_old))
+
+How to interpret:
+Should usually stay close to 1.0. Ratio = 1 means the new policy assigns about
+the same probability to the collected actions as the old policy.
+
+Rising above 1:
+New policy assigns higher probability to sampled actions on average.
+
+Falling below 1:
+New policy assigns lower probability to sampled actions on average.
+
+Problems:
+Large deviations from 1.0 mean the policy changed a lot. Check approx_kl and
+clip_frac.
+
+
+ratio_std
+---------
+
+Meaning:
+Standard deviation of the probability ratio.
+
+Calculated as:
+std(exp(logp_pi - logp_old))
+
+How to interpret:
+Shows how uneven the policy change is across samples. Low ratio_std means most
+samples changed similarly/little. High ratio_std means some samples changed much
+more than others.
+
+Rising:
+Policy update is becoming more uneven/aggressive.
+
+Falling:
+Policy update is becoming smaller or more uniform.
+
+Problems:
+High ratio_std with high clip_frac or high approx_kl indicates unstable policy
+updates. Very low ratio_std all the time may mean the policy barely changes.
+
+
+grad_norm
+---------
+
+Meaning:
+Global gradient norm for actor-critic parameters and log_std.
+
+Calculated as:
+sqrt(sum of squared gradients over all parameters with gradients)
+
+How to interpret:
+Shows update magnitude before optimizer.step(). It is useful for detecting
+exploding or vanishing gradients.
+
+Rising:
+Gradients are getting larger. This can happen when reward/return targets become
+larger or when the model is unstable.
+
+Falling:
+Gradients are getting smaller. This can happen as learning stabilizes, but also
+if the model stops receiving useful learning signal.
+
+Problems:
+- NaN or inf: serious numerical instability.
+- Huge spikes: possible unstable reward, value loss, or learning rate.
+- Always extremely tiny: learning may be stalled.
+
+Note:
+This code logs grad_norm but does not clip gradients. If grad_norm spikes are a
+problem, gradient clipping could be added.
+
+
+explained_variance
+------------------
+
+Meaning:
+How well the critic/value function explains the variance in the returns.
+
+Calculated as:
+1 - var(ret - v_pred) / var(ret)
+
+How to interpret:
+This is one of the most important critic diagnostics.
+
+Approximate meaning:
+- 1.0: critic predicts returns very well
+- 0.0: critic is no better than predicting the average return
+- negative: critic is worse than predicting the average return
+
+Rising:
+Good. The critic is learning to predict returns.
+
+Falling:
+Bad if sustained. The critic is becoming less useful.
+
+Stable near 0:
+The critic is not learning much useful structure.
+
+Problems:
+Low or negative explained_variance makes advantage estimates noisy. Noisy
+advantages make PPO policy updates noisy. In your Stage 1 fixed-ball run,
+explained_variance rose strongly, which matched successful learning. In some
+Stage 2 runs, explained_variance stayed near zero, which suggests the critic did
+not understand the harder/randomized task well.
+
+
+ret_mean
+--------
+
+Meaning:
+Average return target in the current PPO buffer.
+
+Calculated as:
+mean(ret)
+
+Returns are computed in PPOBuffer.finish_path():
+ret = advantage + value_prediction
+
+The advantage is computed using GAE:
+delta_t = reward_t + gamma * value_{t+1} - value_t
+advantage_t = delta_t + gamma * lam * advantage_{t+1}
+
+How to interpret:
+This is the average target the critic is trying to predict.
+
+Rising:
+Usually good. The buffer contains better expected future reward.
+
+Falling:
+Usually bad if sustained. The buffer contains worse expected future reward.
+
+Stable:
+The average return level is stable.
+
+Problems:
+If ret_mean rises but accumulated_reward does not, inspect sample_count and
+reward timing. If ret_mean is very small, loss values may also be small even if
+behavior is not good.
+
+
+ret_std
+-------
+
+Meaning:
+Standard deviation of return targets in the current PPO buffer.
+
+Calculated as:
+std(ret)
+
+How to interpret:
+Shows how varied the return targets are. Higher ret_std means some states/actions
+lead to much better or worse future reward than others.
+
+Rising:
+Returns are becoming more varied. This can be good if the agent is discovering
+high-reward behavior, but it can also mean the task is noisy.
+
+Falling:
+Returns are becoming more uniform. This can happen when behavior stabilizes or
+when all trajectories are similarly bad/good.
+
+Problems:
+Very low ret_std makes explained_variance less informative and can mean the
+critic has little signal to learn from. Very high ret_std can make value learning
+difficult.
+
+
+Relationships between metrics
+=============================
+
+Reward vs loss
+--------------
+
+Reward is the main outcome metric. Loss is only an optimization diagnostic.
+
+Good:
+- accumulated_reward rolling mean rises
+- explained_variance rises
+- entropy/log_std slowly decreases or stabilizes
+- loss_v decreases or stays controlled
+
+Suspicious:
+- loss_total falls but reward does not improve
+- loss_v is low but explained_variance is near zero
+- entropy rises while reward is flat
+
+
+Entropy vs log_std
+------------------
+
+entropy_gauss and log_std_mean are directly linked. If log_std_mean rises,
+entropy_gauss rises. If log_std_mean falls, entropy_gauss falls.
+
+In successful fixed-ball training, it is normal for entropy to fall because the
+agent finds a reliable action pattern.
+
+In harder randomized-ball training, entropy may stay higher for longer because
+the agent needs more exploration. But if entropy keeps rising and reward remains
+poor, the policy may be becoming random instead of skillful.
+
+
+approx_kl, clip_frac, ratio_std
+-------------------------------
+
+These three metrics describe policy update size.
+
+Small update:
+- approx_kl near 0
+- clip_frac near 0
+- ratio_std very low
+
+Large/aggressive update:
+- approx_kl high
+- clip_frac high
+- ratio_std high
+
+If reward is not improving and all three are tiny, learning may be too weak.
+If they are high and reward is unstable, learning may be too aggressive.
+
+
+explained_variance and loss_v
+-----------------------------
+
+Use both together.
+
+Good critic:
+- explained_variance rises toward positive values
+- loss_v is controlled or decreasing
+
+Weak critic:
+- explained_variance near 0 or negative
+- loss_v may be low or high
+
+Why loss_v alone is not enough:
+If returns have low variance, MSE can be low even when the critic is not useful.
+explained_variance tells whether the critic explains the structure in returns.
+
+
+accumulated_reward and sample_count
+-----------------------------------
+
+accumulated_reward is a sum over the buffer. If sample_count changes, compare
+reward per sample:
+
+reward_per_sample = accumulated_reward / sample_count
+
+This can make runs easier to compare when episodes end at different times or
+buffer sizes differ.
+
+
+Suggested interpretation workflow
+=================================
+
+1. Plot accumulated_reward rolling mean.
+   If it trends upward, the run is probably learning something.
+
+2. Plot reward_per_sample.
+   This avoids being fooled by different sample_count values.
+
+3. Check entropy_gauss and log_std_mean.
+   Decide whether the policy is becoming more random or more deterministic.
+
+4. Check explained_variance.
+   If it stays near 0 or negative, the critic is weak and PPO updates are likely
+   noisy.
+
+5. Check approx_kl, clip_frac, and ratio_std.
+   These show whether policy updates are too small or too aggressive.
+
+6. Check actual simulator behavior.
+   For this project, visual behavior matters. A curve can improve because of
+   accidental contacts, but the real goal is controlled alignment and kicking.
+
+
+Common patterns
+===============
+
+Pattern: Reward rising, entropy falling, explained_variance rising
+------------------------------------------------------------------
+
+Interpretation:
+Healthy learning. The agent is getting better, becoming more confident, and the
+critic is learning.
+
+This was similar to the Stage 1 fixed-ball behavior.
+
+
+Pattern: Loss falling, reward flat, explained_variance near 0
+------------------------------------------------------------
+
+Interpretation:
+The optimizer is reducing the numeric objective, but the policy may not be
+learning useful behavior. The critic may only be predicting average/small
+returns.
+
+Action:
+Improve reward shaping, curriculum, observation correctness, or critic training.
+
+
+Pattern: Entropy rising, reward noisy/flat
+-----------------------------------------
+
+Interpretation:
+The policy is becoming more random. It may be searching, but it may also be
+relying on accidental kicks.
+
+Action:
+Consider curriculum, alignment reward, freezing/clamping log_std, or simplifying
+the action space.
+
+
+Pattern: approx_kl and clip_frac always almost zero
+--------------------------------------------------
+
+Interpretation:
+Policy updates are tiny.
+
+Action:
+Possibly increase train_iters, increase learning rate slightly, improve reward
+signal, or check that advantages are meaningful.
+
+
+Pattern: approx_kl high, clip_frac high, early_stop frequent
+-----------------------------------------------------------
+
+Interpretation:
+Policy updates are too large.
+
+Action:
+Lower lr, lower train_iters, increase batch/sample_count, normalize rewards, or
+check for reward spikes.
+
+
+Pattern: explained_variance negative
+------------------------------------
+
+Interpretation:
+The critic is worse than predicting the mean return.
+
+Action:
+Train critic more, lower learning rate if unstable, improve reward consistency,
+increase buffer size, or simplify/curriculum the task.
+
+
+Pattern: accumulated_reward has spikes but rolling mean is flat
+--------------------------------------------------------------
+
+Interpretation:
+The agent occasionally gets lucky, but has not learned reliable behavior.
+
+Action:
+Check whether kicks occur when ball_rod_dist_y is near zero. If not, improve
+observation/reward alignment.
+
+
+Project-specific notes
+======================
+
+Stage 1 fixed-ball training
+---------------------------
+
+Fixed-ball training is much easier. The agent can learn a repeated movement
+pattern. In that case, it is normal to see:
+
+- reward rising strongly
+- entropy falling
+- log_std_mean becoming more negative
+- explained_variance improving
+
+This proves the PPO loop can learn a simple repeated motor primitive.
+
+
+Stage 2 randomized-ball training
+--------------------------------
+
+Randomized ball positions are harder. The policy must use observations to align
+the rod with the ball before kicking. In this setting, unstable reward and low
+explained_variance can mean:
+
+- the observation does not fully describe the useful state
+- the reward is too sparse or mostly rewards accidental contact
+- the curriculum jump from fixed ball to random ball is too large
+- the critic cannot predict returns because the task is too variable
+- exploration is too high or too low
+
+For Stage 2, it is useful to log/plot:
+
+- ball_y_world
+- rod_y_world
+- ball_rod_dist_y
+- ball_kicked
+- reward
+- action components
+
+If good kicks happen when ball_rod_dist_y is near zero, the observation is
+probably meaningful. If kicks happen randomly with respect to ball_rod_dist_y,
+the state/reward relationship still needs debugging.
+
+
+Quick checklist for a new run
+=============================
+
+- Is accumulated_reward rolling mean rising?
+- Is reward_per_sample rising?
+- Is entropy_gauss/log_std_mean behaving as expected?
+- Is explained_variance above 0 and improving?
+- Is approx_kl below target_kl but not always exactly zero?
+- Is clip_frac reasonable, not always huge and not always zero?
+- Is ratio_mean close to 1.0?
+- Is grad_norm finite without large spikes?
+- Does the actual rod visually align with the ball before kicking?
+
+If the answer to reward and behavior is yes, the run is useful even if some
+metrics are noisy. If reward/loss look good but behavior looks random, trust the
+behavior and inspect the reward/observation design.

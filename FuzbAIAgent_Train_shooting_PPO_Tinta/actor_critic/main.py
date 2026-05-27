@@ -13,7 +13,7 @@ class ActorCriticNet(nn.Module):
             nn.Linear(hidden_size, hidden_size), # 128 -> 128
             nn.ReLU(), 
             nn.Linear(hidden_size, act_dim),     # 128 -> 4
-            nn.Tanh()   # NOTE: Temporarely, later change the approach
+            #nn.Tanh()   # NOTE: Temporarely, later change the approach
         )
         
         self.critic = nn.Sequential(

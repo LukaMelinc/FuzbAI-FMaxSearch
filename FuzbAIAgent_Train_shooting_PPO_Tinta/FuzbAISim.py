@@ -116,9 +116,9 @@ class FuzbAISim:
         self.redIndices = [0, 1, 3, 5]
 
         self.p1 = PPOAgent(
-            #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/shooting_ppo_single_rod_steps_1170607.pth",
-            #load_model=True,
-            #inference=False,
+            model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/STAGE_1_shooting_still_ball.pth",
+            load_model=True,
+            inference=False,
             training_enabeled=True
         )
         self.p2 = PlayerAgent()
@@ -398,8 +398,33 @@ class FuzbAISim:
 
     def ResetBallToLocation(self, mark_episode_end=True):
         # Randomize the drop position within specified ranges
-        y_range = (0.39, 0.40)  # Full width of the field
-        zone1 = (0.9, 1.0)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
+        
+        # y_range - the width of the field (shorter side)
+        # zone - the length of the field (logner side)
+        # --- KICKING TRAINING ---
+        
+
+        # STAGE 1.0: always the same area, zero speed
+        #y_range = (0.39, 0.40) # STAGE 1 - always same point
+        #zone1 = (0.94, 0.95)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
+        #speed_range = (0.0,0.0)
+        
+        # STAGE 1.5: always the same area, zero speed
+        y_range = (0.35, 0.45) # STAGE 1 - always same point
+        zone1 = (0.94, 0.95)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
+        speed_range = (0.0,0.0)
+        
+        
+        # STAGE 2: Wider area on y axis, speed still 0
+        #y_range = (0.15, 0.65) # STAGE 2 - wider area on y axis
+        #zone1 = (0.93, 0.96)    # Target area for zone 4
+        #speed_range = (0.0,0.0)
+
+        # STAGE 3: Wider area on y axis, non-zero speed
+        #y_range = (0.15, 0.65) # STAGE 3 - wider area on y axis
+        # zone1 = (0.9, 0.95)
+        # speed_range = (0.5,1.0)
+        
         zone2 = (0.7, 1.0)    # Target area for zone 3
         zone3 = (0.5, 0.7)    # Target area for zone 2
         zone4 = (0.2, 0.5)    # Target area for zone 1
@@ -410,6 +435,7 @@ class FuzbAISim:
 
         custom_x = random.uniform(*x_range)
         custom_y = random.uniform(*y_range)
+        speed = random.uniform(*speed_range)
         custom_z = 0.2  # Ensure it's above the table to avoid collision
 
         custom_ball_pos = [custom_x, custom_y, custom_z]
@@ -418,12 +444,12 @@ class FuzbAISim:
         p.resetBasePositionAndOrientation(self.ball, custom_ball_pos, p.getQuaternionFromEuler([0, 0, 0]))
 
         # Random speed within the defined range
-        speed_range = (0.0,0.0)
-        speed = random.uniform(*speed_range)
+        
 
         # Select a random direction from the list
         # NOTE: Default implementation without the context where the ball willbe positioned
-        directions_list = ['left', 'up', 'down', 'diagonal-right-up', 'diagonal-left-up', 'diagonal-right-down', 'diagonal-left-down']  # 'right' removed as it is scoring unintended goals
+        directions_list = ['up', 'down']    # 
+        #directions_list = ['left', 'up', 'down', 'diagonal-right-up', 'diagonal-left-up', 'diagonal-right-down', 'diagonal-left-down']  # 'right' removed as it is scoring unintended goals
         direction = random.choice(directions_list)
         
 
@@ -633,12 +659,13 @@ class FuzbAISim:
                 self.ballPos, ballOrn = p.getBasePositionAndOrientation(self.ball)        
                 self.ballVel = p.getBaseVelocity(self.ball)
 
-                #print("Iteracija")
 
                 if self.ballPos[2] < 0.1:
+                    goal_scored_this_step = False
                     #print(ballPos)
                     # Is the ball under the table?
                     if (self.ballPos[0] > 0 and self.ballPos[0] < 1.4 and self.ballPos[1] > 0 and self.ballPos[1] < 0.7):
+                        goal_scored_this_step = True
                         # On which side?
                         if self.ballPos[0] < 0.72:
                             # Blue scored a goal

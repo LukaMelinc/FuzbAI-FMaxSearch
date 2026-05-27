@@ -14,7 +14,7 @@ from pprint import pprint
 from actor_critic.main import ActorCriticNet
 from export.main import Export
 from memory.main import PPOBuffer
-from reward.single_bar_shoting import simple_reward
+from reward.single_bar_shoting import kicking_reward, simple_reward
 
 
 HOST_ADDRESS = '127.0.0.1:23336'  # IP or Host for your environment
@@ -109,19 +109,19 @@ class PPOAgent:
                  obs_dim=10, # ball(4) + rod(5) + ball_kicked(1)
                  act_dim=4, #act_dim=4,          # 1 rod × 4 numbers each
                  hidden_size=512,
-                 steps_per_env=256,  # how many steps per iteration
+                 steps_per_env=512,#256,  # how many steps per iteration
                  gamma=0.99,
                  lam=0.95,
                  clip_ratio=0.2,
                  lr=1e-4,
-                 train_iters=2,
+                 train_iters=4,
                  target_kl=0.01,
                  delay_step=2,
                  save_model_every=500,   # save every N episodes
-                 model_save_path="./trained_models/ppo_foos.pth",   # Path for loading the model from
+                 model_save_path="./trained_models/STAGE_1_shooting_still_ball_a_bit_bigger_ball_spawn_area_MODEL#6.pth",   # Path for loading the model from
                  training_log_export_every=10,
                  l2_lambda=5e-4,
-                 controlled_rod_id=4,
+                 controlled_rod_id=6,
                  training_enabeled=True,
                  load_model=False,
                  inference=False):      # L2 regularization strength
@@ -131,7 +131,7 @@ class PPOAgent:
         self.act_dim = act_dim
         self.save_model_every = save_model_every
         self.model_save_path = model_save_path      # Path from where a trained model is loaded
-        self.model_name = "shooting_ppo_single_rod"
+        self.model_name = "STAGE_1_shooting_still_ball_a_bit_bigger_ball_spawn_area"
         self.training_log_export_every = training_log_export_every
         self.l2_lambda = l2_lambda  # L2 regularization strength
         self.inference = inference
@@ -193,6 +193,9 @@ class PPOAgent:
         self.current_episode_ball_kicks = 0
         self.current_episode_x_threshold_terminations = 0
         self.current_episode_step_rewards = []  # Track reward at each step
+        self.episodes_with_kick = 0
+        self.episodes_with_goal = 0
+        self.kick_rate_threshold = 0.8
 
         if self.should_load_model:
             self.load_model()
@@ -296,10 +299,10 @@ class PPOAgent:
         self.training_count += 1
         # Collect PPO diagnostics for this update (averaged over train_iters)
         update_metrics = {
-            "train_iters": int(self.train_iters),
+            #"train_iters": int(self.train_iters),
             "clip_ratio": float(self.clip_ratio),
-            "target_kl": float(self.target_kl),
-            "lr": float(self.optimizer.param_groups[0].get("lr", 0.0)),
+            #"target_kl": float(self.target_kl),
+            #"lr": float(self.optimizer.param_groups[0].get("lr", 0.0)),
             "log_std_mean": float(self.log_std.detach().mean().item()),
             "log_std_min": float(self.log_std.detach().min().item()),
             "log_std_max": float(self.log_std.detach().max().item()),
@@ -419,8 +422,7 @@ class PPOAgent:
             return float(np.mean(xs)) if xs else float("nan")
 
         update_metrics.update({
-            "iters_done": int(iters_done),
-            "early_stop": int(early_stop),
+            #"early_stop": int(early_stop),
             "loss_pi": _mean(stats["loss_pi"]),
             "loss_v": _mean(stats["loss_v"]),
             "loss_total": _mean(stats["loss_total"]),
@@ -462,6 +464,7 @@ class PPOAgent:
 
         # Events from environment - zajem podatkov o brci žoge in terminaciji zaradi premajhne x vrednosti
         ball_kicked = bool(camera.get("ball_kicked", False))
+        terminated_by_kick = bool(camera.get("terminated_by_kick", False))
         terminated_by_x_threshold = bool(camera.get("terminated_by_x_threshold", False))
         end_episode = bool(camera.get("end_episode", False))
 
@@ -491,11 +494,10 @@ class PPOAgent:
         if self.last_obs is not None:
 
             # Calculate the reward for the previous step (s_t-1, a_t-1 -> r_t)
-            reward, reward_breakdown = simple_reward(
-                goal_scored=goal_scored,
+            reward, reward_breakdown = kicking_reward(
                 ball_kicked=ball_kicked,
-                terminated_by_x_threshold=terminated_by_x_threshold,
-                rod_angle=rod_angle
+                forward_ball_vx=vxy[0],
+                episode_timeout=False,
             )
             print(f"Reward calculate for step {self.episode_steps}, at episode: {self.episode_count}, calculated reward: {reward}")
 
@@ -536,8 +538,8 @@ class PPOAgent:
             else:
                 self.ep_reward += reward
 
-            # Early episode termination on x-threshold termination
-            if (not episode_finished_this_sample) and (terminated_by_x_threshold or end_episode):
+            # Early episode termination on kick/x-threshold/environment reset
+            if (not episode_finished_this_sample) and (terminated_by_kick or terminated_by_x_threshold or end_episode):
                 self.finish_episode(last_value=0)
                 self.episode_steps = 0
                 episode_finished_this_sample = True
@@ -606,8 +608,10 @@ class PPOAgent:
 
         Red rod idx:
         0: Goalkeeper, 1: defender, 3: middle, 5: attack
+
+        Id of the rod in geometry is 1-based so red goalkeeper has id=1
         """
-        rod_idx = 5#self.controlled_rod_id - 1  # Convert to 0-based index
+        rod_idx = self.controlled_rod_id - 1  # Convert to 0-based index
         rod_pos_calib = CD0["rod_position_calib"][rod_idx]
         rod_angle = CD0["rod_angle"][rod_idx]
         
@@ -714,6 +718,9 @@ class PPOAgent:
     def finish_episode(self, last_value=0):
         """Fixed episode finishing with proper buffer managment"""
 
+        ended_with_kick = self.current_episode_ball_kicks > 0
+        ended_with_goal = self.current_episode_goals > 0
+
         # Only finish path if we have data in the buffer
         if self.buf.ptr > self.buf.path_start_idx:
             self.buf.finish_path(last_val=last_value)
@@ -728,6 +735,21 @@ class PPOAgent:
 
 
         self.episode_count += 1
+        if ended_with_kick:
+            self.episodes_with_kick += 1
+        if ended_with_goal:
+            self.episodes_with_goal += 1
+
+        kick_rate = self.episodes_with_kick / self.episode_count if self.episode_count > 0 else 0.0
+        print(
+            f"[Episode stats] Episode {self.episode_count}: "
+            f"{'kick' if ended_with_kick else 'no kick'}, "
+            f"kicks {self.episodes_with_kick}/{self.episode_count} "
+            f"({100.0 * kick_rate:.1f}%), goals {self.episodes_with_goal}, "
+            f"threshold {100.0 * self.kick_rate_threshold:.0f}% "
+            f"{'reached' if kick_rate >= self.kick_rate_threshold else 'not reached'}."
+        )
+
         self.current_step = 0
         self.ep_reward = 0.0
         self.last_obs = None

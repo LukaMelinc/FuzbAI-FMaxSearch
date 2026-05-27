@@ -36,8 +36,8 @@ def kicking_reward(
     - penalty for backward ball velocity after contact
     - penalty for timeout without a useful kick
     """
-    forward_velocity = max(0.0, float(forward_ball_vx))
-    backward_velocity = max(0.0, -float(forward_ball_vx))
+    forward_velocity = max(0.0, float(forward_ball_vx)) if ball_kicked else 0.0
+    backward_velocity = max(0.0, -float(forward_ball_vx)) if ball_kicked else 0.0
 
     reward_breakdown = {
         "time_penalty": float(time_penalty),
