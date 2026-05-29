@@ -14,7 +14,7 @@ from pprint import pprint
 from actor_critic.main import ActorCriticNet
 from export.main import Export
 from memory.main import PPOBuffer
-from reward.single_bar_shoting import kicking_reward, simple_reward
+from reward.single_bar_shoting import closest_player_alignment_reward, kicking_reward, simple_reward
 
 
 HOST_ADDRESS = '127.0.0.1:23336'  # IP or Host for your environment
@@ -494,10 +494,12 @@ class PPOAgent:
         if self.last_obs is not None:
 
             # Calculate the reward for the previous step (s_t-1, a_t-1 -> r_t)
+            rod_alignment_reward = self.calculate_rod_alignment_reward(camera)
             reward, reward_breakdown = kicking_reward(
                 ball_kicked=ball_kicked,
                 forward_ball_vx=vxy[0],
                 episode_timeout=False,
+                rod_alignment_reward=rod_alignment_reward,
             )
             print(f"Reward calculate for step {self.episode_steps}, at episode: {self.episode_count}, calculated reward: {reward}")
 
@@ -665,6 +667,30 @@ class PPOAgent:
         assert len(obs) == 10, f"Expected obs_dim=10, got {len(obs)}"
         
         return obs, (CD0["ball_x"], CD0["ball_y"]), (CD0["ball_vx"], CD0["ball_vy"]), angle_normalized
+
+    def calculate_rod_alignment_reward(self, camera):
+        """Reward the controlled rod for placing any player close to the ball y."""
+        CD0 = camera["camData"][0] if camera["camData"][0] is not None else camera["camData"][1]
+        rod_idx = self.controlled_rod_id - 1
+        rod_pos_calib = CD0["rod_position_calib"][rod_idx]
+        if isinstance(rod_pos_calib, list):
+            rod_pos_calib = rod_pos_calib[0]
+
+        controlled_rod_info = None
+        for rod in self.geometry["rods"]:
+            if rod["id"] == self.controlled_rod_id:
+                controlled_rod_info = rod
+                break
+
+        if controlled_rod_info is None:
+            raise ValueError(f"Rod {self.controlled_rod_id} not found in geometry")
+
+        return closest_player_alignment_reward(
+            ball_x=CD0["ball_x"],
+            ball_y=CD0["ball_y"],
+            rod_pos_calib=rod_pos_calib,
+            rod_info=controlled_rod_info,
+        )
 
     def scale_to_motor_commands(self, action):
         """

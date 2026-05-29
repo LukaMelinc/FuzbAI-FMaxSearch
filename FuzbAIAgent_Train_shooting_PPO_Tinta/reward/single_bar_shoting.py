@@ -1,3 +1,6 @@
+import math
+
+
 def simple_reward(*, goal_scored: bool, ball_kicked: bool, terminated_by_x_threshold: bool, rod_angle: float):
     """Event-based reward used for shooting PPO experiment.
 
@@ -22,6 +25,7 @@ def kicking_reward(
     forward_ball_vx: float,
     episode_timeout: bool = False,
     time_penalty: float = -0.001,
+    rod_alignment_reward: float = 0.0,
 ):
     """Reward for teaching the rod to kick the ball forward.
 
@@ -31,6 +35,7 @@ def kicking_reward(
 
     Reward spec:
     - small negative reward every step, so faster kicks are preferred
+    - small dense reward when a controlled-rod player is aligned with the ball
     - contact reward when the watched rod touches the ball
     - positive reward for forward ball velocity after contact
     - penalty for backward ball velocity after contact
@@ -44,7 +49,37 @@ def kicking_reward(
         "ball_kick": 0.2 if ball_kicked else 0.0,
         "forward_velocity": 0.5 * forward_velocity,
         "backward_velocity": -0.3 * backward_velocity,
+        "rod_alignment": float(rod_alignment_reward),
         "timeout": -0.3 if episode_timeout else 0.0,
     }
     reward = float(sum(reward_breakdown.values()))
     return reward, reward_breakdown
+
+
+def closest_player_alignment_reward(
+    *,
+    ball_x: float,
+    ball_y: float,
+    rod_pos_calib: float,
+    rod_info: dict,
+    reward_scale: float = 0.03,
+    y_sigma: float = 45.0,
+    x_sigma: float = 120.0,
+):
+    """Dense reward for positioning one controlled-rod player behind the ball.
+
+    The closest player is determined by checking every player on the rod. The
+    x gate prevents the agent from receiving much reward when the ball is far
+    away from this rod's kicking lane.
+    """
+    rod_y_base = float(rod_pos_calib) * float(rod_info["travel"])
+    closest_dist_y = min(
+        abs(float(ball_y) - (rod_y_base + float(rod_info["first_offset"]) + i * float(rod_info["spacing"])))
+        for i in range(int(rod_info["players"]))
+    )
+    dist_x = abs(float(ball_x) - float(rod_info["position"]))
+
+    y_alignment = math.exp(-((closest_dist_y / y_sigma) ** 2))
+    x_gate = math.exp(-((dist_x / x_sigma) ** 2))
+
+    return float(reward_scale * x_gate * y_alignment)
