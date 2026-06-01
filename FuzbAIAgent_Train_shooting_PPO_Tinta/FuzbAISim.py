@@ -116,10 +116,12 @@ class FuzbAISim:
         self.redIndices = [0, 1, 3, 5]
 
         self.p1 = PPOAgent(
-            model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/STAGE_1_shooting_still_ball.pth",
-            load_model=True,
+            #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/STAGE_1_5(POST_TRAINING#2)_kick_bigger_spawn_area_1_8M#5.pth",
+            load_model=False,
             inference=False,
-            training_enabeled=True
+            training_enabeled=True,
+            # Smaller LR helps avoid unlearning when transferring Stage 1.5 -> Stage 2
+            #lr=5e-5,
         )
         self.p2 = PlayerAgent()
 
@@ -151,9 +153,46 @@ class FuzbAISim:
         self.round = 0 # Štetje rund učenja
         self.save_interval = 100
 
+        # --- Auto-curriculum: gradually widen ball spawn range (Stage 1.5 -> Stage 2) ---
+        # `self.round` increments on episode resets/terminations, so we use it as the
+        # curriculum progress counter.
+        # Stage 1.5 (easy): y_range=(0.35, 0.45)
+        # Stage 2 (harder): y_range=(0.15, 0.65)
+        # Entire y range: 0.091 - 0.67
+        self.curriculum_enabled = True
+        self.curriculum_y_start = (0.45, 0.452)
+        self.curriculum_y_end = (0.091, 0.67)
+        self.curriculum_warmup_rounds = 10000
+        self.curriculum_ramp_rounds = 100000
+        self.curriculum_print_every_rounds = 500
+        self._last_curriculum_print_round = -1
+
     def _ball_x_mm_camera(self) -> float:
         # Must match getCameraDict mapping
         return 1000.0 * float(self.ballPos[0]) - 115.0
+
+    @staticmethod
+    def _lerp(a: float, b: float, t: float) -> float:
+        return float(a) + (float(b) - float(a)) * float(t)
+
+    def _get_curriculum_y_range(self):
+        """Return current (y_min, y_max) for ball spawn based on curriculum progress."""
+        y0_min, y0_max = map(float, self.curriculum_y_start)
+        y1_min, y1_max = map(float, self.curriculum_y_end)
+
+        if not self.curriculum_enabled:
+            y_min, y_max = y0_min, y0_max
+        else:
+            warmup = max(0, int(self.curriculum_warmup_rounds))
+            ramp = max(1, int(self.curriculum_ramp_rounds))
+            progress_rounds = max(0, int(self.round) - warmup)
+            t = min(1.0, progress_rounds / float(ramp))
+            y_min = self._lerp(y0_min, y1_min, t)
+            y_max = self._lerp(y0_max, y1_max, t)
+
+        if y_min > y_max:
+            y_min, y_max = y_max, y_min
+        return (y_min, y_max)
 
     def _init_kick_player_links(self):
         """Resolve which PyBullet link indices correspond to the observed rod's players."""
@@ -316,6 +355,9 @@ class FuzbAISim:
             "camData": [cam1, cam2],
             "camDataOK": [True, True],
             "score": score,
+            "curriculum_round": int(self.round),
+            "curriculum_y_min": float(self._get_curriculum_y_range()[0]),
+            "curriculum_y_max": float(self._get_curriculum_y_range()[1]),
             # New observation/event flags
             "ball_kicked": bool(self._ball_kicked_latch),
             "terminated_by_kick": bool(self._kick_terminated_latch),
@@ -398,7 +440,9 @@ class FuzbAISim:
 
     def ResetBallToLocation(self, mark_episode_end=True):
         # Randomize the drop position within specified ranges
-        
+
+        # IMPORTANT: Tilted groudn from 0.0 - 0.9 and from 0.67 on
+
         # y_range - the width of the field (shorter side)
         # zone - the length of the field (logner side)
         # --- KICKING TRAINING ---
@@ -409,10 +453,23 @@ class FuzbAISim:
         #zone1 = (0.94, 0.95)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
         #speed_range = (0.0,0.0)
         
-        # STAGE 1.5: always the same area, zero speed
-        y_range = (0.35, 0.45) # STAGE 1 - always same point
+        # Stage 1.5 -> Stage 2 curriculum: widen the y_range gradually.
+        # If training is enabeled -> Run curriculum learniing ball spawn 
+        y_range = self._get_curriculum_y_range()
+        # If inference -> Run preset ball spawn for testing the trained model on harder ball spawn positions (zone 4)
+        #y_range = (0.67, 0.671)
         zone1 = (0.94, 0.95)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
-        speed_range = (0.0,0.0)
+        speed_range = (0.0, 0.0)
+
+        # Optional debug: print curriculum progress occasionally (once per N rounds).
+        #try:
+        #    pe = int(self.curriculum_print_every_rounds)
+        #    if self.curriculum_enabled and pe > 0:
+        #        if self.round != self._last_curriculum_print_round and (int(self.round) % pe) == 0:
+        #            self._last_curriculum_print_round = int(self.round)
+        #            print(f"[Curriculum] round={self.round} y_range=({y_range[0]:.3f}, {y_range[1]:.3f})")
+        #except Exception:
+        #    pass
         
         
         # STAGE 2: Wider area on y axis, speed still 0

@@ -196,6 +196,9 @@ class PPOAgent:
         self.episodes_with_kick = 0
         self.episodes_with_goal = 0
         self.kick_rate_threshold = 0.8
+        self.latest_env_metrics = {}
+        self.update_reward_breakdown_sums = {}
+        self.update_samples_with_kick = 0
 
         if self.should_load_model:
             self.load_model()
@@ -435,7 +438,14 @@ class PPOAgent:
             "explained_variance": float(explained_var),
             "ret_mean": float(ret.mean().item()),
             "ret_std": float(ret.std(unbiased=False).item()),
+            "samples_with_kick": int(self.update_samples_with_kick),
         })
+
+        if buffer_sample_count > 0:
+            for key, value in self.update_reward_breakdown_sums.items():
+                update_metrics[f"reward_{key}_mean"] = float(value) / float(buffer_sample_count)
+
+        update_metrics.update(self.latest_env_metrics)
 
         self.training_export.add_training_result(
             training_number=self.training_count,
@@ -444,14 +454,24 @@ class PPOAgent:
             metrics=update_metrics,
         )
 
+        reward_per_sample = (
+            accumulated_reward / float(buffer_sample_count)
+            if buffer_sample_count > 0
+            else float("nan")
+        )
+
         print(
             f"[Training] #{self.training_count}: accumulated reward "
-            f"{accumulated_reward:.3f} over {buffer_sample_count} samples"
+            f"{accumulated_reward:.3f} over {buffer_sample_count} samples "
+            f"(reward/sample={reward_per_sample:.6f})"
         )
 
         if self.training_count % self.training_log_export_every == 0:
             self.training_export.export_csv()
             #self.save_model()
+
+        self.update_reward_breakdown_sums = {}
+        self.update_samples_with_kick = 0
 
     def process_data(self, camera):
 
@@ -461,6 +481,11 @@ class PPOAgent:
 
         # Extract the current observation
         obs, bxy, vxy, rod_angle = self.extract_observation(camera)
+        self.latest_env_metrics = {
+            "curriculum_round": int(camera.get("curriculum_round", -1)),
+            "curriculum_y_min": float(camera.get("curriculum_y_min", float("nan"))),
+            "curriculum_y_max": float(camera.get("curriculum_y_max", float("nan"))),
+        }
 
         # Events from environment - zajem podatkov o brci žoge in terminaciji zaradi premajhne x vrednosti
         ball_kicked = bool(camera.get("ball_kicked", False))
@@ -501,6 +526,12 @@ class PPOAgent:
                 episode_timeout=False,
                 rod_alignment_reward=rod_alignment_reward,
             )
+            for key, value in reward_breakdown.items():
+                self.update_reward_breakdown_sums[key] = (
+                    self.update_reward_breakdown_sums.get(key, 0.0) + float(value)
+                )
+            if ball_kicked:
+                self.update_samples_with_kick += 1
             print(f"Reward calculate for step {self.episode_steps}, at episode: {self.episode_count}, calculated reward: {reward}")
 
             # NEW: Track step-level reward

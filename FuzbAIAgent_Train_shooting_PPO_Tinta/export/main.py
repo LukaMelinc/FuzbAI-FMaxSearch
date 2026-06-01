@@ -20,10 +20,19 @@ class Export:
         - **extra_metrics: additional scalar key/value pairs
         """
 
+        sample_count_i = int(sample_count)
+        accumulated_reward_f = float(accumulated_reward)
+        reward_per_sample = (
+            accumulated_reward_f / sample_count_i
+            if sample_count_i > 0
+            else float("nan")
+        )
+
         row = {
             "training_number": int(training_number),
-            "accumulated_reward": float(accumulated_reward),
-            "sample_count": int(sample_count),
+            "accumulated_reward": accumulated_reward_f,
+            "sample_count": sample_count_i,
+            "reward_per_sample": float(reward_per_sample),
         }
 
         if metrics:
@@ -42,7 +51,7 @@ class Export:
             os.makedirs(directory, exist_ok=True)
 
         with open(self.file_path, "w", newline="") as csvfile:
-            base = ["training_number", "accumulated_reward", "sample_count"]
+            base = ["training_number", "accumulated_reward", "sample_count", "reward_per_sample"]
             extra_keys = []
             if self.rows:
                 keys = set()
