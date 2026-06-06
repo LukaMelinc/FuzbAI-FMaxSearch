@@ -116,12 +116,10 @@ class FuzbAISim:
         self.redIndices = [0, 1, 3, 5]
 
         self.p1 = PPOAgent(
-            #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/STAGE_1_5(POST_TRAINING#2)_kick_bigger_spawn_area_1_8M#5.pth",
-            load_model=False,
+            model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#13.pth",
+            load_model=True,
             inference=False,
             training_enabeled=True,
-            # Smaller LR helps avoid unlearning when transferring Stage 1.5 -> Stage 2
-            #lr=5e-5,
         )
         self.p2 = PlayerAgent()
 
@@ -160,10 +158,10 @@ class FuzbAISim:
         # Stage 2 (harder): y_range=(0.15, 0.65)
         # Entire y range: 0.091 - 0.67
         self.curriculum_enabled = True
-        self.curriculum_y_start = (0.45, 0.452)
+        self.curriculum_y_start = (0.45, 0.50)
         self.curriculum_y_end = (0.091, 0.67)
-        self.curriculum_warmup_rounds = 10000
-        self.curriculum_ramp_rounds = 100000
+        self.curriculum_warmup_rounds = 100
+        self.curriculum_ramp_rounds = 30000 #100000
         self.curriculum_print_every_rounds = 500
         self._last_curriculum_print_round = -1
 
@@ -455,11 +453,13 @@ class FuzbAISim:
         
         # Stage 1.5 -> Stage 2 curriculum: widen the y_range gradually.
         # If training is enabeled -> Run curriculum learniing ball spawn 
-        y_range = self._get_curriculum_y_range()
+        #y_range = self._get_curriculum_y_range()
+        y_range = (0.091, 0.67)
+        #y_range = (0.30, 0.55)
         # If inference -> Run preset ball spawn for testing the trained model on harder ball spawn positions (zone 4)
-        #y_range = (0.67, 0.671)
-        zone1 = (0.94, 0.95)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
-        speed_range = (0.0, 0.0)
+        #zone1 = (0.94, 0.95)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
+        zone1 = (1.05, 1.06)     # Forward-moved spawn area for ball-following training
+        speed_range = (0.0, 0.2)
 
         # Optional debug: print curriculum progress occasionally (once per N rounds).
         #try:
@@ -511,14 +511,14 @@ class FuzbAISim:
         
 
         #direction = 'right'
-        if x_range == (0.90, 1.00):
-            if custom_x > 1.0:
-                directions_list = ['left', 'up', 'down', 'diagonal-left-up','diagonal-left-down']
-                direction = random.choice(directions_list)
-
-            elif custom_x < 1.0:
-                directions_list = ['up', 'down', 'diagonal-right-down', 'diagonal-right-up']
-                direction = random.choice(directions_list)
+        #if x_range == (0.90, 1.00):
+        #    if custom_x > 1.0:
+        #        directions_list = ['left', 'up', 'down', 'diagonal-left-up','diagonal-left-down']
+        #        direction = random.choice(directions_list)
+        #
+        #    elif custom_x < 1.0:
+        #        directions_list = ['up', 'down', 'diagonal-right-down', 'diagonal-right-up']
+        #        direction = random.choice(directions_list)
 
         # Define direction vectors
         rnd_vector_x = random.uniform(0.1, 1)

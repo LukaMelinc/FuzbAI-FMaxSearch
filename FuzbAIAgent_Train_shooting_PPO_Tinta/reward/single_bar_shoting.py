@@ -1,6 +1,29 @@
 import math
 
 
+def player_alignment_target(*, ball_y: float, rod_info: dict):
+    """Return the player and rod position that can best cover ``ball_y``.
+
+    Selecting the player from the ball position, rather than from the rod's
+    current position, gives the policy one continuous target instead of three
+    competing local reward maxima.
+    """
+    travel = float(rod_info["travel"])
+    first_offset = float(rod_info["first_offset"])
+    spacing = float(rod_info["spacing"])
+
+    candidates = []
+    for player_index in range(int(rod_info["players"])):
+        player_offset = first_offset + player_index * spacing
+        target_rod_pos = min(1.0, max(0.0, (float(ball_y) - player_offset) / travel))
+        reachable_player_y = target_rod_pos * travel + player_offset
+        unavoidable_dist = abs(float(ball_y) - reachable_player_y)
+        candidates.append((unavoidable_dist, player_index, target_rod_pos))
+
+    unavoidable_dist, player_index, target_rod_pos = min(candidates)
+    return int(player_index), float(target_rod_pos), float(unavoidable_dist)
+
+
 def simple_reward(*, goal_scored: bool, ball_kicked: bool, terminated_by_x_threshold: bool, rod_angle: float):
     """Event-based reward used for shooting PPO experiment.
 
@@ -45,12 +68,12 @@ def kicking_reward(
     backward_velocity = max(0.0, -float(forward_ball_vx)) if ball_kicked else 0.0
 
     reward_breakdown = {
-        "time_penalty": float(time_penalty),
-        "ball_kick": 0.2 if ball_kicked else 0.0,
-        "forward_velocity": 0.5 * forward_velocity,
-        "backward_velocity": -0.3 * backward_velocity,
+        #"time_penalty": float(time_penalty),
+        #"ball_kick": 0.2 if ball_kicked else 0.0,
+        #"forward_velocity": 0.5 * forward_velocity,
+        #"backward_velocity": -0.3 * backward_velocity,
         "rod_alignment": float(rod_alignment_reward),
-        "timeout": -0.3 if episode_timeout else 0.0,
+        #"timeout": -0.3 if episode_timeout else 0.0,
     }
     reward = float(sum(reward_breakdown.values()))
     return reward, reward_breakdown
@@ -63,23 +86,18 @@ def closest_player_alignment_reward(
     rod_pos_calib: float,
     rod_info: dict,
     reward_scale: float = 0.03,
-    y_sigma: float = 45.0,
     x_sigma: float = 120.0,
 ):
-    """Dense reward for positioning one controlled-rod player behind the ball.
-
-    The closest player is determined by checking every player on the rod. The
-    x gate prevents the agent from receiving much reward when the ball is far
-    away from this rod's kicking lane.
-    """
+    """Dense reward for moving the correct controlled-rod player behind the ball."""
     rod_y_base = float(rod_pos_calib) * float(rod_info["travel"])
-    closest_dist_y = min(
-        abs(float(ball_y) - (rod_y_base + float(rod_info["first_offset"]) + i * float(rod_info["spacing"])))
-        for i in range(int(rod_info["players"]))
-    )
+    player_index, _, _ = player_alignment_target(ball_y=ball_y, rod_info=rod_info)
+    player_offset = float(rod_info["first_offset"]) + player_index * float(rod_info["spacing"])
+    alignment_dist_y = abs(float(ball_y) - (rod_y_base + player_offset))
     dist_x = abs(float(ball_x) - float(rod_info["position"]))
 
-    y_alignment = math.exp(-((closest_dist_y / y_sigma) ** 2))
+    # Unlike a narrow Gaussian, this keeps a useful gradient even when the rod
+    # starts near the wrong player branch.
+    y_alignment = 1.0 - alignment_dist_y / float(rod_info["travel"])
     x_gate = math.exp(-((dist_x / x_sigma) ** 2))
 
     return float(reward_scale * x_gate * y_alignment)

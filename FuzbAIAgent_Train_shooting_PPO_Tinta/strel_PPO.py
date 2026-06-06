@@ -14,7 +14,12 @@ from pprint import pprint
 from actor_critic.main import ActorCriticNet
 from export.main import Export
 from memory.main import PPOBuffer
-from reward.single_bar_shoting import closest_player_alignment_reward, kicking_reward, simple_reward
+from reward.single_bar_shoting import (
+    closest_player_alignment_reward,
+    kicking_reward,
+    player_alignment_target,
+    simple_reward,
+)
 
 
 HOST_ADDRESS = '127.0.0.1:23336'  # IP or Host for your environment
@@ -672,11 +677,15 @@ class PPOAgent:
         rod_x_world = controlled_rod_info["position"]
         ball_x_world = CD0["ball_x"]
         ball_y_world = CD0["ball_y"] 
-        rod_y_world = rod_pos_calib * controlled_rod_info["travel"]
         
-        # Distance from ball to controlled rod - a to sploh rabit na dolgi rok?
+        # Give the policy the x distance and a direct error toward the player
+        # branch selected for this ball region.
         ball_rod_dist_x = (ball_x_world - rod_x_world) / 605  # Normalized [-1,1]
-        ball_rod_dist_y = (ball_y_world - rod_y_world) / 350  # Normalized [-1,1]
+        _, target_rod_pos, _ = player_alignment_target(
+            ball_y=ball_y_world,
+            rod_info=controlled_rod_info,
+        )
+        target_rod_error = target_rod_pos - rod_pos_calib
         
         # Rod angle normalized
         angle_normalized = np.clip(rod_angle / 32.0, -1, 1)  # Assuming ±45° range
@@ -688,7 +697,7 @@ class PPOAgent:
         obs = np.array([
             ball_x, ball_y, ball_vx, ball_vy,           # Ball state (4)
             team,                                        # Rod team (1)
-            ball_rod_dist_x, ball_rod_dist_y,           # Relative position (2)
+            ball_rod_dist_x, target_rod_error,          # Relative position / target error (2)
             rod_y_normalized,                            # Rod position (1) 
             angle_normalized,                            # Rod angle (1)
             ball_kicked                                  # Ball contact flag (1)
@@ -733,7 +742,8 @@ class PPOAgent:
         # Example scaling:
         rot_target   = 0.5 * action[0]  # in [-1,1]
         rot_velocity = 0.5 * (action[1] + 1) / 4  # scale [-1,1]→[0,1], then multiply by max 0.5
-        trans_target = 0.8 * ((action[2] + 1) / 2)  # scale [-1,1]→[0,1], you might want full 0..1 0.5
+        trans_target = ((action[2] + 1) / 2)  # scale [-1,1]→[0,1], you might want full 0..1 0.5
+        #trans_target = 0.8 * ((action[2] + 1) / 2)  # scale [-1,1]→[0,1], you might want full 0..1 0.5
         trans_velocity = 1.0 * (action[3] + 1) / 2   # scale [-1,1]→[0,1]
 
         cmd = {
