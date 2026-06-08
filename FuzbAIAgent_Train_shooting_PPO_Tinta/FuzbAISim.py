@@ -116,7 +116,7 @@ class FuzbAISim:
         self.redIndices = [0, 1, 3, 5]
 
         self.p1 = PPOAgent(
-            model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#13.pth",
+            model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#14B.pth",
             load_model=True,
             inference=False,
             training_enabeled=True,
@@ -457,30 +457,10 @@ class FuzbAISim:
         y_range = (0.091, 0.67)
         #y_range = (0.30, 0.55)
         # If inference -> Run preset ball spawn for testing the trained model on harder ball spawn positions (zone 4)
-        #zone1 = (0.94, 0.95)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
-        zone1 = (1.05, 1.06)     # Forward-moved spawn area for ball-following training
+        zone1 = (0.94, 0.95)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
+        #zone1 = (1.05, 1.06)     # Forward-moved spawn area for ball-following training
         speed_range = (0.0, 0.2)
-
-        # Optional debug: print curriculum progress occasionally (once per N rounds).
-        #try:
-        #    pe = int(self.curriculum_print_every_rounds)
-        #    if self.curriculum_enabled and pe > 0:
-        #        if self.round != self._last_curriculum_print_round and (int(self.round) % pe) == 0:
-        #            self._last_curriculum_print_round = int(self.round)
-        #            print(f"[Curriculum] round={self.round} y_range=({y_range[0]:.3f}, {y_range[1]:.3f})")
-        #except Exception:
-        #    pass
         
-        
-        # STAGE 2: Wider area on y axis, speed still 0
-        #y_range = (0.15, 0.65) # STAGE 2 - wider area on y axis
-        #zone1 = (0.93, 0.96)    # Target area for zone 4
-        #speed_range = (0.0,0.0)
-
-        # STAGE 3: Wider area on y axis, non-zero speed
-        #y_range = (0.15, 0.65) # STAGE 3 - wider area on y axis
-        # zone1 = (0.9, 0.95)
-        # speed_range = (0.5,1.0)
         
         zone2 = (0.7, 1.0)    # Target area for zone 3
         zone3 = (0.5, 0.7)    # Target area for zone 2

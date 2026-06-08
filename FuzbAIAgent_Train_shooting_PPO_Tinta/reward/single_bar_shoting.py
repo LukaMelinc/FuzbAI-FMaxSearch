@@ -49,6 +49,10 @@ def kicking_reward(
     episode_timeout: bool = False,
     time_penalty: float = -0.001,
     rod_alignment_reward: float = 0.0,
+    rod_angle: float = 0.0,
+    target_rod_angle: float = 0.40,
+    rod_angle_reward_scale: float = 0.006,
+    rod_angle_sigma: float = 0.5,
 ):
     """Reward for teaching the rod to kick the ball forward.
 
@@ -64,18 +68,26 @@ def kicking_reward(
     - penalty for backward ball velocity after contact
     - penalty for timeout without a useful kick
     """
+    # --- Ball velocity rewards for kicking
     forward_velocity = max(0.0, float(forward_ball_vx)) if ball_kicked else 0.0
     backward_velocity = max(0.0, -float(forward_ball_vx)) if ball_kicked else 0.0
 
+    # --- Rod angle rewards for rotating the row for better kicking
+    angle_error = float(rod_angle) - float(target_rod_angle)
+    angle_sigma = max(float(rod_angle_sigma), 1e-6)
+    rod_angle_reward = float(rod_angle_reward_scale) * math.exp(-((angle_error / angle_sigma) ** 2))
+
     reward_breakdown = {
-        #"time_penalty": float(time_penalty),
-        #"ball_kick": 0.2 if ball_kicked else 0.0,
-        #"forward_velocity": 0.5 * forward_velocity,
-        #"backward_velocity": -0.3 * backward_velocity,
-        "rod_alignment": float(rod_alignment_reward),
-        #"timeout": -0.3 if episode_timeout else 0.0,
+        "time_penalty": float(time_penalty),
+        "ball_kick": 0.2 if ball_kicked else 0.0,
+        "forward_velocity": 0.5 * forward_velocity,
+        "backward_velocity": -0.3 * backward_velocity,
+        "rod_alignment": 0.7 *float(rod_alignment_reward),
+        #"rod_angle": rod_angle_reward,
+        "timeout": -0.3 if episode_timeout else 0.0,
     }
     reward = float(sum(reward_breakdown.values()))
+    #print(f"Reward: {reward:.4f}, target angle rod: {target_rod_angle:.4f}, rod angle: {rod_angle:.4f}, angle error: {angle_error:.4f}, angle reward: {rod_angle_reward:.4f}")
     return reward, reward_breakdown
 
 

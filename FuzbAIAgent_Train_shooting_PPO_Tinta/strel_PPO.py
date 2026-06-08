@@ -129,7 +129,8 @@ class PPOAgent:
                  controlled_rod_id=6,
                  training_enabeled=True,
                  load_model=False,
-                 inference=False):      # L2 regularization strength
+                 inference=False,
+                 action_std_override=(0.8, 0.8, 0.15, 0.15)):      # L2 regularization strength
 
         self.controlled_rod_id = controlled_rod_id
         self.obs_dim = obs_dim
@@ -142,6 +143,7 @@ class PPOAgent:
         self.inference = inference
         self.should_load_model = load_model
         self.training_enabled = training_enabeled # For training mode vs. inference mode
+        self.action_std_override = action_std_override
         if self.inference and self.training_enabled:
             print("[PPOAgent] Inference mode enabled, disabling training.")
             self.training_enabled = False
@@ -207,7 +209,37 @@ class PPOAgent:
 
         if self.should_load_model:
             self.load_model()
+            self.apply_action_std_override()
         
+
+    def apply_action_std_override(self):
+        """Set per-action exploration for backbone fine-tuning.
+
+        Action order is:
+        [rotation target, rotation velocity, lateral target, lateral velocity].
+        """
+        if self.action_std_override is None:
+            return
+
+        if len(self.action_std_override) != self.act_dim:
+            raise ValueError(
+                f"Expected {self.act_dim} std values, got {len(self.action_std_override)}"
+            )
+
+        std = torch.as_tensor(
+            self.action_std_override,
+            dtype=torch.float32,
+            device=self.device,
+        )
+        std = torch.clamp(std, min=1e-4)
+        with torch.no_grad():
+            self.log_std.data.copy_(torch.log(std))
+
+        print(
+            "[PPOAgent] Action exploration std set to "
+            f"rot_target={std[0].item():.3f}, rot_velocity={std[1].item():.3f}, "
+            f"trans_target={std[2].item():.3f}, trans_velocity={std[3].item():.3f}"
+        )
 
     def policy_log_std(self, mean):
         return torch.clamp(self.log_std, min=-5.0, max=2.0).unsqueeze(0).expand_as(mean)
@@ -528,7 +560,7 @@ class PPOAgent:
             reward, reward_breakdown = kicking_reward(
                 ball_kicked=ball_kicked,
                 forward_ball_vx=vxy[0],
-                episode_timeout=False,
+                episode_timeout=bool(end_episode and not (ball_kicked or terminated_by_kick or terminated_by_x_threshold)),
                 rod_alignment_reward=rod_alignment_reward,
             )
             for key, value in reward_breakdown.items():
