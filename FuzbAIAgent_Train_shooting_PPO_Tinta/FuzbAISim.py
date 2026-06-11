@@ -57,7 +57,10 @@ class FuzbAISim:
         self._ball_kicked_latch = False
         self._kick_terminated_latch = False
         self._x_threshold_terminated_latch = False
-        self.terminate_episode_on_kick = True
+        # Keep the kick latch for reward/observation, but do not end the episode
+        # when a kick is detected. Goal scoring and x-threshold resets should
+        # drive episode boundaries during shooting training.
+        self.terminate_episode_on_kick = False
         # Episode boundary latch: set True when the ball gets reset (agent uses it to call finish_episode)
         self.end_episode_latch = False
         # Don't end an episode on the initial ball placement at startup
@@ -91,15 +94,7 @@ class FuzbAISim:
         # update. With real-time simulation, a short ball/player contact can happen
         # and disappear between Python polling intervals.
         self.physics_timestep = 1.0 / 240.0
-        # Run several physics updates per Python loop. We still call
-        # _update_kick_latch() after every physics step, so short contacts are not
-        # missed, but the expensive Python-side observation/control code runs less
-        # often. Increase this for faster training; lower it if GUI viewing feels
-        # too jumpy.
         self.physics_steps_per_loop = 4
-        # Manual stepping should not sleep by default during training. The old
-        # 1 ms sleep happened every physics tick and made explicit stepping feel
-        # much slower than PyBullet real-time mode.
         self.gui_sleep_s = 0.0
 
         self.stepDisp = None
@@ -116,7 +111,7 @@ class FuzbAISim:
         self.redIndices = [0, 1, 3, 5]
 
         self.p1 = PPOAgent(
-            model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#14B.pth",
+            model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#15.pth",
             load_model=True,
             inference=False,
             training_enabeled=True,
@@ -161,7 +156,7 @@ class FuzbAISim:
         self.curriculum_y_start = (0.45, 0.50)
         self.curriculum_y_end = (0.091, 0.67)
         self.curriculum_warmup_rounds = 100
-        self.curriculum_ramp_rounds = 30000 #100000
+        self.curriculum_ramp_rounds = 10000 #100000
         self.curriculum_print_every_rounds = 500
         self._last_curriculum_print_round = -1
 
@@ -454,12 +449,13 @@ class FuzbAISim:
         # Stage 1.5 -> Stage 2 curriculum: widen the y_range gradually.
         # If training is enabeled -> Run curriculum learniing ball spawn 
         #y_range = self._get_curriculum_y_range()
-        y_range = (0.091, 0.67)
+        #y_range = (0.091, 0.67)
+        y_range = (0.20, 0.55)
         #y_range = (0.30, 0.55)
         # If inference -> Run preset ball spawn for testing the trained model on harder ball spawn positions (zone 4)
         zone1 = (0.94, 0.95)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
         #zone1 = (1.05, 1.06)     # Forward-moved spawn area for ball-following training
-        speed_range = (0.0, 0.2)
+        speed_range = (0.0, 0.0)
         
         
         zone2 = (0.7, 1.0)    # Target area for zone 3

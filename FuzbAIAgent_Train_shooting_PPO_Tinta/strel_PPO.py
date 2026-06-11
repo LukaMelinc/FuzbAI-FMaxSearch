@@ -557,9 +557,20 @@ class PPOAgent:
 
             # Calculate the reward for the previous step (s_t-1, a_t-1 -> r_t)
             rod_alignment_reward = self.calculate_rod_alignment_reward(camera)
+            shot_attempted = self.current_episode_ball_kicks > 0 or ball_kicked
+            missed_kick = bool(
+                (end_episode or terminated_by_x_threshold)
+                and shot_attempted
+                and not goal_scored
+            )
             reward, reward_breakdown = kicking_reward(
+                goal_scored=goal_scored,
                 ball_kicked=ball_kicked,
+                ball_x=bxy[0],
+                ball_y=bxy[1],
                 forward_ball_vx=vxy[0],
+                ball_vy=vxy[1],
+                missed_kick=missed_kick,
                 episode_timeout=bool(end_episode and not (ball_kicked or terminated_by_kick or terminated_by_x_threshold)),
                 rod_alignment_reward=rod_alignment_reward,
             )
