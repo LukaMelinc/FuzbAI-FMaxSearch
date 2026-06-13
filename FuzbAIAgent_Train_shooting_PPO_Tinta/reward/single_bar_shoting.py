@@ -143,6 +143,54 @@ def kicking_reward(
     #print(f"Reward: {reward:.4f}, target angle rod: {target_rod_angle:.4f}, rod angle: {rod_angle:.4f}, angle error: {angle_error:.4f}, angle reward: {rod_angle_reward:.4f}")
     return reward, reward_breakdown
 
+def maintaining_ball(
+    *,
+    ball_x: float,
+    ball_vx: float,
+    ball_vz: float,
+    rod_x_pos: float,
+    threshold_crossed: bool = False,
+    prev_ball_vx: float | None = None,
+    prev_ball_vz: float | None = None,
+    episode_timeout: bool = False,
+    time_penalty: float = -0.001,
+    x_zone_radius: float = 50.0,
+    x_sigma: float = 70.0,
+    speed_sigma: float = 0.35,
+    threshold_penalty: float = -8.0,
+):
+    """Reward for receiving and keeping the ball near a rod.
+
+    Position units are millimeters and velocity units are meters/second.
+    ``ball_z``/``rod_z_pos`` are the lateral table coordinate; pass ball_y here
+    if the caller uses x/y naming. Speed reduction is rewarded only inside the
+    control zone, so slowing the ball elsewhere is not useful to the policy.
+    """
+    dx = abs(float(ball_x) - float(rod_x_pos))
+    speed = math.sqrt(float(ball_vx) ** 2 + float(ball_vz) ** 2)
+
+    x_control = math.exp(-((dx / max(float(x_sigma), 1e-6)) ** 2))
+    zone_control = x_control
+
+    in_control_zone = dx <= float(x_zone_radius) 
+    low_speed = math.exp(-((speed / max(float(speed_sigma), 1e-6)) ** 2))
+    speed_reduction = 0.0
+    if prev_ball_vx is not None and prev_ball_vz is not None:
+        prev_speed = math.sqrt(float(prev_ball_vx) ** 2 + float(prev_ball_vz) ** 2)
+        speed_reduction = max(0.0, prev_speed - speed)
+
+    reward_breakdown = {
+        "time_penalty": float(time_penalty),
+        "threshold_failure": float(threshold_penalty) if threshold_crossed else 0.0,
+        "zone_position": 0.04 * zone_control,
+        "speed_reduction": 0.4 * speed_reduction * zone_control if in_control_zone else 0.0,
+        "controlled_ball": 0.35 * zone_control * low_speed if in_control_zone else 0.0,
+        "timeout": -0.2 if episode_timeout else 0.0,
+    }
+    reward = float(sum(reward_breakdown.values()))
+
+    return reward, reward_breakdown
+    
 
 def closest_player_alignment_reward(
     *,
@@ -151,18 +199,27 @@ def closest_player_alignment_reward(
     rod_pos_calib: float,
     rod_info: dict,
     reward_scale: float = 0.03,
-    x_sigma: float = 120.0,
 ):
     """Dense reward for moving the correct controlled-rod player behind the ball."""
     rod_y_base = float(rod_pos_calib) * float(rod_info["travel"])
     player_index, _, _ = player_alignment_target(ball_y=ball_y, rod_info=rod_info)
     player_offset = float(rod_info["first_offset"]) + player_index * float(rod_info["spacing"])
     alignment_dist_y = abs(float(ball_y) - (rod_y_base + player_offset))
-    dist_x = abs(float(ball_x) - float(rod_info["position"]))
 
     # Unlike a narrow Gaussian, this keeps a useful gradient even when the rod
     # starts near the wrong player branch.
     y_alignment = 1.0 - alignment_dist_y / float(rod_info["travel"])
-    x_gate = math.exp(-((dist_x / x_sigma) ** 2))
 
-    return float(reward_scale * x_gate * y_alignment)
+    return float(reward_scale * y_alignment)
+
+def calculate_rod_angle_reward(
+    *,
+    rod_angle: float,
+    target_rod_angle: float = 0.40,
+    reward_scale: float = 0.6,
+    angle_sigma: float = 0.5,
+):
+    """Reward for rotating the rod to a specific angle."""
+    angle_error = float(rod_angle) - float(target_rod_angle)
+    angle_reward = float(reward_scale) * math.exp(-((angle_error / max(float(angle_sigma), 1e-6)) ** 2))
+    return angle_reward

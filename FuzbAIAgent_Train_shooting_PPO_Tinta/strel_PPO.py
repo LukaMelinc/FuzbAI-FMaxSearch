@@ -19,6 +19,8 @@ from reward.single_bar_shoting import (
     kicking_reward,
     player_alignment_target,
     simple_reward,
+    maintaining_ball,
+    calculate_rod_angle_reward
 )
 
 
@@ -130,7 +132,7 @@ class PPOAgent:
                  training_enabeled=True,
                  load_model=False,
                  inference=False,
-                 action_std_override=(0.8, 0.8, 0.15, 0.15)):      # L2 regularization strength
+                 action_std_override=(0.8, 0.8, 0.15, 0.15)):      # std override - fist two rod rotation, last two rod translation
 
         self.controlled_rod_id = controlled_rod_id
         self.obs_dim = obs_dim
@@ -150,6 +152,7 @@ class PPOAgent:
 
 
         self.prev_vel = None
+        self.prev_ball_vxy = None
         self.prev_score = None
         self.active_regions = None  # Initialize active_regions
         self.episode_steps = 0
@@ -556,31 +559,89 @@ class PPOAgent:
         if self.last_obs is not None:
 
             # Calculate the reward for the previous step (s_t-1, a_t-1 -> r_t)
+
+            # 1) Calculate the rod alignment reward - that the player is behind the ball and alligned with it
             rod_alignment_reward = self.calculate_rod_alignment_reward(camera)
+            print(f"Rod allignment reward: {rod_alignment_reward:.3f}")
+
+            # 1.1) Calculate rod angle reward - how to rotate the rod
+            rod_angle_reward = calculate_rod_angle_reward(
+                rod_angle=rod_angle,
+                target_rod_angle = 0.085
+            )
+
+
+            # 2) Detecting, if the ball was kicked and if the episode ended with a missed kick
             shot_attempted = self.current_episode_ball_kicks > 0 or ball_kicked
             missed_kick = bool(
                 (end_episode or terminated_by_x_threshold)
                 and shot_attempted
                 and not goal_scored
             )
-            reward, reward_breakdown = kicking_reward(
-                goal_scored=goal_scored,
-                ball_kicked=ball_kicked,
-                ball_x=bxy[0],
-                ball_y=bxy[1],
-                forward_ball_vx=vxy[0],
-                ball_vy=vxy[1],
-                missed_kick=missed_kick,
-                episode_timeout=bool(end_episode and not (ball_kicked or terminated_by_kick or terminated_by_x_threshold)),
-                rod_alignment_reward=rod_alignment_reward,
+
+            # 3) Get the rod position calibration for the controlled rod
+            CD0 = camera["camData"][0] if camera["camData"][0] is not None else camera["camData"][1]
+            controlled_rod_info = next(
+                rod for rod in self.geometry["rods"] if rod["id"] == self.controlled_rod_id
             )
+            rod_idx = self.controlled_rod_id - 1
+            rod_pos_calib = CD0["rod_position_calib"][rod_idx]
+            if isinstance(rod_pos_calib, list):
+                rod_pos_calib = rod_pos_calib[0]
+
+            reward = 0.0
+            reward_breakdown = {}
+            
+
+            # 4) Sampling the previous ball velocity for reward calculation for maintaining the ball
+            prev_ball_vx = self.prev_ball_vxy[0] if self.prev_ball_vxy is not None else None
+            prev_ball_vz = self.prev_ball_vxy[1] if self.prev_ball_vxy is not None else None
+
+            alignment_w = 1.0
+            angle_w = 0.5
+            reward = (
+                alignment_w * rod_alignment_reward
+                + angle_w * rod_angle_reward
+            )
+
+            reward_breakdown = {
+                "rod_alignment": rod_alignment_reward,
+                "rod_angle": rod_angle_reward,
+            }
+
+            
+            # Reward for getting controll of the ball and maintaining it in front of the rod 
+            #reward, reward_breakdown = maintaining_ball(
+            #    ball_x=bxy[0],
+            #    ball_vx=vxy[0],
+            #    ball_vz=vxy[1],
+            #    rod_x_pos=controlled_rod_info["position"],
+            #    threshold_crossed=terminated_by_x_threshold,
+            #    prev_ball_vx=prev_ball_vx,
+            #    prev_ball_vz=prev_ball_vz,
+            #    episode_timeout=bool(end_episode and not terminated_by_x_threshold),
+            #)
+
+
+
+            #reward, reward_breakdown = kicking_reward(
+            #    goal_scored=goal_scored,
+            #    ball_kicked=ball_kicked,
+            #    ball_x=bxy[0],
+            #    ball_y=bxy[1],
+            #    forward_ball_vx=vxy[0],
+            #    ball_vy=vxy[1],
+            #    missed_kick=missed_kick,
+            #    episode_timeout=bool(end_episode and not (ball_kicked or terminated_by_kick or terminated_by_x_threshold)),
+            #    rod_alignment_reward=rod_alignment_reward,
+            #)
             for key, value in reward_breakdown.items():
                 self.update_reward_breakdown_sums[key] = (
                     self.update_reward_breakdown_sums.get(key, 0.0) + float(value)
                 )
             if ball_kicked:
                 self.update_samples_with_kick += 1
-            print(f"Reward calculate for step {self.episode_steps}, at episode: {self.episode_count}, calculated reward: {reward}")
+            #print(f"Reward calculate for step {self.episode_steps}, at episode: {self.episode_count}, calculated reward: {reward}")
 
             # NEW: Track step-level reward
             self.current_episode_step_rewards.append(reward)
@@ -641,6 +702,7 @@ class PPOAgent:
 
 
         self.prev_vel = vxy[0]
+        self.prev_ball_vxy = vxy
         # store for next iteration
         self.last_obs = obs
         self.last_action = action
@@ -863,6 +925,7 @@ class PPOAgent:
         self.current_step = 0
         self.ep_reward = 0.0
         self.last_obs = None
+        self.prev_ball_vxy = None
         # Reset episode-specific variables
         self.last_action = None
         self.last_val = None

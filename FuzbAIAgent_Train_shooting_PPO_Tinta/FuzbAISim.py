@@ -73,26 +73,12 @@ class FuzbAISim:
         # Control loop period (seconds). One "step" for the agent completes when this time has elapsed.
         # Increase this to make each step take longer (e.g. 0.05 for ~20 Hz, 0.1 for ~10 Hz).
         self.control_dt = 0.05
-
-        # Debug: print when a "kick" (contact) happens with any red player.
-        # This uses ground-truth contacts from PyBullet (not noisy vision speed).
         self.debug_print_red_kicks = True
-        # Count any contact with the watched player links. A force threshold of 1.0
-        # was too strict for debugging because PyBullet can report small/brief
-        # contacts even when the ball visibly changes direction.
         self.debug_red_kick_force_threshold = 0.0
         self.debug_red_kick_cooldown_s = 0.05
         self._last_debug_red_kick_t = -1e9
-
-        # Diagnostic only: this no longer controls kick detection. The latch below
-        # must work even when debug printing is disabled. Keep this off by default
-        # because non-kick contacts can happen every physics step and flood logs.
         self.debug_print_any_ball_contact = False
         self._warned_empty_kick_links = False
-
-        # Manual stepping lets us check contacts immediately after each physics
-        # update. With real-time simulation, a short ball/player contact can happen
-        # and disappear between Python polling intervals.
         self.physics_timestep = 1.0 / 240.0
         self.physics_steps_per_loop = 4
         self.gui_sleep_s = 0.0
@@ -111,10 +97,10 @@ class FuzbAISim:
         self.redIndices = [0, 1, 3, 5]
 
         self.p1 = PPOAgent(
-            model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#15.pth",
+            model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#14C.pth",
             load_model=True,
-            inference=False,
-            training_enabeled=True,
+            inference=True,
+            training_enabeled=False,
         )
         self.p2 = PlayerAgent()
 
@@ -441,21 +427,17 @@ class FuzbAISim:
         # --- KICKING TRAINING ---
         
 
-        # STAGE 1.0: always the same area, zero speed
-        #y_range = (0.39, 0.40) # STAGE 1 - always same point
-        #zone1 = (0.94, 0.95)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
-        #speed_range = (0.0,0.0)
         
         # Stage 1.5 -> Stage 2 curriculum: widen the y_range gradually.
         # If training is enabeled -> Run curriculum learniing ball spawn 
         #y_range = self._get_curriculum_y_range()
-        #y_range = (0.091, 0.67)
-        y_range = (0.20, 0.55)
+        y_range = (0.091, 0.67)
+        #y_range = (0.20, 0.55)
         #y_range = (0.30, 0.55)
         # If inference -> Run preset ball spawn for testing the trained model on harder ball spawn positions (zone 4)
-        zone1 = (0.94, 0.95)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
-        #zone1 = (1.05, 1.06)     # Forward-moved spawn area for ball-following training
-        speed_range = (0.0, 0.0)
+        #zone1 = (0.94, 0.95)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
+        zone1 = (0.85, 1.30)     # Forward-moved spawn area for ball-following training
+        speed_range = (0.0, 0.5)
         
         
         zone2 = (0.7, 1.0)    # Target area for zone 3
@@ -481,8 +463,8 @@ class FuzbAISim:
 
         # Select a random direction from the list
         # NOTE: Default implementation without the context where the ball willbe positioned
-        directions_list = ['up', 'down']    # 
-        #directions_list = ['left', 'up', 'down', 'diagonal-right-up', 'diagonal-left-up', 'diagonal-right-down', 'diagonal-left-down']  # 'right' removed as it is scoring unintended goals
+        #directions_list = ['right', 'up', 'down', 'diagonal-right-up','diagonal-right-down']#
+        directions_list = ['left', 'up', 'down', 'diagonal-right-up', 'diagonal-left-up', 'diagonal-right-down', 'diagonal-left-down']  # 'right' removed as it is scoring unintended goals
         direction = random.choice(directions_list)
         
 
