@@ -150,14 +150,18 @@ def maintaining_ball(
     ball_vz: float,
     rod_x_pos: float,
     threshold_crossed: bool = False,
+    ball_behind_rod: bool = False,
     prev_ball_vx: float | None = None,
     prev_ball_vz: float | None = None,
     episode_timeout: bool = False,
     time_penalty: float = -0.001,
-    x_zone_radius: float = 50.0,
-    x_sigma: float = 70.0,
-    speed_sigma: float = 0.35,
-    threshold_penalty: float = -8.0,
+    x_zone_radius: float = 89.0,
+    x_sigma: float = 90.0,
+    speed_sigma: float = 0.20,
+    stop_speed: float = 0.08,
+    threshold_penalty: float = -10.0,
+    behind_rod_penalty: float = -0.25,
+    rod_angle_reward: float = 0.0
 ):
     """Reward for receiving and keeping the ball near a rod.
 
@@ -165,6 +169,8 @@ def maintaining_ball(
     ``ball_z``/``rod_z_pos`` are the lateral table coordinate; pass ball_y here
     if the caller uses x/y naming. Speed reduction is rewarded only inside the
     control zone, so slowing the ball elsewhere is not useful to the policy.
+    ``ball_behind_rod`` should mean the ball crossed the protected side of the
+    rod, but has not yet hit the episode termination threshold.
     """
     dx = abs(float(ball_x) - float(rod_x_pos))
     speed = math.sqrt(float(ball_vx) ** 2 + float(ball_vz) ** 2)
@@ -179,13 +185,19 @@ def maintaining_ball(
         prev_speed = math.sqrt(float(prev_ball_vx) ** 2 + float(prev_ball_vz) ** 2)
         speed_reduction = max(0.0, prev_speed - speed)
 
+    stopped = in_control_zone and speed <= float(stop_speed)
+
     reward_breakdown = {
         "time_penalty": float(time_penalty),
         "threshold_failure": float(threshold_penalty) if threshold_crossed else 0.0,
-        "zone_position": 0.04 * zone_control,
-        "speed_reduction": 0.4 * speed_reduction * zone_control if in_control_zone else 0.0,
-        "controlled_ball": 0.35 * zone_control * low_speed if in_control_zone else 0.0,
+        "behind_rod": float(behind_rod_penalty) if ball_behind_rod else 0.0,
+        "zone_position": 0.03 * zone_control,
+        "kept_in_front": 0.08 * zone_control if not ball_behind_rod else 0.0,
+        "speed_reduction": 0.7 * speed_reduction * zone_control if in_control_zone else 0.0,
+        "controlled_ball": 0.60 * zone_control * low_speed if in_control_zone else 0.0,
+        "stopped_ball": 12.5 * zone_control if stopped else 0.0,
         "timeout": -0.2 if episode_timeout else 0.0,
+        "rod_angle": 0.25 * rod_angle_reward
     }
     reward = float(sum(reward_breakdown.values()))
 

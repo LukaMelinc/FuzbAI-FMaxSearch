@@ -139,7 +139,7 @@ class PPOAgent:
         self.act_dim = act_dim
         self.save_model_every = save_model_every
         self.model_save_path = model_save_path      # Path from where a trained model is loaded
-        self.model_name = "STAGE_1_shooting_still_ball_a_bit_bigger_ball_spawn_area"
+        self.model_name = "#18"
         self.training_log_export_every = training_log_export_every
         self.l2_lambda = l2_lambda  # L2 regularization strength
         self.inference = inference
@@ -562,13 +562,14 @@ class PPOAgent:
 
             # 1) Calculate the rod alignment reward - that the player is behind the ball and alligned with it
             rod_alignment_reward = self.calculate_rod_alignment_reward(camera)
-            print(f"Rod allignment reward: {rod_alignment_reward:.3f}")
+            #print(f"Rod allignment reward: {rod_alignment_reward:.3f}")
 
             # 1.1) Calculate rod angle reward - how to rotate the rod
             rod_angle_reward = calculate_rod_angle_reward(
                 rod_angle=rod_angle,
                 target_rod_angle = 0.085
             )
+            #print(f"rod agle reward: {rod_angle_reward:.3f}")
 
 
             # 2) Detecting, if the ball was kicked and if the episode ended with a missed kick
@@ -589,40 +590,32 @@ class PPOAgent:
             if isinstance(rod_pos_calib, list):
                 rod_pos_calib = rod_pos_calib[0]
 
-            reward = 0.0
-            reward_breakdown = {}
-            
 
             # 4) Sampling the previous ball velocity for reward calculation for maintaining the ball
             prev_ball_vx = self.prev_ball_vxy[0] if self.prev_ball_vxy is not None else None
             prev_ball_vz = self.prev_ball_vxy[1] if self.prev_ball_vxy is not None else None
 
-            alignment_w = 1.0
-            angle_w = 0.5
-            reward = (
-                alignment_w * rod_alignment_reward
-                + angle_w * rod_angle_reward
+            ball_behind_rod = bxy[0] < (controlled_rod_info["position"] - 10.0)
+            reward, reward_breakdown = maintaining_ball(
+                ball_x=bxy[0],
+                ball_vx=vxy[0],
+                ball_vz=vxy[1],
+                rod_x_pos=controlled_rod_info["position"],
+                threshold_crossed=terminated_by_x_threshold,
+                ball_behind_rod=ball_behind_rod,
+                prev_ball_vx=prev_ball_vx,
+                prev_ball_vz=prev_ball_vz,
+                episode_timeout=bool(end_episode and not terminated_by_x_threshold),
+                rod_angle_reward=rod_angle_reward,
             )
 
-            reward_breakdown = {
-                "rod_alignment": rod_alignment_reward,
-                "rod_angle": rod_angle_reward,
-            }
-
-            
-            # Reward for getting controll of the ball and maintaining it in front of the rod 
-            #reward, reward_breakdown = maintaining_ball(
-            #    ball_x=bxy[0],
-            #    ball_vx=vxy[0],
-            #    ball_vz=vxy[1],
-            #    rod_x_pos=controlled_rod_info["position"],
-            #    threshold_crossed=terminated_by_x_threshold,
-            #    prev_ball_vx=prev_ball_vx,
-            #    prev_ball_vz=prev_ball_vz,
-            #    episode_timeout=bool(end_episode and not terminated_by_x_threshold),
-            #)
-
-
+            # Keep the useful backbone behaviors as light shaping while the new
+            # stage learns the receiving/control objective.
+            #reward = 0.0
+            #reward_breakdown = {}
+            #reward_breakdown["rod_alignment"] = 0.35 * rod_alignment_reward
+            #reward_breakdown["rod_angle"] = 0.15 * rod_angle_reward
+            #reward = float(sum(reward_breakdown.values()))
 
             #reward, reward_breakdown = kicking_reward(
             #    goal_scored=goal_scored,

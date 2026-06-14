@@ -101,6 +101,7 @@ class FuzbAISim:
             load_model=True,
             inference=True,
             training_enabeled=False,
+            #action_std_override=(0.35, 0.35, 0.25, 0.30),
         )
         self.p2 = PlayerAgent()
 
@@ -436,8 +437,10 @@ class FuzbAISim:
         #y_range = (0.30, 0.55)
         # If inference -> Run preset ball spawn for testing the trained model on harder ball spawn positions (zone 4)
         #zone1 = (0.94, 0.95)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
-        zone1 = (0.85, 1.30)     # Forward-moved spawn area for ball-following training
-        speed_range = (0.0, 0.5)
+        # Ball-control training: spawn in front of rod 6 (830 mm camera-x,
+        # about 0.945 m in PyBullet x) and send the ball back toward the rod.
+        zone1 = (1.10, 1.22)
+        speed_range = (0.20, 0.50)
         
         
         zone2 = (0.7, 1.0)    # Target area for zone 3
@@ -464,7 +467,7 @@ class FuzbAISim:
         # Select a random direction from the list
         # NOTE: Default implementation without the context where the ball willbe positioned
         #directions_list = ['right', 'up', 'down', 'diagonal-right-up','diagonal-right-down']#
-        directions_list = ['left', 'up', 'down', 'diagonal-right-up', 'diagonal-left-up', 'diagonal-right-down', 'diagonal-left-down']  # 'right' removed as it is scoring unintended goals
+        directions_list = ['left', 'diagonal-left-up', 'diagonal-left-down']
         direction = random.choice(directions_list)
         
 
