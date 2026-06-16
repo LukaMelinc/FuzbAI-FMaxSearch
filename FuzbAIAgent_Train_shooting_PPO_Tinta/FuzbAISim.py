@@ -6,6 +6,7 @@ import threading
 import math
 from FuzbAIAgent_Example import PlayerAgent
 from strel_PPO import PPOAgent
+from pass_auxiliary_backbone import PassAuxiliaryBackboneAgent
 import random
 import traceback
 
@@ -45,6 +46,7 @@ class FuzbAISim:
         # Episode termination: end the episode if camera/geometry ball_x (mm) is below this threshold.
         # This is computed with the same mapping as in getCameraDict(): ball_x_mm = 1000*ballPos[0] - 115.
         self.episode_end_ball_x_threshold_mm = float(episode_end_ball_x_threshold_mm)
+        self.episode_end_ball_other_x_threshold_mm = 1190.0
 
         # Kick observation: detect ball contact on the specified rod's player links.
         # The PPO shooting agent currently emits driveID=4. Player 1 maps that
@@ -96,13 +98,28 @@ class FuzbAISim:
         self.travels = [190, 356, 180, 116, 116, 180, 356, 190]
         self.redIndices = [0, 1, 3, 5]
 
-        self.p1 = PPOAgent(
-            model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#14C.pth",
-            load_model=True,
-            inference=True,
-            training_enabeled=False,
-            #action_std_override=(0.35, 0.35, 0.25, 0.30),
-        )
+        # Switch this to "pass_auxiliary_backbone" for phase-0 supervised
+        # pretraining of two red rods: rod 4 passer + rod 6 receiver.
+        #self.agent1_mode = "single_rod_ppo"
+        self.agent1_mode = "pass_auxiliary_backbone"
+        if self.agent1_mode == "pass_auxiliary_backbone":
+            self.p1 = PassAuxiliaryBackboneAgent(
+                passer_rod_id=4,
+                receiver_rod_id=6,
+                opponent_rod_id=5,
+                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#20.pth",
+                load_model=True,
+                inference=True,
+                training_enabled=False,
+            )
+        else:
+            self.p1 = PPOAgent(
+                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#18.pth",
+                load_model=True,
+                inference=False,
+                training_enabeled=True,
+                #action_std_override=(0.35, 0.35, 0.25, 0.30),
+            )
         self.p2 = PlayerAgent()
 
         # Camera delay settings
@@ -146,6 +163,16 @@ class FuzbAISim:
         self.curriculum_ramp_rounds = 10000 #100000
         self.curriculum_print_every_rounds = 500
         self._last_curriculum_print_round = -1
+
+        # Ball-control finetuning spawn setup for rod 6.
+        # PyBullet x maps to camera x as: camera_x_mm = 1000 * x - 115.
+        # Rod 6 is around camera_x=830 mm, so x ~= 0.945 m.
+        self.controlled_rod_x_m = 0.945
+        self.ball_spawn_areas = {
+            "behind": (0.74, 0.88),
+            "ahead": (1.02, 1.16),
+        }
+        self.ball_spawn_speed_range = (0.20, 0.50)
 
     def _ball_x_mm_camera(self) -> float:
         # Must match getCameraDict mapping
@@ -275,7 +302,12 @@ class FuzbAISim:
         except Exception:
             return
 
-        if ball_x_mm < self.episode_end_ball_x_threshold_mm:
+        #print(f"Ball x pos: {ball_x_mm:.1f} mm")
+
+        # NOTE: Point of termination due to x-threshold crossing
+        # Added another threshold for detecting when the ball failed to control the ball coming from behind
+        #if ball_x_mm < self.episode_end_ball_x_threshold_mm:
+        if ball_x_mm < self.episode_end_ball_x_threshold_mm or ball_x_mm > self.episode_end_ball_other_x_threshold_mm:
             self._x_threshold_terminated_latch = True
             self.ResetBallToLocation()
             self.round += 1
@@ -435,25 +467,11 @@ class FuzbAISim:
         y_range = (0.091, 0.67)
         #y_range = (0.20, 0.55)
         #y_range = (0.30, 0.55)
-        # If inference -> Run preset ball spawn for testing the trained model on harder ball spawn positions (zone 4)
-        #zone1 = (0.94, 0.95)    # Target area for zone 4    # from 0.88 to 1.1, middle at 0.9
-        # Ball-control training: spawn in front of rod 6 (830 mm camera-x,
-        # about 0.945 m in PyBullet x) and send the ball back toward the rod.
-        zone1 = (1.10, 1.22)
-        speed_range = (0.20, 0.50)
-        
-        
-        zone2 = (0.7, 1.0)    # Target area for zone 3
-        zone3 = (0.5, 0.7)    # Target area for zone 2
-        zone4 = (0.2, 0.5)    # Target area for zone 1
-
-        #zone_list = [zone1, zone2, zone3, zone4]  # Include all zones
-        zone_list = [zone1]
-        x_range = random.choice(zone_list)
+        spawn_side, x_range = random.choice(list(self.ball_spawn_areas.items()))
 
         custom_x = random.uniform(*x_range)
         custom_y = random.uniform(*y_range)
-        speed = random.uniform(*speed_range)
+        speed = random.uniform(*self.ball_spawn_speed_range)
         custom_z = 0.2  # Ensure it's above the table to avoid collision
 
         custom_ball_pos = [custom_x, custom_y, custom_z]
@@ -461,42 +479,11 @@ class FuzbAISim:
         # Reset the ball to the randomized safe location
         p.resetBasePositionAndOrientation(self.ball, custom_ball_pos, p.getQuaternionFromEuler([0, 0, 0]))
 
-        # Random speed within the defined range
-        
-
-        # Select a random direction from the list
-        # NOTE: Default implementation without the context where the ball willbe positioned
-        #directions_list = ['right', 'up', 'down', 'diagonal-right-up','diagonal-right-down']#
-        directions_list = ['left', 'diagonal-left-up', 'diagonal-left-down']
-        direction = random.choice(directions_list)
-        
-
-        #direction = 'right'
-        #if x_range == (0.90, 1.00):
-        #    if custom_x > 1.0:
-        #        directions_list = ['left', 'up', 'down', 'diagonal-left-up','diagonal-left-down']
-        #        direction = random.choice(directions_list)
-        #
-        #    elif custom_x < 1.0:
-        #        directions_list = ['up', 'down', 'diagonal-right-down', 'diagonal-right-up']
-        #        direction = random.choice(directions_list)
-
-        # Define direction vectors
-        rnd_vector_x = random.uniform(0.1, 1)
-        rnd_vector_y = random.uniform(0.1, 1)
-        direction_vectors = {
-            'left': [-rnd_vector_x, 0.0, 0.0],
-            'right': [rnd_vector_x, 0.0, 0.0],
-            'up': [0.0, rnd_vector_y, 0.0],
-            'down': [0.0, -rnd_vector_y, 0.0],
-            'diagonal-right-up': [rnd_vector_x, rnd_vector_y, 0.0],
-            'diagonal-left-up': [-rnd_vector_x, rnd_vector_y, 0.0],
-            'diagonal-right-down': [rnd_vector_x, -rnd_vector_y, 0.0],
-            'diagonal-left-down': [-rnd_vector_x, -rnd_vector_y, 0.0],
-        }
-
-        # Select direction vector and normalize it
-        velocity_vector = direction_vectors.get(direction, [1.0, 0.0, 0.0])
+        # Send the ball toward rod 6 from either side.
+        x_sign = 1.0 if spawn_side == "behind" else -1.0
+        rnd_vector_x = random.uniform(0.35, 1.0)
+        rnd_vector_y = random.uniform(-0.35, 0.35)
+        velocity_vector = [x_sign * rnd_vector_x, rnd_vector_y, 0.0]
         norm = (velocity_vector[0]**2 + velocity_vector[1]**2) ** 0.5
         velocity = [v / norm * speed for v in velocity_vector]
 

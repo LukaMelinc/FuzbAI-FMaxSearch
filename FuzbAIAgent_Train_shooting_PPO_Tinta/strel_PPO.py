@@ -11,7 +11,7 @@ import csv
 from datetime import datetime
 from pprint import pprint
 
-from actor_critic.main import ActorCriticNet
+from actor_critic.main import ActorCriticNet, ThreeRodActorCriticNet
 from export.main import Export
 from memory.main import PPOBuffer
 from reward.single_bar_shoting import (
@@ -935,6 +935,445 @@ class PPOAgent:
         if self.episode_count % self.save_model_every == 0:
             avg_reward = np.mean(self.episode_rewards[-100:]) if self.episode_rewards else 0
             print(f"Episode {self.episode_count}, Avg Reward (last 100): {avg_reward:.2f}")
+            self.save_model()
+
+
+class PassPPOAgent(PPOAgent):
+    """
+    PPO agent for coordinated passing with two controlled red rods and one
+    observed opponent rod.
+
+    Action layout:
+      [
+        passer_rotation_target,
+        passer_rotation_velocity,
+        passer_translation_target,
+        passer_translation_velocity,
+        receiver_rotation_target,
+        receiver_rotation_velocity,
+        receiver_translation_target,
+        receiver_translation_velocity,
+      ]
+
+    Default task setup:
+      - passer rod: red rod 4
+      - receiver rod: red rod 6
+      - opponent rod: blue rod 5
+    """
+
+    def __init__(
+        self,
+        obs_dim=20,
+        act_dim=8,
+        hidden_size=512,
+        steps_per_env=512,
+        gamma=0.99,
+        lam=0.95,
+        clip_ratio=0.2,
+        lr=1e-4,
+        train_iters=4,
+        target_kl=0.01,
+        save_model_every=500,
+        model_save_path="./trained_models/pass_ppo.pth",
+        backbone_model_path="./trained_models/pass_backbone_aux.pth",
+        load_model=False,
+        load_backbone=True,
+        training_log_export_every=10,
+        l2_lambda=5e-4,
+        passer_rod_id=4,
+        receiver_rod_id=6,
+        opponent_rod_id=5,
+        training_enabeled=True,
+        inference=False,
+        action_std_override=(0.35, 0.35, 0.20, 0.30, 0.35, 0.35, 0.20, 0.30),
+        target_rod_angle=0.085,
+    ):
+        self.passer_rod_id = int(passer_rod_id)
+        self.receiver_rod_id = int(receiver_rod_id)
+        self.opponent_rod_id = int(opponent_rod_id)
+        self.backbone_model_path = backbone_model_path
+        self.target_rod_angle = float(target_rod_angle)
+
+        self.obs_dim = int(obs_dim)
+        self.act_dim = int(act_dim)
+        self.save_model_every = save_model_every
+        self.model_save_path = model_save_path
+        self.model_name = "pass_ppo"
+        self.training_log_export_every = training_log_export_every
+        self.l2_lambda = l2_lambda
+        self.inference = inference
+        self.training_enabled = training_enabeled
+        self.action_std_override = action_std_override
+        if self.inference and self.training_enabled:
+            print("[PassPPO] Inference mode enabled, disabling training.")
+            self.training_enabled = False
+
+        self.prev_ball_x = None
+        self.prev_ball_vxy = None
+        self.prev_score = None
+        self.episode_steps = 0
+
+        with open("geometry.json") as f:
+            self.geometry = json.load(f)
+        self.rods_by_id = {int(rod["id"]): rod for rod in self.geometry["rods"]}
+        self.field_x = float(self.geometry["field"]["dimension_x"])
+        self.field_y = float(self.geometry["field"]["dimension_y"])
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print("[PassPPO] Using device:", self.device)
+
+        self.ac = ThreeRodActorCriticNet(obs_dim=self.obs_dim, hidden_size=hidden_size)
+        self.ac.to(self.device)
+
+        self.log_std = nn.Parameter(
+            -1 * torch.ones(self.act_dim, dtype=torch.float32, device=self.device),
+            requires_grad=True,
+        )
+        self.optimizer = optim.Adam(list(self.ac.parameters()) + [self.log_std], lr=lr)
+
+        self.clip_ratio = clip_ratio
+        self.train_iters = train_iters
+        self.target_kl = target_kl
+        self.steps_per_env = steps_per_env
+        self.buf = PPOBuffer(self.obs_dim, self.act_dim, steps_per_env, gamma, lam)
+
+        self.episode_count = 0
+        self.current_step = 0
+        self.ep_reward = 0.0
+        self.last_obs = None
+        self.last_action = None
+        self.last_val = None
+        self.last_logp = None
+        self.episode_rewards = []
+        self.reward = 0.0
+        self.total_steps = 0
+        self.training_count = 0
+        self.training_export = Export()
+
+        self.episode_stats = []
+        self.current_episode_goals = 0
+        self.current_episode_opponent_goals = 0
+        self.current_episode_ball_kicks = 0
+        self.current_episode_x_threshold_terminations = 0
+        self.current_episode_step_rewards = []
+        self.episodes_with_kick = 0
+        self.episodes_with_goal = 0
+        self.kick_rate_threshold = 0.8
+        self.latest_env_metrics = {}
+        self.update_reward_breakdown_sums = {}
+        self.update_samples_with_kick = 0
+
+        if load_model:
+            self.load_model()
+        elif load_backbone:
+            self.load_backbone_model()
+
+        self.apply_action_std_override()
+
+    def apply_action_std_override(self):
+        if self.action_std_override is None:
+            return
+
+        if len(self.action_std_override) != self.act_dim:
+            raise ValueError(
+                f"Expected {self.act_dim} std values, got {len(self.action_std_override)}"
+            )
+
+        std = torch.as_tensor(
+            self.action_std_override,
+            dtype=torch.float32,
+            device=self.device,
+        )
+        std = torch.clamp(std, min=1e-4)
+        with torch.no_grad():
+            self.log_std.data.copy_(torch.log(std))
+
+        print(
+            "[PassPPO] Action exploration std set to "
+            f"passer_rot=({std[0].item():.3f}, {std[1].item():.3f}), "
+            f"passer_trans=({std[2].item():.3f}, {std[3].item():.3f}), "
+            f"receiver_rot=({std[4].item():.3f}, {std[5].item():.3f}), "
+            f"receiver_trans=({std[6].item():.3f}, {std[7].item():.3f})"
+        )
+
+    @staticmethod
+    def _as_float(value):
+        if isinstance(value, list):
+            value = value[0]
+        return float(value)
+
+    def load_backbone_model(self, path=None):
+        if path is None:
+            path = self.backbone_model_path
+        if not path or not os.path.exists(path):
+            print(f"[PassPPO] No auxiliary backbone found at {path}, starting from random weights.")
+            return
+
+        checkpoint = torch.load(path, map_location=self.device)
+        state_dict = (
+            checkpoint["actor_critic_state_dict"]
+            if isinstance(checkpoint, dict) and "actor_critic_state_dict" in checkpoint
+            else checkpoint
+        )
+        self.ac.load_state_dict(state_dict)
+        print(f"[PassPPO] Auxiliary backbone loaded from {path}")
+
+    def _camera_data(self, camera):
+        return camera["camData"][0] if camera["camData"][0] is not None else camera["camData"][1]
+
+    def _rod_state(self, cd, rod_id):
+        rod_idx = int(rod_id) - 1
+        rod_info = self.rods_by_id[int(rod_id)]
+        rod_pos_calib = self._as_float(cd["rod_position_calib"][rod_idx])
+        rod_angle = self._as_float(cd["rod_angle"][rod_idx])
+        rod_angle_normalized = float(np.clip(rod_angle / 32.0, -1.0, 1.0))
+        _, target_rod_pos, unavoidable_dist = player_alignment_target(
+            ball_y=cd["ball_y"],
+            rod_info=rod_info,
+        )
+        target_error = float(target_rod_pos) - rod_pos_calib
+        return {
+            "info": rod_info,
+            "pos_calib": rod_pos_calib,
+            "angle": rod_angle,
+            "angle_normalized": rod_angle_normalized,
+            "target_pos": float(target_rod_pos),
+            "target_error": target_error,
+            "unavoidable_dist": float(unavoidable_dist),
+        }
+
+    def extract_observation(self, camera):
+        cd = self._camera_data(camera)
+        passer = self._rod_state(cd, self.passer_rod_id)
+        receiver = self._rod_state(cd, self.receiver_rod_id)
+        opponent = self._rod_state(cd, self.opponent_rod_id)
+
+        ball_x = float(cd["ball_x"])
+        ball_y = float(cd["ball_y"])
+        ball_vx = float(cd["ball_vx"])
+        ball_vy = float(cd["ball_vy"])
+
+        def rod_features(state):
+            rod_info = state["info"]
+            return [
+                (float(rod_info["position"]) - self.field_x / 2.0) / (self.field_x / 2.0),
+                state["pos_calib"],
+                state["angle_normalized"],
+                state["target_error"],
+                state["unavoidable_dist"] / max(float(rod_info["travel"]), 1e-6),
+            ]
+
+        obs = np.array(
+            [
+                (ball_x - self.field_x / 2.0) / (self.field_x / 2.0),
+                (ball_y - self.field_y / 2.0) / (self.field_y / 2.0),
+                np.clip(ball_vx / 5.0, -2.0, 2.0),
+                np.clip(ball_vy / 5.0, -2.0, 2.0),
+                *rod_features(passer),
+                *rod_features(receiver),
+                *rod_features(opponent),
+                float(camera.get("ball_kicked", False)),
+            ],
+            dtype=np.float32,
+        )
+
+        assert len(obs) == self.obs_dim, f"Expected obs_dim={self.obs_dim}, got {len(obs)}"
+        return obs, (ball_x, ball_y), (ball_vx, ball_vy), passer, receiver, opponent
+
+    def compute_pass_reward(self, camera, bxy, vxy, passer, receiver, opponent):
+        ball_x, ball_y = bxy
+        ball_vx, ball_vy = vxy
+        passer_x = float(passer["info"]["position"])
+        receiver_x = float(receiver["info"]["position"])
+        opponent_x = float(opponent["info"]["position"])
+        pass_distance = max(abs(receiver_x - passer_x), 1e-6)
+
+        passer_align = 1.0 - min(1.0, abs(passer["target_error"]))
+        receiver_align = 1.0 - min(1.0, abs(receiver["target_error"]))
+        passer_angle = calculate_rod_angle_reward(
+            rod_angle=passer["angle_normalized"],
+            target_rod_angle=self.target_rod_angle,
+            reward_scale=1.0,
+            angle_sigma=0.25,
+        )
+        receiver_angle = calculate_rod_angle_reward(
+            rod_angle=receiver["angle_normalized"],
+            target_rod_angle=self.target_rod_angle,
+            reward_scale=1.0,
+            angle_sigma=0.25,
+        )
+
+        forward_v = max(0.0, float(ball_vx))
+        progress = 0.0
+        if self.prev_ball_x is not None:
+            progress = max(0.0, float(ball_x) - float(self.prev_ball_x)) / pass_distance
+
+        passed_opponent = 1.0 if ball_x > opponent_x else 0.0
+        receiver_x_dist = abs(float(ball_x) - receiver_x) / pass_distance
+        receiver_y_bonus = max(0.0, 1.0 - abs(receiver["target_error"]))
+        near_receiver = max(0.0, 1.0 - receiver_x_dist)
+        ball_speed = math.sqrt(float(ball_vx) ** 2 + float(ball_vy) ** 2)
+        controlled_near_receiver = near_receiver * receiver_y_bonus * max(0.0, 1.0 - ball_speed / 1.0)
+
+        end_episode = bool(camera.get("end_episode", False))
+        x_terminated = bool(camera.get("terminated_by_x_threshold", False))
+        timeout_penalty = -0.2 if end_episode and not x_terminated else 0.0
+        lost_ball_penalty = -1.0 if x_terminated else 0.0
+
+        reward_breakdown = {
+            "passer_alignment": 0.15 * passer_align,
+            "receiver_alignment": 0.15 * receiver_align,
+            "passer_angle": 0.05 * passer_angle,
+            "receiver_angle": 0.05 * receiver_angle,
+            "forward_velocity": 0.15 * min(1.0, forward_v / 1.0),
+            "forward_progress": 0.40 * min(1.0, progress * 10.0),
+            "passed_opponent": 0.35 * passed_opponent,
+            "controlled_near_receiver": 0.75 * controlled_near_receiver,
+            "timeout_penalty": timeout_penalty,
+            "lost_ball_penalty": lost_ball_penalty,
+        }
+        return float(sum(reward_breakdown.values())), reward_breakdown
+
+    def scale_to_motor_commands(self, action):
+        return [
+            self._command_for_rod(self.passer_rod_id, action[0:4]),
+            self._command_for_rod(self.receiver_rod_id, action[4:8]),
+        ]
+
+    def _command_for_rod(self, rod_id, action_slice):
+        red_rod_to_drive_id = {
+            1: 1,
+            2: 2,
+            4: 3,
+            6: 4,
+        }
+        if int(rod_id) not in red_rod_to_drive_id:
+            raise ValueError(f"Rod {rod_id} is not mapped as a controllable red rod.")
+
+        rot_target = 0.5 * float(action_slice[0])
+        rot_velocity = 0.5 * (float(action_slice[1]) + 1.0) / 4.0
+        trans_target = (float(action_slice[2]) + 1.0) / 2.0
+        trans_velocity = (float(action_slice[3]) + 1.0) / 2.0
+
+        return {
+            "driveID": red_rod_to_drive_id[int(rod_id)],
+            "rotationTargetPosition": rot_target,
+            "rotationVelocity": rot_velocity,
+            "translationTargetPosition": trans_target,
+            "translationVelocity": trans_velocity,
+        }
+
+    def process_data(self, camera):
+        self.total_steps += 1
+        if self.total_steps % 250 == 0:
+            print(
+                f"[PassPPO] step {self.total_steps}, "
+                f"episode {self.episode_count}, step in episode {self.episode_steps}"
+            )
+
+        obs, bxy, vxy, passer, receiver, opponent = self.extract_observation(camera)
+        self.latest_env_metrics = {
+            "curriculum_round": int(camera.get("curriculum_round", -1)),
+            "curriculum_y_min": float(camera.get("curriculum_y_min", float("nan"))),
+            "curriculum_y_max": float(camera.get("curriculum_y_max", float("nan"))),
+        }
+
+        end_episode = bool(camera.get("end_episode", False))
+        terminated_by_x_threshold = bool(camera.get("terminated_by_x_threshold", False))
+        ball_kicked = bool(camera.get("ball_kicked", False))
+
+        episode_finished_this_sample = False
+        if self.last_obs is not None and self.training_enabled:
+            reward, reward_breakdown = self.compute_pass_reward(
+                camera, bxy, vxy, passer, receiver, opponent
+            )
+            for key, value in reward_breakdown.items():
+                self.update_reward_breakdown_sums[key] = (
+                    self.update_reward_breakdown_sums.get(key, 0.0) + float(value)
+                )
+            if ball_kicked:
+                self.update_samples_with_kick += 1
+                self.current_episode_ball_kicks += 1
+            if terminated_by_x_threshold:
+                self.current_episode_x_threshold_terminations += 1
+
+            self.current_episode_step_rewards.append(reward)
+            stored = self.buf.store(self.last_obs, self.last_action, reward, self.last_val, self.last_logp)
+            if not stored:
+                _, final_value, _ = self.compute_action(obs)
+                self.buf.finish_path(last_val=final_value)
+                print("[PassPPO] Buffer full, training now...")
+                self.train_on_buffer()
+                self.episode_count += 1
+                self.episode_steps = 0
+                self.ep_reward = 0.0
+                self.last_obs = None
+                self.last_action = None
+                self.last_val = None
+                self.last_logp = None
+                episode_finished_this_sample = True
+            else:
+                self.ep_reward += reward
+
+            if (not episode_finished_this_sample) and (end_episode or terminated_by_x_threshold):
+                self.finish_episode(last_value=0)
+                self.episode_steps = 0
+                episode_finished_this_sample = True
+
+        if not episode_finished_this_sample:
+            self.episode_steps += 1
+
+        action, value, logp = self.compute_action(obs, deterministic=self.inference)
+        if not np.all(np.isfinite(action)):
+            print("[PassPPO] Nan or Inf detected in action:", action)
+            action = np.zeros_like(action)
+
+        self.prev_ball_x = bxy[0]
+        self.prev_ball_vxy = vxy
+        self.last_obs = obs
+        self.last_action = action
+        self.last_val = value
+        self.last_logp = logp
+        self.current_step += 1
+
+        return self.scale_to_motor_commands(action)
+
+    def finish_episode(self, last_value=0):
+        if self.buf.ptr > self.buf.path_start_idx:
+            self.buf.finish_path(last_val=last_value)
+            self.episode_rewards.append(self.ep_reward)
+            buffer_fill = self.buf.ptr / self.buf.max_size
+            if buffer_fill >= 0.8:
+                print(
+                    f"[PassPPO] Buffer {buffer_fill*100:.1f}% full "
+                    f"({self.buf.ptr}/{self.buf.max_size}), episode {self.episode_count}"
+                )
+                self.train_on_buffer()
+
+        self.episode_count += 1
+        print(
+            f"[PassPPO episode] {self.episode_count}: reward={self.ep_reward:.3f}, "
+            f"kicks={self.current_episode_ball_kicks}, "
+            f"x_terms={self.current_episode_x_threshold_terminations}"
+        )
+
+        self.current_step = 0
+        self.ep_reward = 0.0
+        self.last_obs = None
+        self.last_action = None
+        self.last_val = None
+        self.last_logp = None
+        self.prev_ball_x = None
+        self.prev_ball_vxy = None
+        self.current_episode_goals = 0
+        self.current_episode_opponent_goals = 0
+        self.current_episode_ball_kicks = 0
+        self.current_episode_x_threshold_terminations = 0
+        self.current_episode_step_rewards = []
+
+        if self.episode_count % self.save_model_every == 0:
+            avg_reward = np.mean(self.episode_rewards[-100:]) if self.episode_rewards else 0.0
+            print(f"[PassPPO] Episode {self.episode_count}, avg reward last 100: {avg_reward:.3f}")
             self.save_model()
 
 
