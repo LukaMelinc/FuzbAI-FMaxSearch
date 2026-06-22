@@ -16,6 +16,7 @@ from export.main import Export
 from memory.main import PPOBuffer
 from reward.single_bar_shoting import (
     closest_player_alignment_reward,
+    controllable_kick_reward,
     kicking_reward,
     player_alignment_target,
     simple_reward,
@@ -154,7 +155,6 @@ class PPOAgent:
         self.prev_vel = None
         self.prev_ball_vxy = None
         self.prev_score = None
-        self.active_regions = None  # Initialize active_regions
         self.episode_steps = 0
 
         
@@ -212,7 +212,7 @@ class PPOAgent:
 
         if self.should_load_model:
             self.load_model()
-            self.apply_action_std_override()
+            #self.apply_action_std_override()
         
 
     def apply_action_std_override(self):
@@ -937,7 +937,6 @@ class PPOAgent:
             print(f"Episode {self.episode_count}, Avg Reward (last 100): {avg_reward:.2f}")
             self.save_model()
 
-
 class PassPPOAgent(PPOAgent):
     """
     PPO agent for coordinated passing with two controlled red rods and one
@@ -974,7 +973,7 @@ class PassPPOAgent(PPOAgent):
         train_iters=4,
         target_kl=0.01,
         save_model_every=500,
-        model_save_path="./trained_models/pass_ppo.pth",
+        model_save_path="./trained_models/pass_ppo_no_std_override.pth",
         backbone_model_path="./trained_models/pass_backbone_aux.pth",
         load_model=False,
         load_backbone=True,
@@ -985,7 +984,7 @@ class PassPPOAgent(PPOAgent):
         opponent_rod_id=5,
         training_enabeled=True,
         inference=False,
-        action_std_override=(0.35, 0.35, 0.20, 0.30, 0.35, 0.35, 0.20, 0.30),
+        action_std_override=(0.3, 0.3, 0.30, 0.30, 0.3, 0.3, 0.30, 0.30),
         target_rod_angle=0.085,
     ):
         self.passer_rod_id = int(passer_rod_id)
@@ -1011,6 +1010,7 @@ class PassPPOAgent(PPOAgent):
         self.prev_ball_x = None
         self.prev_ball_vxy = None
         self.prev_score = None
+        self.kick_latch = False
         self.episode_steps = 0
 
         with open("geometry.json") as f:
@@ -1068,7 +1068,19 @@ class PassPPOAgent(PPOAgent):
         elif load_backbone:
             self.load_backbone_model()
 
-        self.apply_action_std_override()
+        #self.apply_action_std_override()
+
+    @staticmethod
+    def freeze_layers(model, trainable_prefixes):
+        for name, param in model.named_parameters():
+            param.requires_grad = any(name.startswith(prefix) for prefix in trainable_prefixes)
+
+    def rebuild_optimizer(self, lr=None):
+        if lr is None:
+            lr = self.optimizer.param_groups[0]["lr"]
+        trainable_params = [p for p in self.ac.parameters() if p.requires_grad]
+        trainable_params.append(self.log_std)
+        self.optimizer = optim.Adam(trainable_params, lr=lr)
 
     def apply_action_std_override(self):
         if self.action_std_override is None:
@@ -1153,11 +1165,13 @@ class PassPPOAgent(PPOAgent):
         ball_vx = float(cd["ball_vx"])
         ball_vy = float(cd["ball_vy"])
 
+        #print(f"Ball x: {ball_x:.1f}, y: {ball_y:.1f}, vx: {ball_vx:.2f}, vy: {ball_vy:.2f}")
+
         def rod_features(state):
             rod_info = state["info"]
             return [
                 (float(rod_info["position"]) - self.field_x / 2.0) / (self.field_x / 2.0),
-                state["pos_calib"],
+                state["pos_calib"],     # pos-calib is the translation(lateral) move
                 state["angle_normalized"],
                 state["target_error"],
                 state["unavoidable_dist"] / max(float(rod_info["travel"]), 1e-6),
@@ -1180,58 +1194,30 @@ class PassPPOAgent(PPOAgent):
         assert len(obs) == self.obs_dim, f"Expected obs_dim={self.obs_dim}, got {len(obs)}"
         return obs, (ball_x, ball_y), (ball_vx, ball_vy), passer, receiver, opponent
 
-    def compute_pass_reward(self, camera, bxy, vxy, passer, receiver, opponent):
-        ball_x, ball_y = bxy
-        ball_vx, ball_vy = vxy
-        passer_x = float(passer["info"]["position"])
-        receiver_x = float(receiver["info"]["position"])
-        opponent_x = float(opponent["info"]["position"])
-        pass_distance = max(abs(receiver_x - passer_x), 1e-6)
+    def compute_pass_reward(self, vxy, *, ball_kicked, episode_timeout):
+        """Phase 1 reward: make the passer kick the ball toward the receiver.
 
-        passer_align = 1.0 - min(1.0, abs(passer["target_error"]))
-        receiver_align = 1.0 - min(1.0, abs(receiver["target_error"]))
-        passer_angle = calculate_rod_angle_reward(
-            rod_angle=passer["angle_normalized"],
-            target_rod_angle=self.target_rod_angle,
-            reward_scale=1.0,
-            angle_sigma=0.25,
-        )
-        receiver_angle = calculate_rod_angle_reward(
-            rod_angle=receiver["angle_normalized"],
-            target_rod_angle=self.target_rod_angle,
-            reward_scale=1.0,
-            angle_sigma=0.25,
-        )
+        In this setup, forward is increasing table x, so the outgoing ball's
+        x-velocity is the complete direction signal. A tiny tolerance prevents
+        a nearly stationary contact from being labelled as forward or backward.
+        """
+        ball_vx = float(vxy[0])
+        direction_tolerance = 0.05  # m/s; avoids rewarding camera/physics noise.
 
-        forward_v = max(0.0, float(ball_vx))
-        progress = 0.0
-        if self.prev_ball_x is not None:
-            progress = max(0.0, float(ball_x) - float(self.prev_ball_x)) / pass_distance
-
-        passed_opponent = 1.0 if ball_x > opponent_x else 0.0
-        receiver_x_dist = abs(float(ball_x) - receiver_x) / pass_distance
-        receiver_y_bonus = max(0.0, 1.0 - abs(receiver["target_error"]))
-        near_receiver = max(0.0, 1.0 - receiver_x_dist)
-        ball_speed = math.sqrt(float(ball_vx) ** 2 + float(ball_vy) ** 2)
-        controlled_near_receiver = near_receiver * receiver_y_bonus * max(0.0, 1.0 - ball_speed / 1.0)
-
-        end_episode = bool(camera.get("end_episode", False))
-        x_terminated = bool(camera.get("terminated_by_x_threshold", False))
-        timeout_penalty = -0.2 if end_episode and not x_terminated else 0.0
-        lost_ball_penalty = -1.0 if x_terminated else 0.0
+        if ball_kicked and ball_vx > direction_tolerance:
+            ball_kick_reward = 1.0
+        elif ball_kicked and ball_vx < -direction_tolerance:
+            ball_kick_reward = -1.0
+        else:
+            # A contact with no meaningful x-direction gets no kick reward.
+            ball_kick_reward = 0.0
 
         reward_breakdown = {
-            "passer_alignment": 0.15 * passer_align,
-            "receiver_alignment": 0.15 * receiver_align,
-            "passer_angle": 0.05 * passer_angle,
-            "receiver_angle": 0.05 * receiver_angle,
-            "forward_velocity": 0.15 * min(1.0, forward_v / 1.0),
-            "forward_progress": 0.40 * min(1.0, progress * 10.0),
-            "passed_opponent": 0.35 * passed_opponent,
-            "controlled_near_receiver": 0.75 * controlled_near_receiver,
-            "timeout_penalty": timeout_penalty,
-            "lost_ball_penalty": lost_ball_penalty,
+            "time_penalty": -0.001,
+            "ball_kick": ball_kick_reward,
+            "episode_timeout": -0.5 if episode_timeout else 0.0,
         }
+
         return float(sum(reward_breakdown.values())), reward_breakdown
 
     def scale_to_motor_commands(self, action):
@@ -1279,13 +1265,23 @@ class PassPPOAgent(PPOAgent):
         }
 
         end_episode = bool(camera.get("end_episode", False))
+        terminated_by_kick = bool(camera.get("terminated_by_kick", False))
         terminated_by_x_threshold = bool(camera.get("terminated_by_x_threshold", False))
         ball_kicked = bool(camera.get("ball_kicked", False))
+
+        
 
         episode_finished_this_sample = False
         if self.last_obs is not None and self.training_enabled:
             reward, reward_breakdown = self.compute_pass_reward(
-                camera, bxy, vxy, passer, receiver, opponent
+                vxy,
+                ball_kicked=ball_kicked,
+                episode_timeout=(
+                    end_episode
+                    and not terminated_by_kick
+                    and not terminated_by_x_threshold
+                    and not ball_kicked
+                ),
             )
             for key, value in reward_breakdown.items():
                 self.update_reward_breakdown_sums[key] = (
@@ -1294,6 +1290,7 @@ class PassPPOAgent(PPOAgent):
             if ball_kicked:
                 self.update_samples_with_kick += 1
                 self.current_episode_ball_kicks += 1
+                self.kick_latch = True
             if terminated_by_x_threshold:
                 self.current_episode_x_threshold_terminations += 1
 
@@ -1315,7 +1312,7 @@ class PassPPOAgent(PPOAgent):
             else:
                 self.ep_reward += reward
 
-            if (not episode_finished_this_sample) and (end_episode or terminated_by_x_threshold):
+            if (not episode_finished_this_sample) and (self.kick_latch or terminated_by_kick or terminated_by_x_threshold or end_episode):
                 self.finish_episode(last_value=0)
                 self.episode_steps = 0
                 episode_finished_this_sample = True
@@ -1351,11 +1348,11 @@ class PassPPOAgent(PPOAgent):
                 self.train_on_buffer()
 
         self.episode_count += 1
-        print(
-            f"[PassPPO episode] {self.episode_count}: reward={self.ep_reward:.3f}, "
-            f"kicks={self.current_episode_ball_kicks}, "
-            f"x_terms={self.current_episode_x_threshold_terminations}"
-        )
+        #print(
+        #    f"[PassPPO episode] {self.episode_count}: reward={self.ep_reward:.3f}, "
+        #    f"kicks={self.current_episode_ball_kicks}, "
+        #    f"x_terms={self.current_episode_x_threshold_terminations}"
+        #)
 
         self.current_step = 0
         self.ep_reward = 0.0
@@ -1365,6 +1362,7 @@ class PassPPOAgent(PPOAgent):
         self.last_logp = None
         self.prev_ball_x = None
         self.prev_ball_vxy = None
+        self.kick_latch = False
         self.current_episode_goals = 0
         self.current_episode_opponent_goals = 0
         self.current_episode_ball_kicks = 0

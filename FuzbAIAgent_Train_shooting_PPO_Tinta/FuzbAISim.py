@@ -5,7 +5,7 @@ from pprint import pprint
 import threading
 import math
 from FuzbAIAgent_Example import PlayerAgent
-from strel_PPO import PPOAgent
+from strel_PPO import PPOAgent, PassPPOAgent
 from pass_auxiliary_backbone import PassAuxiliaryBackboneAgent
 import random
 import traceback
@@ -13,7 +13,7 @@ import traceback
 from log_utils import setup_logging
 
 class FuzbAISim:
-    def __init__(self, episode_end_ball_x_threshold_mm: float = 600.0, kick_observed_rod_id: int = 6):
+    def __init__(self, episode_end_ball_x_threshold_mm: float = 400.0, kick_observed_rod_id: int = 4):
         print(" ______         _             _____ ")
         print("|  ____|       | |      /\   |_   _|")
         print("| |__ _   _ ___| |__   /  \    | |  ")
@@ -39,14 +39,12 @@ class FuzbAISim:
         self.score = [0,0]
 
         self.ballPosNoise = 5
-        self.ballVelNoise = 0.01
-
         self.defaultBallPos = [0.718,0.71,0.3]
 
         # Episode termination: end the episode if camera/geometry ball_x (mm) is below this threshold.
         # This is computed with the same mapping as in getCameraDict(): ball_x_mm = 1000*ballPos[0] - 115.
         self.episode_end_ball_x_threshold_mm = float(episode_end_ball_x_threshold_mm)
-        self.episode_end_ball_other_x_threshold_mm = 1190.0
+        self.episode_end_ball_other_x_threshold_mm = 750.0
 
         # Kick observation: detect ball contact on the specified rod's player links.
         # The PPO shooting agent currently emits driveID=4. Player 1 maps that
@@ -62,7 +60,7 @@ class FuzbAISim:
         # Keep the kick latch for reward/observation, but do not end the episode
         # when a kick is detected. Goal scoring and x-threshold resets should
         # drive episode boundaries during shooting training.
-        self.terminate_episode_on_kick = False
+        self.terminate_episode_on_kick = True
         # Episode boundary latch: set True when the ball gets reset (agent uses it to call finish_episode)
         self.end_episode_latch = False
         # Don't end an episode on the initial ball placement at startup
@@ -98,10 +96,13 @@ class FuzbAISim:
         self.travels = [190, 356, 180, 116, 116, 180, 356, 190]
         self.redIndices = [0, 1, 3, 5]
 
-        # Switch this to "pass_auxiliary_backbone" for phase-0 supervised
-        # pretraining of two red rods: rod 4 passer + rod 6 receiver.
+        # Agent modes:
+        # - "single_rod_ppo": old one-rod PPO training/inference
+        # - "pass_auxiliary_backbone": phase-0 supervised backbone training/inference
+        # - "pass_ppo": PPO passing training initialized from the auxiliary backbone
         #self.agent1_mode = "single_rod_ppo"
-        self.agent1_mode = "pass_auxiliary_backbone"
+        #self.agent1_mode = "pass_auxiliary_backbone"
+        self.agent1_mode = "pass_ppo"
         if self.agent1_mode == "pass_auxiliary_backbone":
             self.p1 = PassAuxiliaryBackboneAgent(
                 passer_rod_id=4,
@@ -112,6 +113,18 @@ class FuzbAISim:
                 inference=True,
                 training_enabled=False,
             )
+        elif self.agent1_mode == "pass_ppo":
+            self.p1 = PassPPOAgent(
+                passer_rod_id=4,
+                receiver_rod_id=6,
+                opponent_rod_id=5,
+                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_ppo_steps_377986.pth",
+                backbone_model_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#20.pth",
+                load_model=True,
+                load_backbone=False,
+                inference=True,
+                training_enabeled=False,
+            )
         else:
             self.p1 = PPOAgent(
                 model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#18.pth",
@@ -121,6 +134,16 @@ class FuzbAISim:
                 #action_std_override=(0.35, 0.35, 0.25, 0.30),
             )
         self.p2 = PlayerAgent()
+
+        for name, _ in self.p1.ac.named_parameters():
+            print(f"Parameter: {name}")
+
+        #self.p1.freeze_layers(self.p1.ac, {
+        #    "passer_rotation_head",
+        #    "passer_translation_head",
+        #    "critic"
+        #})
+        #self.p1.rebuild_optimizer()
 
         # Camera delay settings
         #self.simulatedDelay = 0.030
@@ -153,8 +176,6 @@ class FuzbAISim:
         # --- Auto-curriculum: gradually widen ball spawn range (Stage 1.5 -> Stage 2) ---
         # `self.round` increments on episode resets/terminations, so we use it as the
         # curriculum progress counter.
-        # Stage 1.5 (easy): y_range=(0.35, 0.45)
-        # Stage 2 (harder): y_range=(0.15, 0.65)
         # Entire y range: 0.091 - 0.67
         self.curriculum_enabled = True
         self.curriculum_y_start = (0.45, 0.50)
@@ -169,10 +190,10 @@ class FuzbAISim:
         # Rod 6 is around camera_x=830 mm, so x ~= 0.945 m.
         self.controlled_rod_x_m = 0.945
         self.ball_spawn_areas = {
-            "behind": (0.74, 0.88),
-            "ahead": (1.02, 1.16),
+            "behind": (0.65, 0.68)#(0.66, 0.67),
+            #"ahead": (1.02, 1.16),
         }
-        self.ball_spawn_speed_range = (0.20, 0.50)
+        self.ball_spawn_speed_range = (0.0, 0.2)
 
     def _ball_x_mm_camera(self) -> float:
         # Must match getCameraDict mapping
@@ -280,7 +301,7 @@ class FuzbAISim:
             # logs off should never change the reward/event behavior.
             if self.debug_print_red_kicks:
                 link_name = self._link_names_by_index.get(table_link, "unknown")
-                #print(f"Ball kicked by link {table_link} ({link_name}), force={normal_force:.3f}")
+                print(f"Ball kicked by link {table_link} ({link_name}), force={normal_force:.3f}")
 
             return
 
@@ -302,12 +323,12 @@ class FuzbAISim:
         except Exception:
             return
 
-        #print(f"Ball x pos: {ball_x_mm:.1f} mm")
 
         # NOTE: Point of termination due to x-threshold crossing
         # Added another threshold for detecting when the ball failed to control the ball coming from behind
-        #if ball_x_mm < self.episode_end_ball_x_threshold_mm:
-        if ball_x_mm < self.episode_end_ball_x_threshold_mm or ball_x_mm > self.episode_end_ball_other_x_threshold_mm:
+        #if ball_x_mm < self.episode_end_ball_x_threshold_mm:   # Threshold behind the rod
+        if ball_x_mm < self.episode_end_ball_x_threshold_mm or ball_x_mm > self.episode_end_ball_other_x_threshold_mm:  # Threshold behind one rod and ahead of the other
+        #if ball_x_mm > self.episode_end_ball_other_x_threshold_mm:  # Threshold ahead of the rod 
             self._x_threshold_terminated_latch = True
             self.ResetBallToLocation()
             self.round += 1
@@ -465,6 +486,7 @@ class FuzbAISim:
         # If training is enabeled -> Run curriculum learniing ball spawn 
         #y_range = self._get_curriculum_y_range()
         y_range = (0.091, 0.67)
+        #y_range = (0.3, 0.55)
         #y_range = (0.20, 0.55)
         #y_range = (0.30, 0.55)
         spawn_side, x_range = random.choice(list(self.ball_spawn_areas.items()))
@@ -481,7 +503,7 @@ class FuzbAISim:
 
         # Send the ball toward rod 6 from either side.
         x_sign = 1.0 if spawn_side == "behind" else -1.0
-        rnd_vector_x = random.uniform(0.35, 1.0)
+        rnd_vector_x = random.uniform(0.0, 0.0)
         rnd_vector_y = random.uniform(-0.35, 0.35)
         velocity_vector = [x_sign * rnd_vector_x, rnd_vector_y, 0.0]
         norm = (velocity_vector[0]**2 + velocity_vector[1]**2) ** 0.5
