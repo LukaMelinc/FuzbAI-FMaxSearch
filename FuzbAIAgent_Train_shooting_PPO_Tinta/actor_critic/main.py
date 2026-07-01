@@ -49,7 +49,9 @@ class ThreeRodActorCriticNet(nn.Module):
         receiver_translation_velocity,
       ]
 
-    The actor uses a shared observation encoder and four control heads:
+    The actor uses separate role encoders and four control heads:
+      - passer encoder shared by the passer rotation/translation heads
+      - receiver encoder shared by the receiver rotation/translation heads
       - passer rotation head: 2 values
       - passer translation head: 2 values
       - receiver rotation head: 2 values
@@ -83,12 +85,8 @@ class ThreeRodActorCriticNet(nn.Module):
         self.obs_dim = obs_dim
         self.act_dim = 8
 
-        self.encoder = nn.Sequential(
-            nn.Linear(obs_dim, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
-        )
+        self.passer_encoder = self._make_encoder(obs_dim, hidden_size)
+        self.receiver_encoder = self._make_encoder(obs_dim, hidden_size)
 
         self.passer_rotation_head = self._make_action_head(hidden_size, head_hidden_size)
         self.passer_translation_head = self._make_action_head(hidden_size, head_hidden_size)
@@ -104,6 +102,15 @@ class ThreeRodActorCriticNet(nn.Module):
         )
 
     @staticmethod
+    def _make_encoder(obs_dim, hidden_size):
+        return nn.Sequential(
+            nn.Linear(obs_dim, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+        )
+
+    @staticmethod
     def _make_action_head(hidden_size, head_hidden_size):
         return nn.Sequential(
             nn.Linear(hidden_size, head_hidden_size),
@@ -112,12 +119,13 @@ class ThreeRodActorCriticNet(nn.Module):
         )
 
     def forward(self, x, return_heads=False):
-        features = self.encoder(x)
+        passer_features = self.passer_encoder(x)
+        receiver_features = self.receiver_encoder(x)
 
-        passer_rotation = self.passer_rotation_head(features)
-        passer_translation = self.passer_translation_head(features)
-        receiver_rotation = self.receiver_rotation_head(features)
-        receiver_translation = self.receiver_translation_head(features)
+        passer_rotation = self.passer_rotation_head(passer_features)
+        passer_translation = self.passer_translation_head(passer_features)
+        receiver_rotation = self.receiver_rotation_head(receiver_features)
+        receiver_translation = self.receiver_translation_head(receiver_features)
 
         action_mean = torch.cat(
             [
@@ -140,6 +148,31 @@ class ThreeRodActorCriticNet(nn.Module):
             return action_mean, value, heads
 
         return action_mean, value
+
+    @staticmethod
+    def _upgrade_legacy_state_dict(state_dict):
+        """Copy old shared-encoder checkpoints into both role encoders."""
+        has_legacy_encoder = any(key.startswith("encoder.") for key in state_dict)
+        has_role_encoder = any(
+            key.startswith("passer_encoder.") or key.startswith("receiver_encoder.")
+            for key in state_dict
+        )
+        if not has_legacy_encoder or has_role_encoder:
+            return state_dict
+
+        upgraded = dict(state_dict)
+        for key, value in state_dict.items():
+            if not key.startswith("encoder."):
+                continue
+            suffix = key[len("encoder."):]
+            upgraded[f"passer_encoder.{suffix}"] = value
+            upgraded[f"receiver_encoder.{suffix}"] = value
+            del upgraded[key]
+        return upgraded
+
+    def load_state_dict(self, state_dict, *args, **kwargs):
+        state_dict = self._upgrade_legacy_state_dict(state_dict)
+        return super().load_state_dict(state_dict, *args, **kwargs)
 
 
 # Backwards-compatible alias used by earlier pass-agent drafts.

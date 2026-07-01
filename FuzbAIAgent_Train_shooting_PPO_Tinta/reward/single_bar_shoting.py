@@ -147,67 +147,75 @@ def controllable_kick_reward(
     *,
     ball_kicked: bool,
     ball_vx: float,
-    prev_ball_vx: float | None = None,
-    forward_direction: float = 1.0,
+    ball_vy: float,
     rod_alignment_reward: float = 0.0,
     episode_timeout: bool = False,
     time_penalty: float = -0.002,
     min_forward_speed: float = 0.35,
-
+    target_forward_speed: float = 1.00,
+    max_good_angle_deg: float = 45.0,
 ):
     """Reward one clean, controllable kick toward the receiving rod.
 
-    Velocities are in m/s.  ``forward_direction`` maps the controlled team's
-    forward direction to the simulator x axis: use ``+1`` for rod 4 passing
-    to rod 6, and ``-1`` for the mirrored setup.
+    Velocities are in m/s. In the current setup, positive x velocity is the
+    desired forward kick direction.
 
     The large terms are evaluated *only on a confirmed player-ball contact*.
     Thus an already-moving spawned ball, or a ball that later bounces forward,
-    cannot earn the kick reward.  A good kick is forward, reasonably straight
-    (small lateral velocity), and no faster than the controllable-speed cap.
+    cannot earn the kick reward.  A good kick is forward and reasonably
+    straight: the angle reward is highest when vx dominates and vy is close to
+    zero.
     """
-    direction = 1.0 if float(forward_direction) >= 0.0 else -1.0
-    forward_speed = direction * float(ball_vx)
-    previous_forward_speed = (
-        direction * float(prev_ball_vx) if prev_ball_vx is not None else 0.0
-    )
-    forward_impulse = max(0.0, forward_speed - previous_forward_speed)
+    forward_speed = float(ball_vx)
+    lateral_speed = abs(float(ball_vy))
+    ball_speed = math.hypot(forward_speed, lateral_speed)
 
     # A speed below min_forward_speed is only a touch.  The quality rises to
     # one at target_forward_speed and then saturates: PPO has no incentive to
     # learn increasingly violent shots.
-    #target_span = max(float(target_forward_speed) - float(min_forward_speed), 1e-6)
-    """speed_quality = min(
-        1.0,
-        max(0.0, (forward_speed - float(min_forward_speed)) / target_span),
-    )
-    straightness = math.exp(
-        -((abs(float(ball_vy)) / max(float(lateral_speed_sigma), 1e-6)) ** 2)
-    )"""
-
+    target_span = max(float(target_forward_speed) - float(min_forward_speed), 1e-6)
 
     if ball_kicked:
+        kicked_forward = forward_speed > 0.0
+        kicked_backward = forward_speed < 0.0
 
-        kick_success = ball_vx > 0
-        # Keep a modest reward for making contact, but put most of the return
-        # on a useful outgoing ball.  The impulse term rejects contacts that
-        # do not actually accelerate the ball in the passing direction.
-        useful_contact = 0.35 if forward_speed >= float(min_forward_speed) else 0.0
-        #forward_impulse_reward = 0.8 * min(forward_impulse, float(target_forward_speed))
-        backward_kick_penalty = -1.25 if forward_speed < 0.0 else 0.0
+        if ball_speed > 1e-6 and kicked_forward:
+            travel_angle = math.atan2(lateral_speed, forward_speed)
+            max_good_angle = math.radians(max(float(max_good_angle_deg), 1e-6))
+            angle_quality = max(0.0, 1.0 - travel_angle / max_good_angle)
+        else:
+            angle_quality = 0.0
+
+        speed_quality = max(
+            0.0,
+            min(1.0, (forward_speed - float(min_forward_speed)) / target_span),
+        )
+
+        # Reward only contacts that send the ball in the desired direction.
+        # ``angle_reward`` is the main term: high vx and low |vy|.
+        useful_contact = 0.20 if forward_speed >= float(min_forward_speed) else 0.0
+        angle_reward = 1.00 * speed_quality * angle_quality
+        forward_velocity = 0.25 * max(0.0, forward_speed)
+        lateral_penalty = -0.25 * lateral_speed if kicked_forward else 0.0
+        backward_kick_penalty = -1.25 if kicked_backward else 0.0
     else:
+        kicked_forward = False
+        kicked_backward = False
         useful_contact = 0.0
-        forward_impulse_reward = 0.0
+        angle_reward = 0.0
+        forward_velocity = 0.0
+        lateral_penalty = 0.0
         backward_kick_penalty = 0.0
 
     reward_breakdown = {
         "time_penalty": float(time_penalty),
-        # This is deliberately small; it guides the rod to the ball but can
-        # never outweigh the event reward for actually kicking it.
-        "alignment": float(rod_alignment_reward),
+        #"alignment": float(rod_alignment_reward),
         "useful_contact": useful_contact,
-        #"forward_impulse": forward_impulse_reward,
+        #"angle_reward": angle_reward,
+        "forward_velocity": forward_velocity,
+        #"lateral_penalty": lateral_penalty,
         "backward_kick": backward_kick_penalty,
+        "kicked_forward": 0.05 if kicked_forward else 0.0,
         "timeout": -0.5 if episode_timeout else 0.0,
     }
     return float(sum(reward_breakdown.values())), reward_breakdown
@@ -230,7 +238,8 @@ def maintaining_ball(
     stop_speed: float = 0.08,
     threshold_penalty: float = -10.0,
     behind_rod_penalty: float = -0.25,
-    rod_angle_reward: float = 0.0
+    rod_angle_reward: float = 0.0,
+    player_alignment_reward: float = 0.0,
 ):
     """Reward for receiving and keeping the ball near a rod.
 
@@ -238,6 +247,8 @@ def maintaining_ball(
     ``ball_z``/``rod_z_pos`` are the lateral table coordinate; pass ball_y here
     if the caller uses x/y naming. Speed reduction is rewarded only inside the
     control zone, so slowing the ball elsewhere is not useful to the policy.
+    ``player_alignment_reward`` provides light dense shaping toward the
+    closest reachable player-ball alignment.
     ``ball_behind_rod`` should mean the ball crossed the protected side of the
     rod, but has not yet hit the episode termination threshold.
     """
@@ -266,7 +277,11 @@ def maintaining_ball(
         "controlled_ball": 0.60 * zone_control * low_speed if in_control_zone else 0.0,
         "stopped_ball": 12.5 * zone_control if stopped else 0.0,
         "timeout": -0.2 if episode_timeout else 0.0,
-        "rod_angle": 0.25 * rod_angle_reward
+        "rod_angle": 0.25 * rod_angle_reward,
+        # This dense term tells the policy which player on the rod should
+        # meet the ball.  Keep it small: the control/stop outcomes remain the
+        # main objective rather than merely centering a player under the ball.
+        "player_alignment": float(player_alignment_reward),
     }
     reward = float(sum(reward_breakdown.values()))
 
@@ -275,7 +290,6 @@ def maintaining_ball(
 
 def closest_player_alignment_reward(
     *,
-    ball_x: float,
     ball_y: float,
     rod_pos_calib: float,
     rod_info: dict,
@@ -298,7 +312,7 @@ def calculate_rod_angle_reward(
     rod_angle: float,
     target_rod_angle: float = 0.40,
     reward_scale: float = 0.6,
-    angle_sigma: float = 0.5,
+    angle_sigma: float = 9.0,
 ):
     """Reward for rotating the rod to a specific angle."""
     angle_error = float(rod_angle) - float(target_rod_angle)
