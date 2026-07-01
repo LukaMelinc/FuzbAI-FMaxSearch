@@ -13,7 +13,14 @@ import traceback
 from log_utils import setup_logging
 
 class FuzbAISim:
-    def __init__(self, episode_end_ball_x_threshold_mm: float = 400.0, kick_observed_rod_id: int = 4):
+    def __init__(
+        self,
+        episode_end_ball_x_threshold_mm: float = 400.0,
+        kick_observed_rod_id: int = 4,
+        gui: bool = True,
+        worker_id: int = 0,
+        player1_agent=None,
+    ):
         print(" ______         _             _____ ")
         print("|  ____|       | |      /\   |_   _|")
         print("| |__ _   _ ___| |__   /  \    | |  ")
@@ -23,6 +30,8 @@ class FuzbAISim:
         print("")
         print("LAK FuzbAI simulator v1 - 2025")
 
+        self.gui = bool(gui)
+        self.worker_id = int(worker_id)
         self.ballPos = None
         self.ballVel = None
 
@@ -100,7 +109,9 @@ class FuzbAISim:
         #self.agent1_mode = "single_rod_ppo"
         #self.agent1_mode = "pass_auxiliary_backbone"
         self.agent1_mode = "pass_ppo"
-        if self.agent1_mode == "pass_auxiliary_backbone":
+        if player1_agent is not None:
+            self.p1 = player1_agent
+        elif self.agent1_mode == "pass_auxiliary_backbone":
             self.p1 = PassAuxiliaryBackboneAgent(
                 passer_rod_id=4,
                 receiver_rod_id=6,
@@ -131,18 +142,20 @@ class FuzbAISim:
             )
         self.p2 = PlayerAgent()
 
-        for name, _ in self.p1.ac.named_parameters():
-            print(f"Parameter: {name}")
+        if player1_agent is None and hasattr(self.p1, "ac"):
+            for name, _ in self.p1.ac.named_parameters():
+                print(f"Parameter: {name}")
 
-        self.p1.freeze_layers(self.p1.ac, {
-            # Stage 2 receiver training: keep the trained passer path fixed,
-            # and train only the receiver path plus the critic.
-            "receiver_encoder",
-            "receiver_translation_head",
-            "receiver_rotation_head",
-            "critic",
-        })
-        self.p1.rebuild_optimizer()
+        if player1_agent is None and self.agent1_mode == "pass_ppo":
+            self.p1.freeze_layers(self.p1.ac, {
+                # Stage 2 receiver training: keep the trained passer path fixed,
+                # and train only the receiver path plus the critic.
+                "receiver_encoder",
+                "receiver_translation_head",
+                "receiver_rotation_head",
+                "critic",
+            })
+            self.p1.rebuild_optimizer()
 
         # Camera delay settings
         #self.simulatedDelay = 0.030
@@ -555,12 +568,14 @@ class FuzbAISim:
 
     def loadSimulator(self, printJointInfo = False):
         print("Loading simulator...")
-        physicsClient = p.connect(p.GUI)    # graphical version
-        #physicsClient = p.connect(p.DIRECT) # non-graphical version
+        connection_mode = p.GUI if self.gui else p.DIRECT
+        physicsClient = p.connect(connection_mode)
+        print(f"PyBullet client {physicsClient} started in {'GUI' if self.gui else 'DIRECT'} mode")
 
         #p.configureDebugVisualizer(p.COV_ENABLE_WIREFRAME,0)
         #p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS,1)
-        p.configureDebugVisualizer(p.COV_ENABLE_GUI,0)
+        if self.gui:
+            p.configureDebugVisualizer(p.COV_ENABLE_GUI,0)
         #p.configureDebugVisualizer(p.COV_ENABLE_RENDERING,1)
         #p.configureDebugVisualizer(p.COV_ENABLE_KEYBOARD_SHORTCUTS,1)
         #p.configureDebugVisualizer(p.COV_ENABLE_MOUSE_PICKING,1)

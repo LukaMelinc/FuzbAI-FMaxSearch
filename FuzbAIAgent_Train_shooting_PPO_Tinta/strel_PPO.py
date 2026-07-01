@@ -325,6 +325,27 @@ class PPOAgent:
 
         return action, value, logp
 
+    def get_policy_state(self):
+        return {
+            "actor_critic_state_dict": {
+                key: value.detach().cpu().numpy().copy()
+                for key, value in self.ac.state_dict().items()
+            },
+            "log_std": self.log_std.detach().cpu().numpy().copy(),
+        }
+
+    def set_policy_state(self, policy_state):
+        state_dict = {
+            key: torch.as_tensor(value, dtype=torch.float32, device=self.device)
+            for key, value in policy_state["actor_critic_state_dict"].items()
+        }
+        self.ac.load_state_dict(state_dict)
+        if "log_std" in policy_state:
+            with torch.no_grad():
+                self.log_std.data.copy_(
+                    torch.as_tensor(policy_state["log_std"], dtype=torch.float32, device=self.device)
+                )
+
     def train_on_buffer(self):
         """
         Run PPO update once we have a full buffer (N steps).
