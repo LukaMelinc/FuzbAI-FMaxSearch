@@ -4,6 +4,9 @@ import time, datetime
 from pprint import pprint
 import threading
 import math
+import argparse
+
+import torch
 from FuzbAIAgent_Example import PlayerAgent
 from strel_PPO import PPOAgent, PassPPOAgent
 from pass_auxiliary_backbone import PassAuxiliaryBackboneAgent
@@ -13,7 +16,12 @@ import traceback
 from log_utils import setup_logging
 
 class FuzbAISim:
-    def __init__(self, episode_end_ball_x_threshold_mm: float = 400.0, kick_observed_rod_id: int = 4):
+    def __init__(
+        self,
+        episode_end_ball_x_threshold_mm: float = 400.0,
+        kick_observed_rod_id: int = 4,
+        render_gui: bool = True,
+    ):
         print(" ______         _             _____ ")
         print("|  ____|       | |      /\   |_   _|")
         print("| |__ _   _ ___| |__   /  \    | |  ")
@@ -25,6 +33,7 @@ class FuzbAISim:
 
         self.ballPos = None
         self.ballVel = None
+        self.render_gui = bool(render_gui)
 
         self.scoreDisp = None # Text used for score display
         self.roundDisp = None # Text used for round count display
@@ -115,34 +124,55 @@ class FuzbAISim:
                 passer_rod_id=4,
                 receiver_rod_id=6,
                 opponent_rod_id=5,
-                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#23B.pth",
+                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_ppo_steps_2780001.pth",
                 load_model=True,
-                inference=False,
-                training_enabeled=True,
-                action_std_override=(0.10, 0.10, 0.15, 0.15, 0.10, 0.10, 0.15, 0.15)
+                inference=True,
+                training_enabeled=False,
             )
         else:
             self.p1 = PPOAgent(
                 model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#18.pth",
                 load_model=True,
-                inference=False,
-                training_enabeled=True,
+                inference=True,
+                training_enabeled=False,
                 #action_std_override=(0.35, 0.35, 0.25, 0.30),
             )
         self.p2 = PlayerAgent()
 
+        #print("log_std:", self.p1.log_std.detach().cpu().numpy())
+        #print("std:", torch.exp(self.p1.log_std.detach()).cpu().numpy())
+
         for name, _ in self.p1.ac.named_parameters():
             print(f"Parameter: {name}")
 
-        self.p1.freeze_layers(self.p1.ac, {
-            # Stage 2 receiver training: keep the trained passer path fixed,
-            # and train only the receiver path plus the critic.
-            "receiver_encoder",
-            "receiver_translation_head",
-            "receiver_rotation_head",
-            "critic",
-        })
-        self.p1.rebuild_optimizer()
+        if self.agent1_mode == "pass_ppo" and self.p1.training_enabled:
+            modules_to_reinitialize = [
+                self.p1.ac.critic,
+                self.p1.ac.receiver_encoder,
+                self.p1.ac.receiver_translation_head,
+                self.p1.ac.receiver_rotation_head,
+            ]
+
+            for root_module in modules_to_reinitialize:
+                for module in root_module.modules():
+                    if hasattr(module, "reset_parameters"):
+                        module.reset_parameters()
+
+            # Stage 2 learns only the receiver action dimensions:
+            # [receiver_rotation_target, receiver_rotation_velocity,
+            #  receiver_translation_target, receiver_translation_velocity].
+            self.p1.learning_action_slice = slice(4, 8)
+            #self.p1.log_std.data[4:8].fill_(math.log(0.30))
+
+            self.p1.freeze_layers(self.p1.ac, {
+                # Stage 2 receiver training: keep the trained passer path fixed,
+                # and train only the receiver path plus the critic.
+                "receiver_encoder",
+                "receiver_translation_head",
+                "receiver_rotation_head",
+                "critic",
+            })
+            self.p1.rebuild_optimizer()
 
         # Camera delay settings
         #self.simulatedDelay = 0.030
@@ -405,6 +435,9 @@ class FuzbAISim:
         self.showCurrentStep()
 
     def showScore(self):
+        if not self.render_gui:
+            return
+
         if self.scoreDisp is not None:
             p.removeUserDebugItem(self.scoreDisp)
 
@@ -414,6 +447,9 @@ class FuzbAISim:
                                             parentObjectUniqueId=self.mizaId)
     
     def showRound(self):    
+        if not self.render_gui:
+            return
+
         if self.roundDisp is not None:
             p.removeUserDebugItem(self.roundDisp)
 
@@ -423,6 +459,9 @@ class FuzbAISim:
                                             parentObjectUniqueId=self.mizaId)
 
     def showPlayerStatus(self):
+        if not self.render_gui:
+            return
+
         if self.playerStatusDisp1 is not None:
             p.removeUserDebugItem(self.playerStatusDisp1)
 
@@ -440,6 +479,9 @@ class FuzbAISim:
                                             parentObjectUniqueId=self.mizaId)
 
     def showCurrentStep(self):
+        if not self.render_gui:
+            return
+
         replace_id = self.stepDisp if self.stepDisp is not None else -1
         self.stepDisp = p.addUserDebugText(
             f"Step {self.current_step}/{self.max_num_steps}",
@@ -555,19 +597,21 @@ class FuzbAISim:
 
     def loadSimulator(self, printJointInfo = False):
         print("Loading simulator...")
-        physicsClient = p.connect(p.GUI)    # graphical version
-        #physicsClient = p.connect(p.DIRECT) # non-graphical version
+        connection_mode = p.GUI if self.render_gui else p.DIRECT
+        physicsClient = p.connect(connection_mode)
 
-        #p.configureDebugVisualizer(p.COV_ENABLE_WIREFRAME,0)
-        #p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS,1)
-        p.configureDebugVisualizer(p.COV_ENABLE_GUI,0)
-        #p.configureDebugVisualizer(p.COV_ENABLE_RENDERING,1)
-        #p.configureDebugVisualizer(p.COV_ENABLE_KEYBOARD_SHORTCUTS,1)
-        #p.configureDebugVisualizer(p.COV_ENABLE_MOUSE_PICKING,1)
+        if self.render_gui:
+            #p.configureDebugVisualizer(p.COV_ENABLE_WIREFRAME,0)
+            #p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS,1)
+            p.configureDebugVisualizer(p.COV_ENABLE_GUI,0)
+            #p.configureDebugVisualizer(p.COV_ENABLE_RENDERING,1)
+            #p.configureDebugVisualizer(p.COV_ENABLE_KEYBOARD_SHORTCUTS,1)
+            #p.configureDebugVisualizer(p.COV_ENABLE_MOUSE_PICKING,1)
         #p.setPhysicsEngineParameter(enableFileCaching=0)
 
         p.setAdditionalSearchPath(pybullet_data.getDataPath()) #used by loadURDF
-        p.resetDebugVisualizerCamera(cameraDistance=2, cameraYaw=0,cameraPitch=-80, cameraTargetPosition=[0.72,0.375,0])
+        if self.render_gui:
+            p.resetDebugVisualizerCamera(cameraDistance=2, cameraYaw=0,cameraPitch=-80, cameraTargetPosition=[0.72,0.375,0])
 
         p.setGravity(0,0,-9.8)
 
@@ -633,7 +677,8 @@ class FuzbAISim:
         for bp in self.bluePlayers:
             p.changeVisualShape(self.mizaId, bp, rgbaColor=[0,0,1,1])
 
-        p.resetDebugVisualizerCamera(cameraDistance=1, cameraYaw=0,cameraPitch=-80, cameraTargetPosition=[0.72,0.375,0])
+        if self.render_gui:
+            p.resetDebugVisualizerCamera(cameraDistance=1, cameraYaw=0,cameraPitch=-80, cameraTargetPosition=[0.72,0.375,0])
 
         # Use explicit stepping instead of real-time simulation. This makes contact
         # events easier to catch because _update_kick_latch() runs immediately
@@ -826,7 +871,7 @@ class FuzbAISim:
 
 
                 # Checks, if the goal was scored to end the iteration
-                keys = p.getKeyboardEvents()
+                keys = p.getKeyboardEvents() if self.render_gui else {}
                 if self.t - prev_key_t > 0.1:
                     for k, v in keys.items():        
                         if (k == 65309 and (v & p.KEY_WAS_TRIGGERED)): # 65309 == enter
@@ -873,9 +918,17 @@ class FuzbAISim:
         self.isRunning = False
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run PyBullet in DIRECT mode without opening the GUI.",
+    )
+    args = parser.parse_args()
+
     print("Working with up-to-date code")
     setup_logging()
-    sim = FuzbAISim()
+    sim = FuzbAISim(render_gui=not args.headless)
     sim.run()
 
     try:

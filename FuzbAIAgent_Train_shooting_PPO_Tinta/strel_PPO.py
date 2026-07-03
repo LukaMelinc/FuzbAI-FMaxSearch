@@ -247,6 +247,18 @@ class PPOAgent:
     def policy_log_std(self, mean):
         return torch.clamp(self.log_std, min=-5.0, max=2.0).unsqueeze(0).expand_as(mean)
 
+    def action_learning_slice(self):
+        return getattr(self, "learning_action_slice", slice(None))
+
+    def action_log_prob(self, pre_tanh_action, action, mean, log_std):
+        action_slice = self.action_learning_slice()
+        return squashed_gaussian_likelihood(
+            pre_tanh_action[..., action_slice],
+            action[..., action_slice],
+            mean[..., action_slice],
+            log_std[..., action_slice],
+        )
+
     def save_model(self, path=None):
         if path is None:
             save_dir = self.model_save_path
@@ -316,7 +328,8 @@ class PPOAgent:
             action_t = torch.tanh(pre_tanh_action)
 
             # Computing logp of the action executed
-            logp = squashed_gaussian_likelihood(pre_tanh_action, action_t, mean, log_std)
+            #logp = squashed_gaussian_likelihood(pre_tanh_action, action_t, mean, log_std)
+            logp = self.action_log_prob(pre_tanh_action, action_t, mean, log_std)
 
         # Squeeze out the batch dimension
         action = action_t.detach().cpu().numpy()[0]
@@ -386,7 +399,8 @@ class PPOAgent:
             # Compute log probability for the new actions
             safe_act = torch.clamp(act, -1.0 + 1e-6, 1.0 - 1e-6)
             pre_tanh_act = atanh(safe_act)
-            logp_pi = squashed_gaussian_likelihood(pre_tanh_act, safe_act, mean, log_std)
+            #logp_pi = squashed_gaussian_likelihood(pre_tanh_act, safe_act, mean, log_std)
+            logp_pi = self.action_log_prob(pre_tanh_act, safe_act, mean, log_std)
 
             # Ratio for surrogate loss
             ratio = torch.exp(logp_pi - logp_old)
@@ -427,7 +441,10 @@ class PPOAgent:
 
             # Gaussian entropy (pre-tanh) as a proxy for exploration
             # H(N(mu, sigma)) = 0.5 * sum_d [1 + log(2*pi) + 2*log_std]
-            entropy = (0.5 * (1.0 + np.log(2.0 * np.pi)) + log_std).sum(dim=1).mean().item()
+            #entropy = (0.5 * (1.0 + np.log(2.0 * np.pi)) + log_std).sum(dim=1).mean().item()
+            action_slice = self.action_learning_slice()
+            entropy_log_std = log_std[..., action_slice]
+            entropy = (0.5 * (1.0 + np.log(2.0 * np.pi)) + entropy_log_std).sum(dim=1).mean().item()
 
             # Ratio stats
             ratio_mean = ratio.mean().item()
@@ -825,7 +842,6 @@ class PPOAgent:
             raise ValueError(f"Rod {self.controlled_rod_id} not found in geometry")
 
         return closest_player_alignment_reward(
-            ball_x=CD0["ball_x"],
             ball_y=CD0["ball_y"],
             rod_pos_calib=rod_pos_calib,
             rod_info=controlled_rod_info,
@@ -1231,7 +1247,7 @@ class PassPPOAgent(PPOAgent):
             ball_y=ball_y,
             rod_pos_calib=float(receiver["pos_calib"]),
             rod_info=receiver["info"],
-            reward_scale=1.0,
+            reward_scale=1.0
         )
 
         allignment_quality_passer = closest_player_alignment_reward(
@@ -1246,7 +1262,7 @@ class PassPPOAgent(PPOAgent):
             target_rod_angle=0.0
         )
 
-        print(f"Rod angle reward: {rod_angle_reward:.3f}, alignment receiver: {alignment_quality_receiver:.3f}, alignment passer: {allignment_quality_passer:.3f}")
+        #print(f"alignment receiver: {alignment_quality_receiver:.3f}")
 
         # The rod's effective receiving area is close to its fixed x position.
         x_error_mm = abs(ball_x - receiver_x)
@@ -1263,8 +1279,6 @@ class PassPPOAgent(PPOAgent):
             vx_reduction = max(0.0, abs(prev_vx) - abs_vx)
             vy_reduction = max(0.0, abs(prev_vy) - abs_vy)
 
- 
- 
         # A low-speed reward is continuous rather than a one-off event.  That
         # makes "keep control" valuable until the normal episode timeout.
         controlled_speed_quality = math.exp(-((speed / 0.12) ** 2))
@@ -1273,7 +1287,7 @@ class PassPPOAgent(PPOAgent):
         
 
         reward_breakdown = {
-            "rod_angle_reward": rod_angle_reward * 1.4,
+            #"rod_angle_reward": rod_angle_reward * 0.25,
             #"rod_alignment_reward_passer": allignment_quality_passer,
             "rod_alignment_reward_receiver": alignment_quality_receiver,
             #"time_penalty": -0.002,
@@ -1405,6 +1419,25 @@ class PassPPOAgent(PPOAgent):
             self.episode_steps += 1
 
         action, value, logp = self.compute_action(obs, deterministic=self.inference)
+
+        #if self.total_steps % 250 == 0:
+        #    with torch.no_grad():
+        #        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+        #        mean, _ = self.ac(obs_t)
+        #        mean_action = torch.tanh(mean).detach().cpu().numpy()[0]
+        #
+        #    print(
+        #        "[receiver debug]",
+        #        "ball_y=", round(bxy[1], 2),
+        #        "pos=", round(receiver["pos_calib"], 3),
+        #        "target=", round(receiver["target_pos"], 3),
+        #        "error=", round(receiver["target_error"], 3),
+        #        "mean_action[4:8]=", np.round(mean_action[4:8], 3),
+        #        "sampled_action[4:8]=", np.round(action[4:8], 3),
+        #        "mean_trans=", round((mean_action[6] + 1.0) / 2.0, 3),
+        #    )
+
+
         if not np.all(np.isfinite(action)):
             print("[PassPPO] Nan or Inf detected in action:", action)
             action = np.zeros_like(action)
