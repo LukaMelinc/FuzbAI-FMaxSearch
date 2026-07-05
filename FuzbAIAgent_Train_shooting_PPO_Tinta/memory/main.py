@@ -21,6 +21,8 @@ class PPOBuffer:
 
     def store(self, obs, act, rew, val, logp):
         """Store one step of interaction."""
+
+        #print(f"current step: {self.ptr}, max size: {self.max_size}")
         if self.ptr >= self.max_size:
             # Signal that buffer is full - training should happen
             print(f"[PPOBuffer] Buffer full at {self.ptr} steps")

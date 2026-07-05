@@ -11,7 +11,7 @@ import csv
 from datetime import datetime
 from pprint import pprint
 
-from actor_critic.main import ActorCriticNet, ThreeRodActorCriticNet
+from actor_critic.main import ActorCriticNet, TwoRodActorCriticNet, ThreeRodActorCriticNet
 from export.main import Export
 from memory.main import PPOBuffer
 from reward.single_bar_shoting import (
@@ -212,37 +212,6 @@ class PPOAgent:
 
         if self.should_load_model:
             self.load_model()
-            #self.apply_action_std_override()
-        
-
-    def apply_action_std_override(self):
-        """Set per-action exploration for backbone fine-tuning.
-
-        Action order is:
-        [rotation target, rotation velocity, lateral target, lateral velocity].
-        """
-        if self.action_std_override is None:
-            return
-
-        if len(self.action_std_override) != self.act_dim:
-            raise ValueError(
-                f"Expected {self.act_dim} std values, got {len(self.action_std_override)}"
-            )
-
-        std = torch.as_tensor(
-            self.action_std_override,
-            dtype=torch.float32,
-            device=self.device,
-        )
-        std = torch.clamp(std, min=1e-4)
-        with torch.no_grad():
-            self.log_std.data.copy_(torch.log(std))
-
-        print(
-            "[PPOAgent] Action exploration std set to "
-            f"rot_target={std[0].item():.3f}, rot_velocity={std[1].item():.3f}, "
-            f"trans_target={std[2].item():.3f}, trans_velocity={std[3].item():.3f}"
-        )
 
     def policy_log_std(self, mean):
         return torch.clamp(self.log_std, min=-5.0, max=2.0).unsqueeze(0).expand_as(mean)
@@ -954,6 +923,337 @@ class PPOAgent:
             print(f"Episode {self.episode_count}, Avg Reward (last 100): {avg_reward:.2f}")
             self.save_model()
 
+
+class TwoRodPPOAgent(PPOAgent):
+    """
+    PPO agent for one controlled rod with one observed opponent rod.
+
+    Observation layout, obs_dim=16:
+      ball(4) + controlled_rod(5) + observed_opponent_rod(5)
+      + ball_kicked(1) + opponent_active(1)
+
+    Action layout, act_dim=4:
+      [
+        controlled_rotation_target,
+        controlled_rotation_velocity,
+        controlled_translation_target,
+        controlled_translation_velocity,
+      ]
+    """
+
+    def __init__(
+        self,
+        obs_dim=16,
+        act_dim=4,
+        hidden_size=512,
+        steps_per_env=512,
+        gamma=0.99,
+        lam=0.95,
+        clip_ratio=0.2,
+        lr=1e-4,
+        train_iters=4,
+        target_kl=0.01,
+        save_model_every=500,
+        model_save_path="./trained_models/two_rod_defend_shoot.pth",
+        training_log_export_every=10,
+        l2_lambda=5e-4,
+        controlled_rod_id=6,
+        observed_rod_id=5,
+        training_task="defending",
+        opponent_active=True,
+        target_rod_angle=0.085,
+        training_enabeled=True,
+        load_model=False,
+        inference=False,
+        action_std_override=(0.4, 0.4, 0.25, 0.25),
+    ):
+        super().__init__(
+            obs_dim=obs_dim,
+            act_dim=act_dim,
+            hidden_size=hidden_size,
+            steps_per_env=steps_per_env,
+            gamma=gamma,
+            lam=lam,
+            clip_ratio=clip_ratio,
+            lr=lr,
+            train_iters=train_iters,
+            target_kl=target_kl,
+            save_model_every=save_model_every,
+            model_save_path=model_save_path,
+            training_log_export_every=training_log_export_every,
+            l2_lambda=l2_lambda,
+            controlled_rod_id=controlled_rod_id,
+            training_enabeled=training_enabeled,
+            load_model=False,
+            inference=inference,
+            action_std_override=action_std_override,
+        )
+
+        self.observed_rod_id = int(observed_rod_id)
+        self.training_task = str(training_task).lower()
+        self.opponent_active = bool(opponent_active)
+        self.target_rod_angle = float(target_rod_angle)
+        self.model_name = f"two_rod_{self.training_task}"
+        self.rods_by_id = {int(rod["id"]): rod for rod in self.geometry["rods"]}
+        self.field_x = float(self.geometry["field"]["dimension_x"])
+        self.field_y = float(self.geometry["field"]["dimension_y"])
+
+        self.ac = TwoRodActorCriticNet(obs_dim=self.obs_dim, hidden_size=hidden_size)
+        self.ac.to(self.device)
+        self.optimizer = optim.Adam(list(self.ac.parameters()) + [self.log_std], lr=lr)
+
+        if load_model:
+            self.load_model()
+        #else:
+        #    self.apply_action_std_override()
+
+    @staticmethod
+    def _as_float(value):
+        if isinstance(value, list):
+            value = value[0]
+        return float(value)
+
+    def _camera_data(self, camera):
+        return camera["camData"][0] if camera["camData"][0] is not None else camera["camData"][1]
+
+    def _rod_state(self, cd, rod_id):
+        rod_idx = int(rod_id) - 1
+        rod_info = self.rods_by_id[int(rod_id)]
+        rod_pos_calib = self._as_float(cd["rod_position_calib"][rod_idx])
+        rod_angle = self._as_float(cd["rod_angle"][rod_idx])
+        rod_angle_normalized = float(np.clip(rod_angle / 32.0, -1.0, 1.0))
+        _, target_rod_pos, unavoidable_dist = player_alignment_target(
+            ball_y=cd["ball_y"],
+            rod_info=rod_info,
+        )
+        target_error = float(target_rod_pos) - rod_pos_calib
+        return {
+            "info": rod_info,
+            "pos_calib": rod_pos_calib,
+            "angle": rod_angle,
+            "angle_normalized": rod_angle_normalized,
+            "target_pos": float(target_rod_pos),
+            "target_error": target_error,
+            "unavoidable_dist": float(unavoidable_dist),
+        }
+
+    def _rod_features(self, rod_state):
+        rod_info = rod_state["info"]
+        return [
+            (float(rod_info["position"]) - self.field_x / 2.0) / (self.field_x / 2.0),
+            rod_state["pos_calib"],
+            rod_state["angle_normalized"],
+            rod_state["target_error"],
+            rod_state["unavoidable_dist"] / max(float(rod_info["travel"]), 1e-6),
+        ]
+
+    def extract_observation(self, camera):
+        cd = self._camera_data(camera)
+        controlled = self._rod_state(cd, self.controlled_rod_id)
+        observed = self._rod_state(cd, self.observed_rod_id)
+
+        ball_x = float(cd["ball_x"])
+        ball_y = float(cd["ball_y"])
+        ball_vx = float(cd["ball_vx"])
+        ball_vy = float(cd["ball_vy"])
+        opponent_active = float(camera.get("opponent_active", self.opponent_active))
+
+        obs = np.array(
+            [
+                (ball_x - self.field_x / 2.0) / (self.field_x / 2.0),
+                (ball_y - self.field_y / 2.0) / (self.field_y / 2.0),
+                np.clip(ball_vx / 5.0, -2.0, 2.0),
+                np.clip(ball_vy / 5.0, -2.0, 2.0),
+                *self._rod_features(controlled),
+                *self._rod_features(observed),
+                float(camera.get("ball_kicked", False)),
+                opponent_active,
+            ],
+            dtype=np.float32,
+        )
+
+        assert len(obs) == self.obs_dim, f"Expected obs_dim={self.obs_dim}, got {len(obs)}"
+        return obs, (ball_x, ball_y), (ball_vx, ball_vy), controlled, observed
+
+    def calculate_reward(
+        self,
+        bxy,
+        vxy,
+        controlled,
+        *,
+        goal_scored,
+        ball_kicked,
+        terminated_by_x_threshold,
+        end_episode,
+    ):
+        alignment_reward = closest_player_alignment_reward(
+            ball_y=bxy[1],
+            rod_pos_calib=float(controlled["pos_calib"]),
+            rod_info=controlled["info"],
+        )
+        rod_angle_reward = calculate_rod_angle_reward(
+            rod_angle=float(controlled["angle"]),
+            target_rod_angle=self.target_rod_angle,
+        )
+
+        if self.training_task == "shooting":
+            shot_attempted = self.current_episode_ball_kicks > 0 or ball_kicked
+            missed_kick = bool((end_episode or terminated_by_x_threshold) and shot_attempted and not goal_scored)
+            return kicking_reward(
+                goal_scored=goal_scored,
+                ball_kicked=ball_kicked,
+                ball_x=bxy[0],
+                ball_y=bxy[1],
+                forward_ball_vx=vxy[0],
+                ball_vy=vxy[1],
+                missed_kick=missed_kick,
+                episode_timeout=bool(end_episode and not (ball_kicked or terminated_by_x_threshold)),
+                rod_alignment_reward=alignment_reward,
+                rod_angle=float(controlled["angle"]),
+                target_rod_angle=self.target_rod_angle,
+            )
+
+        controlled_rod_x = float(controlled["info"]["position"])
+        prev_ball_vx = self.prev_ball_vxy[0] if self.prev_ball_vxy is not None else None
+        prev_ball_vy = self.prev_ball_vxy[1] if self.prev_ball_vxy is not None else None
+        ball_behind_rod = float(bxy[0]) < (controlled_rod_x - 10.0)
+        return maintaining_ball(
+            ball_x=bxy[0],
+            ball_vx=vxy[0],
+            ball_vz=vxy[1],
+            rod_x_pos=controlled_rod_x,
+            threshold_crossed=terminated_by_x_threshold,
+            ball_behind_rod=ball_behind_rod,
+            prev_ball_vx=prev_ball_vx,
+            prev_ball_vz=prev_ball_vy,
+            episode_timeout=bool(end_episode and not terminated_by_x_threshold),
+            rod_angle_reward=rod_angle_reward,
+            player_alignment_reward=alignment_reward,
+        )
+
+    def scale_to_motor_commands(self, action):
+        red_rod_to_drive_id = {
+            1: 1,
+            2: 2,
+            4: 3,
+            6: 4,
+        }
+        if int(self.controlled_rod_id) not in red_rod_to_drive_id:
+            raise ValueError(f"Rod {self.controlled_rod_id} is not mapped as a controllable red rod.")
+
+        return [
+            {
+                "driveID": red_rod_to_drive_id[int(self.controlled_rod_id)],
+                "rotationTargetPosition": 0.5 * float(action[0]),
+                "rotationVelocity": 0.5 * (float(action[1]) + 1.0) / 4.0,
+                "translationTargetPosition": (float(action[2]) + 1.0) / 2.0,
+                "translationVelocity": (float(action[3]) + 1.0) / 2.0,
+            }
+        ]
+
+    def process_data(self, camera):
+        self.total_steps += 1
+        if self.total_steps % 250 == 0:
+            print(
+                f"[TwoRodPPO] Processing step {self.total_steps} at episode "
+                f"{self.episode_count}, step in episode: {self.episode_steps}"
+            )
+
+        obs, bxy, vxy, controlled, _ = self.extract_observation(camera)
+        self.latest_env_metrics = {
+            "curriculum_round": int(camera.get("curriculum_round", -1)),
+            "curriculum_y_min": float(camera.get("curriculum_y_min", float("nan"))),
+            "curriculum_y_max": float(camera.get("curriculum_y_max", float("nan"))),
+            "opponent_active": float(camera.get("opponent_active", self.opponent_active)),
+        }
+
+        ball_kicked = bool(camera.get("ball_kicked", False))
+        terminated_by_kick = bool(camera.get("terminated_by_kick", False))
+        terminated_by_x_threshold = bool(camera.get("terminated_by_x_threshold", False))
+        end_episode = bool(camera.get("end_episode", False))
+
+        score = camera.get("score", None)
+        goal_scored = False
+        opponent_goal_scored = False
+        if isinstance(score, (list, tuple)) and len(score) >= 2:
+            if self.prev_score is not None:
+                goal_scored = score[0] > self.prev_score[0]
+                opponent_goal_scored = score[1] > self.prev_score[1]
+            self.prev_score = list(score)
+
+        if not self.training_enabled:
+            action, _, _ = self.compute_action(obs, deterministic=self.inference)
+            return self.scale_to_motor_commands(action)
+
+        episode_finished_this_sample = False
+        if self.last_obs is not None:
+            reward, reward_breakdown = self.calculate_reward(
+                bxy,
+                vxy,
+                controlled,
+                goal_scored=goal_scored,
+                ball_kicked=ball_kicked,
+                terminated_by_x_threshold=terminated_by_x_threshold,
+                end_episode=end_episode,
+            )
+
+            for key, value in reward_breakdown.items():
+                self.update_reward_breakdown_sums[key] = (
+                    self.update_reward_breakdown_sums.get(key, 0.0) + float(value)
+                )
+            if ball_kicked:
+                self.update_samples_with_kick += 1
+                self.current_episode_ball_kicks += 1
+            if goal_scored:
+                self.current_episode_goals += 1
+            if opponent_goal_scored:
+                self.current_episode_opponent_goals += 1
+            if terminated_by_x_threshold:
+                self.current_episode_x_threshold_terminations += 1
+
+            self.current_episode_step_rewards.append(reward)
+            stored = self.buf.store(self.last_obs, self.last_action, reward, self.last_val, self.last_logp)
+            if not stored:
+                _, final_value, _ = self.compute_action(obs)
+                self.buf.finish_path(last_val=final_value)
+                print("[TwoRodPPO] Buffer full, training now...")
+                self.train_on_buffer()
+                self.episode_count += 1
+                self.episode_steps = 0
+                self.ep_reward = 0.0
+                self.last_obs = None
+                self.last_action = None
+                self.last_val = None
+                self.last_logp = None
+                episode_finished_this_sample = True
+            else:
+                self.ep_reward += reward
+
+            if (not episode_finished_this_sample) and (terminated_by_kick or terminated_by_x_threshold or end_episode):
+                self.finish_episode(last_value=0)
+                self.episode_steps = 0
+                episode_finished_this_sample = True
+        else:
+            print("[TwoRodPPO] First step, no reward yet.")
+
+        if not episode_finished_this_sample:
+            self.episode_steps += 1
+
+        action, value, logp = self.compute_action(obs, deterministic=self.inference)
+        if not np.all(np.isfinite(action)):
+            print("[TwoRodPPO] Nan or Inf detected in action:", action)
+            action = np.zeros_like(action)
+
+        self.prev_ball_vxy = vxy
+        self.last_obs = obs
+        self.last_action = action
+        self.last_val = value
+        self.last_logp = logp
+        self.current_step += 1
+
+        return self.scale_to_motor_commands(action)
+
+
 class PassPPOAgent(PPOAgent):
     """
     PPO agent for coordinated passing with two controlled red rods and one
@@ -989,7 +1289,7 @@ class PassPPOAgent(PPOAgent):
         lr=1e-4,
         train_iters=4,
         target_kl=0.01,
-        save_model_every=500,
+        save_model_every=1000,
         model_save_path="./trained_models/pass_ppo_no_std_override.pth",
         backbone_model_path="./trained_models/pass_backbone_aux.pth",
         load_model=False,
@@ -1085,7 +1385,6 @@ class PassPPOAgent(PPOAgent):
         elif load_backbone:
             self.load_backbone_model()
 
-        #self.apply_action_std_override()
 
     @staticmethod
     def freeze_layers(model, trainable_prefixes):
@@ -1098,32 +1397,6 @@ class PassPPOAgent(PPOAgent):
         trainable_params = [p for p in self.ac.parameters() if p.requires_grad]
         trainable_params.append(self.log_std)
         self.optimizer = optim.Adam(trainable_params, lr=lr)
-
-    def apply_action_std_override(self):
-        if self.action_std_override is None:
-            return
-
-        if len(self.action_std_override) != self.act_dim:
-            raise ValueError(
-                f"Expected {self.act_dim} std values, got {len(self.action_std_override)}"
-            )
-
-        std = torch.as_tensor(
-            self.action_std_override,
-            dtype=torch.float32,
-            device=self.device,
-        )
-        std = torch.clamp(std, min=1e-4)
-        with torch.no_grad():
-            self.log_std.data.copy_(torch.log(std))
-
-        print(
-            "[PassPPO] Action exploration std set to "
-            f"passer_rot=({std[0].item():.3f}, {std[1].item():.3f}), "
-            f"passer_trans=({std[2].item():.3f}, {std[3].item():.3f}), "
-            f"receiver_rot=({std[4].item():.3f}, {std[5].item():.3f}), "
-            f"receiver_trans=({std[6].item():.3f}, {std[7].item():.3f})"
-        )
 
     @staticmethod
     def _as_float(value):
@@ -1181,8 +1454,6 @@ class PassPPOAgent(PPOAgent):
         ball_y = float(cd["ball_y"])
         ball_vx = float(cd["ball_vx"])
         ball_vy = float(cd["ball_vy"])
-
-        #print(f"Ball x: {ball_x:.1f}, y: {ball_y:.1f}, vx: {ball_vx:.2f}, vy: {ball_vy:.2f}")
 
         def rod_features(state):
             rod_info = state["info"]
@@ -1262,7 +1533,6 @@ class PassPPOAgent(PPOAgent):
             target_rod_angle=0.0
         )
 
-        #print(f"alignment receiver: {alignment_quality_receiver:.3f}")
 
         # The rod's effective receiving area is close to its fixed x position.
         x_error_mm = abs(ball_x - receiver_x)
@@ -1284,34 +1554,37 @@ class PassPPOAgent(PPOAgent):
         controlled_speed_quality = math.exp(-((speed / 0.12) ** 2))
         stopped = speed <= 0.08
 
+        vicinity_reward = 0.05 * zone_quality
+        speed_reduction_reward = 0.0
+        if in_receive_zone:
+            speed_reduction_reward = 0.9 * (vx_reduction + 0.7 * vy_reduction) * zone_quality
+
+        controlled_ball_reward = 0.0
+        if in_receive_zone:
+            controlled_ball_reward = 0.75 * controlled_speed_quality * zone_quality
+
+        stopped_ball_reward = 0.0
+        if in_receive_zone and stopped:
+            stopped_ball_reward = 8.0 * zone_quality
+
+        threshold_failure_penalty = -1.5 if threshold_failure else 0.0
+        timeout_penalty = -0.2 if episode_timeout else 0.0
+
         
 
         reward_breakdown = {
-            #"rod_angle_reward": rod_angle_reward * 0.25,
+            "rod_angle_reward": rod_angle_reward * 0.25,
             #"rod_alignment_reward_passer": allignment_quality_passer,
             "rod_alignment_reward_receiver": alignment_quality_receiver,
-            #"time_penalty": -0.002,
-            #"receiver_alignment": 0.06 * alignment_quality,
-            #"receive_zone": 0.02 * zone_quality,
-            #"vx_reduction": (1.6 * vx_reduction * zone_quality if in_receive_zone else 0.0),
-            #"vy_reduction": (1.0 * vy_reduction * zone_quality if in_receive_zone else 0.0),
-            #"controlled_ball": (0.20 * controlled_speed_quality * zone_quality if in_receive_zone else 0.0),
-            #"stopped_ball": 0.35 * zone_quality if in_receive_zone and stopped else 0.0,
-            #"threshold_failure": -2.0 if threshold_failure else 0.0,
-            #"episode_timeout": -0.50 if episode_timeout else 0.0,
+            "vicinity_reward": vicinity_reward,
+            "speed_reduction_reward": speed_reduction_reward,
+            "controlled_ball_reward": controlled_ball_reward,
+            "stopped_ball_reward": stopped_ball_reward,
+            "threshold_failure": threshold_failure_penalty,
+            "episode_timeout": timeout_penalty,
         }
 
 
-        #kick_reward, kick_breakdown = controllable_kick_reward(
-        #    ball_kicked=ball_kicked,
-        #    ball_vx=ball_vx,
-        ##    ball_vy=ball_vy,
-        #    rod_alignment_reward=allignment_quality_passer,
-        #    episode_timeout=episode_timeout
-
-        #)
-
-        #return kick_reward, kick_breakdown
         return float(sum(reward_breakdown.values())), reward_breakdown
 
     def scale_to_motor_commands(self, action):

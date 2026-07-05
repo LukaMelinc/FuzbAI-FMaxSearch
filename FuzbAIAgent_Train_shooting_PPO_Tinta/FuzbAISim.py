@@ -8,7 +8,7 @@ import argparse
 
 import torch
 from FuzbAIAgent_Example import PlayerAgent
-from strel_PPO import PPOAgent, PassPPOAgent
+from strel_PPO import PPOAgent, TwoRodPPOAgent, PassPPOAgent
 from pass_auxiliary_backbone import PassAuxiliaryBackboneAgent
 import random
 import traceback
@@ -73,7 +73,7 @@ class FuzbAISim:
         self._end_episode_armed = False
 
         # Threshold of num of steps to end the iteration
-        self.max_num_steps = 40
+        self.max_num_steps = 25#40
         self.current_step = 0
 
         # Control loop period (seconds). One "step" for the agent completes when this time has elapsed.
@@ -104,9 +104,11 @@ class FuzbAISim:
 
         # Agent modes:
         # - "single_rod_ppo": old one-rod PPO training/inference
+        # - "two_rod_ppo": one controlled rod, one observed opponent rod
         # - "pass_auxiliary_backbone": phase-0 supervised backbone training/inference
         # - "pass_ppo": PPO passing training initialized from the auxiliary backbone
         #self.agent1_mode = "single_rod_ppo"
+        #self.agent1_mode = "two_rod_ppo"
         #self.agent1_mode = "pass_auxiliary_backbone"
         self.agent1_mode = "pass_ppo"
         if self.agent1_mode == "pass_auxiliary_backbone":
@@ -124,10 +126,21 @@ class FuzbAISim:
                 passer_rod_id=4,
                 receiver_rod_id=6,
                 opponent_rod_id=5,
-                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_ppo_steps_2780001.pth",
+                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#23D.pth",
                 load_model=True,
-                inference=True,
-                training_enabeled=False,
+                inference=False,
+                training_enabeled=True,
+            )
+        elif self.agent1_mode == "two_rod_ppo":
+            self.p1 = TwoRodPPOAgent(
+                controlled_rod_id=6,
+                observed_rod_id=5,
+                training_task="defending",
+                opponent_active=True,
+                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/two_rod_defend_shoot.pth",
+                load_model=False,
+                inference=False,
+                training_enabeled=True,
             )
         else:
             self.p1 = PPOAgent(
@@ -135,29 +148,27 @@ class FuzbAISim:
                 load_model=True,
                 inference=True,
                 training_enabeled=False,
-                #action_std_override=(0.35, 0.35, 0.25, 0.30),
             )
         self.p2 = PlayerAgent()
 
-        #print("log_std:", self.p1.log_std.detach().cpu().numpy())
-        #print("std:", torch.exp(self.p1.log_std.detach()).cpu().numpy())
 
         for name, _ in self.p1.ac.named_parameters():
             print(f"Parameter: {name}")
 
         if self.agent1_mode == "pass_ppo" and self.p1.training_enabled:
-            modules_to_reinitialize = [
+            
+            """modules_to_reinitialize = [
                 self.p1.ac.critic,
                 self.p1.ac.receiver_encoder,
                 self.p1.ac.receiver_translation_head,
                 self.p1.ac.receiver_rotation_head,
-            ]
+            ]"""
 
-            for root_module in modules_to_reinitialize:
+            """for root_module in modules_to_reinitialize:
                 for module in root_module.modules():
                     if hasattr(module, "reset_parameters"):
                         module.reset_parameters()
-
+            """
             # Stage 2 learns only the receiver action dimensions:
             # [receiver_rotation_target, receiver_rotation_velocity,
             #  receiver_translation_target, receiver_translation_velocity].
@@ -217,13 +228,11 @@ class FuzbAISim:
         # Ball-control finetuning spawn setup for rod 6.
         # PyBullet x maps to camera x as: camera_x_mm = 1000 * x - 115.
         # Rod 6 is around camera_x=830 mm, so x ~= 0.945 m.
-        self.controlled_rod_x_m = 0.945
         self.ball_spawn_areas = {
-            "behind": (0.75, 0.77), #(0.62, 0.67), #0.75, 0.77)#
+            "behind": (0.68, 0.69), #(0.62, 0.67), #0.75, 0.77)#
             #"ahead": (1.02, 1.16),
         }
-        #self.ball_spawn_speed_range = (0.3, 0.7)
-        self.ball_spawn_speed_range = (0.0, 0.0)
+        self.ball_spawn_speed_range = (0.6, 1.2)
 
     def _ball_x_mm_camera(self) -> float:
         # Must match getCameraDict mapping
@@ -512,27 +521,12 @@ class FuzbAISim:
         # Return first (the oldest) by default
         return self.delayedMemory[0][player]
 
-
-    ### --- Function for spawning ball at specified location --- ###
-
     def ResetBallToLocation(self, mark_episode_end=True):
         # Randomize the drop position within specified ranges
 
         # IMPORTANT: Tilted groudn from 0.0 - 0.9 and from 0.67 on
 
-        # y_range - the width of the field (shorter side)
-        # zone - the length of the field (logner side)
-        # --- KICKING TRAINING ---
-        
-
-        
-        # Stage 1.5 -> Stage 2 curriculum: widen the y_range gradually.
-        # If training is enabeled -> Run curriculum learniing ball spawn 
-        #y_range = self._get_curriculum_y_range()
         y_range = (0.091, 0.67)
-        #y_range = (0.3, 0.55)
-        #y_range = (0.20, 0.55)
-        #y_range = (0.30, 0.55)
         spawn_side, x_range = random.choice(list(self.ball_spawn_areas.items()))
 
         custom_x = random.uniform(*x_range)

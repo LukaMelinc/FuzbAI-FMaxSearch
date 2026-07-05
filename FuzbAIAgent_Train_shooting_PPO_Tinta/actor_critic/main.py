@@ -32,6 +32,83 @@ class ActorCriticNet(nn.Module):
         value = self.critic(x)
         return action_mean, value
 
+class TwoRodActorCriticNet(nn.Module):
+    """
+    Actor-Critic network for one controlled rod with one observed opponent rod.
+
+    Expected action layout:
+      [
+        controlled_rotation_target,
+        controlled_rotation_velocity,
+        controlled_translation_target,
+        controlled_translation_velocity,
+      ]
+
+    The observation layout is owned by the agent. It is intended to include
+    ball state, controlled-rod features, observed-opponent-rod features, and a
+    stage/context flag such as opponent_active.
+    """
+
+    ACTION_LAYOUT = (
+        "controlled_rotation_target",
+        "controlled_rotation_velocity",
+        "controlled_translation_target",
+        "controlled_translation_velocity",
+    )
+
+    HEAD_SLICES = {
+        "controlled_rotation": slice(0, 2),
+        "controlled_translation": slice(2, 4),
+    }
+
+    def __init__(self, obs_dim, hidden_size=512, head_hidden_size=128):
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.act_dim = 4
+
+        self.encoder = self._make_encoder(obs_dim, hidden_size)
+        self.rotation_head = self._make_action_head(hidden_size, head_hidden_size)
+        self.translation_head = self._make_action_head(hidden_size, head_hidden_size)
+        self.critic = nn.Sequential(
+            nn.Linear(obs_dim, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, 1),
+        )
+
+    @staticmethod
+    def _make_encoder(obs_dim, hidden_size):
+        return nn.Sequential(
+            nn.Linear(obs_dim, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+        )
+
+    @staticmethod
+    def _make_action_head(hidden_size, head_hidden_size):
+        return nn.Sequential(
+            nn.Linear(hidden_size, head_hidden_size),
+            nn.ReLU(),
+            nn.Linear(head_hidden_size, 2),
+        )
+
+    def forward(self, x, return_heads=False):
+        features = self.encoder(x)
+        rotation = self.rotation_head(features)
+        translation = self.translation_head(features)
+        action_mean = torch.cat([rotation, translation], dim=-1)
+        value = self.critic(x)
+
+        if return_heads:
+            heads = {
+                "controlled_rotation": rotation,
+                "controlled_translation": translation,
+            }
+            return action_mean, value, heads
+
+        return action_mean, value
 
 class ThreeRodActorCriticNet(nn.Module):
     """
