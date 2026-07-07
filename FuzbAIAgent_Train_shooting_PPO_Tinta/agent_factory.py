@@ -5,6 +5,7 @@ from typing import Any, Callable
 from FuzbAIAgent_Example import PlayerAgent
 from pass_auxiliary_backbone import PassAuxiliaryBackboneAgent
 from strel_PPO import PPOAgent, PassPPOAgent, TwoRodPPOAgent
+from self_play_manager import SelfPlayManager, SelfPlayParticipant
 
 
 _AGENT_REGISTRY = {
@@ -60,3 +61,30 @@ def create_agent(agent_spec: Any = None, **kwargs) -> Any:
 
     factory = resolve_agent_factory(agent_spec)
     return factory(**kwargs)
+
+
+def create_self_play_manager(
+    participant_1_spec: Any,
+    participant_2_spec: Any,
+    participant_1_kwargs: dict | None = None,
+    participant_2_kwargs: dict | None = None,
+    participant_1_player_id: int = 1,
+    participant_2_player_id: int = 2,
+) -> SelfPlayManager:
+    """Build a synchronized two-agent self-play manager from agent specs."""
+    participant_1_kwargs = dict(participant_1_kwargs or {})
+    participant_2_kwargs = dict(participant_2_kwargs or {})
+    participant_1_kwargs.setdefault("auto_train", False)
+    participant_2_kwargs.setdefault("auto_train", False)
+
+    participant_1 = SelfPlayParticipant(
+        name="player_1",
+        agent=create_agent(participant_1_spec, **participant_1_kwargs),
+        camera_player_id=int(participant_1_player_id),
+    )
+    participant_2 = SelfPlayParticipant(
+        name="player_2",
+        agent=create_agent(participant_2_spec, **participant_2_kwargs),
+        camera_player_id=int(participant_2_player_id),
+    )
+    return SelfPlayManager([participant_1, participant_2])

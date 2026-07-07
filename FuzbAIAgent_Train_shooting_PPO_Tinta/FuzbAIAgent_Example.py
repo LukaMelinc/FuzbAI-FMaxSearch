@@ -35,7 +35,7 @@ class PlayerAgent():
         #         * first_offset: y-axis position of the first player center
         #         * spacing: spacing between players on the rod
 
-        self.demo_state = -1 # 0
+        self.demo_state = -1 # -1, 0 or 1
         self.demo_t = 0
 
     def process_data(self, camera):
@@ -92,10 +92,10 @@ class PlayerAgent():
                 if self.demo_state == -1:
                     cmd = {
                                 "driveID": playerMapping[i],
-                                "rotationTargetPosition": -0.8,      # Normal position
+                                "rotationTargetPosition": 0.0,      # Normal position
                                 "rotationVelocity": 0.5,            # Reduced rotational speed
-                                "translationTargetPosition": 0.0,
-                                "translationVelocity": 0.0 }        # Max translational speed
+                                "translationTargetPosition": 0.5,
+                                "translationVelocity": 0.5 }        # Max translational speed
                         # Request the motion
                     commands.append(cmd)
 
@@ -160,9 +160,9 @@ class PlayerAgent():
                 if self.demo_state == -1:
                     cmd = {
                                 "driveID": playerMapping[i],
-                                "rotationTargetPosition": -0.8,      # Normal position
+                                "rotationTargetPosition": -0.0,      # Normal position
                                 "rotationVelocity": 0.5,            # Reduced rotational speed
-                                "translationTargetPosition": 0.0,
+                                "translationTargetPosition": 0.50,
                                 "translationVelocity": 0.0 }        # Max translational speed
                         # Request the motion
                     commands.append(cmd)

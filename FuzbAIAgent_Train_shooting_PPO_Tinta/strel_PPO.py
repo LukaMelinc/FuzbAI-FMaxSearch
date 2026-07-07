@@ -134,6 +134,7 @@ class PPOAgent:
                  training_enabeled=True,
                  load_model=False,
                  inference=False,
+                 auto_train=True,
                  action_std_override=(0.8, 0.8, 0.15, 0.15)):      # std override - fist two rod rotation, last two rod translation
 
         self.controlled_rod_id = controlled_rod_id
@@ -148,6 +149,8 @@ class PPOAgent:
         self.should_load_model = load_model
         self.training_enabled = training_enabeled # For training mode vs. inference mode
         self.action_std_override = action_std_override
+        self.auto_train = bool(auto_train)
+        self.pending_train = False
         if self.inference and self.training_enabled:
             print("[PPOAgent] Inference mode enabled, disabling training.")
             self.training_enabled = False
@@ -499,6 +502,7 @@ class PPOAgent:
 
         self.update_reward_breakdown_sums = {}
         self.update_samples_with_kick = 0
+        self.pending_train = False
 
     def process_data(self, camera):
 
@@ -598,25 +602,7 @@ class PPOAgent:
                 player_alignment_reward=rod_alignment_reward,
             )
 
-            # Keep the useful backbone behaviors as light shaping while the new
-            # stage learns the receiving/control objective.
-            #reward = 0.0
-            #reward_breakdown = {}
-            #reward_breakdown["rod_alignment"] = 0.35 * rod_alignment_reward
-            #reward_breakdown["rod_angle"] = 0.15 * rod_angle_reward
-            #reward = float(sum(reward_breakdown.values()))
-
-            #reward, reward_breakdown = kicking_reward(
-            #    goal_scored=goal_scored,
-            #    ball_kicked=ball_kicked,
-            #    ball_x=bxy[0],
-            #    ball_y=bxy[1],
-            #    forward_ball_vx=vxy[0],
-            #    ball_vy=vxy[1],
-            #    missed_kick=missed_kick,
-            #    episode_timeout=bool(end_episode and not (ball_kicked or terminated_by_kick or terminated_by_x_threshold)),
-            #    rod_alignment_reward=rod_alignment_reward,
-            #)
+            
             for key, value in reward_breakdown.items():
                 self.update_reward_breakdown_sums[key] = (
                     self.update_reward_breakdown_sums.get(key, 0.0) + float(value)
@@ -646,7 +632,10 @@ class PPOAgent:
                 _, final_value, _ = self.compute_action(obs)
                 self.buf.finish_path(last_val=final_value)
                 print(f"[Training] Buffer full, training now...")
-                self.train_on_buffer()
+                if self.auto_train:
+                    self.train_on_buffer()
+                else:
+                    self.pending_train = True
 
 
                 # Reset episode tracking
@@ -740,16 +729,6 @@ class PPOAgent:
         rod_pos_calib = CD0["rod_position_calib"][rod_idx]
         rod_angle = CD0["rod_angle"][rod_idx]
         
-
-        #pos_list = []
-        #for i in range(8):
-        #    pos_list.append(round(CD0["rod_position_calib"][i], 3))
-        #    pos_list.append(round(CD0["rod_angle"][i], 3))
-
-        #print(f"Rod positions and angles: {pos_list}")
-        #print(f"rod pos: {rod_pos_calib}, rod angle: {rod_angle}")
-    
-
         
         if isinstance(rod_pos_calib, list):
             rod_pos_calib = rod_pos_calib[0]
@@ -883,7 +862,10 @@ class PPOAgent:
             buffer_fill = self.buf.ptr / self.buf.max_size
             if buffer_fill >= 0.8:
                 print(f"[Training] Buffer {buffer_fill*100:.1f}% full ({self.buf.ptr}/{self.buf.max_size}), Episode {self.episode_count}")
-                self.train_on_buffer() # -> calls buf.get() which resets ptr internally
+                if self.auto_train:
+                    self.train_on_buffer() # -> calls buf.get() which resets ptr internally
+                else:
+                    self.pending_train = True
 
 
 
@@ -924,7 +906,6 @@ class PPOAgent:
             avg_reward = np.mean(self.episode_rewards[-100:]) if self.episode_rewards else 0
             print(f"Episode {self.episode_count}, Avg Reward (last 100): {avg_reward:.2f}")
             self.save_model()
-
 
 class TwoRodPPOAgent(PPOAgent):
     """
@@ -967,6 +948,7 @@ class TwoRodPPOAgent(PPOAgent):
         training_enabeled=True,
         load_model=False,
         inference=False,
+        auto_train=True,
         action_std_override=(0.4, 0.4, 0.25, 0.25),
     ):
         super().__init__(
@@ -988,6 +970,7 @@ class TwoRodPPOAgent(PPOAgent):
             training_enabeled=training_enabeled,
             load_model=False,
             inference=inference,
+            auto_train=auto_train,
             action_std_override=action_std_override,
         )
 
@@ -1223,7 +1206,10 @@ class TwoRodPPOAgent(PPOAgent):
                 _, final_value, _ = self.compute_action(obs)
                 self.buf.finish_path(last_val=final_value)
                 print("[TwoRodPPO] Buffer full, training now...")
-                self.train_on_buffer()
+                if self.auto_train:
+                    self.train_on_buffer()
+                else:
+                    self.pending_train = True
                 self.episode_count += 1
                 self.episode_steps = 0
                 self.ep_reward = 0.0
@@ -1307,6 +1293,7 @@ class PassPPOAgent(PPOAgent):
         opponent_rod_id=5,
         training_enabeled=True,
         inference=False,
+        auto_train=True,
         action_std_override=(0.3, 0.3, 0.30, 0.30, 0.3, 0.3, 0.30, 0.30),
         target_rod_angle=0.085,
     ):
@@ -1326,6 +1313,8 @@ class PassPPOAgent(PPOAgent):
         self.inference = inference
         self.training_enabled = training_enabeled
         self.action_std_override = action_std_override
+        self.auto_train = bool(auto_train)
+        self.pending_train = False
         if self.inference and self.training_enabled:
             print("[PassPPO] Inference mode enabled, disabling training.")
             self.training_enabled = False
@@ -1689,7 +1678,10 @@ class PassPPOAgent(PPOAgent):
                 _, final_value, _ = self.compute_action(obs)
                 self.buf.finish_path(last_val=final_value)
                 print("[PassPPO] Buffer full, training now...")
-                self.train_on_buffer()
+                if self.auto_train:
+                    self.train_on_buffer()
+                else:
+                    self.pending_train = True
                 self.episode_count += 1
                 self.episode_steps = 0
                 self.ep_reward = 0.0
@@ -1753,7 +1745,10 @@ class PassPPOAgent(PPOAgent):
                     f"[PassPPO] Buffer {buffer_fill*100:.1f}% full "
                     f"({self.buf.ptr}/{self.buf.max_size}), episode {self.episode_count}"
                 )
-                self.train_on_buffer()
+                if self.auto_train:
+                    self.train_on_buffer()
+                else:
+                    self.pending_train = True
 
         self.episode_count += 1
         #print(

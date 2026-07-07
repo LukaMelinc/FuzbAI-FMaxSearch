@@ -8,6 +8,7 @@ import argparse
 
 import torch
 from FuzbAIAgent_Example import PlayerAgent
+from agent_factory import create_self_play_manager
 from strel_PPO import PPOAgent, TwoRodPPOAgent, PassPPOAgent
 from pass_auxiliary_backbone import PassAuxiliaryBackboneAgent
 import random
@@ -18,9 +19,10 @@ from log_utils import setup_logging
 class FuzbAISim:
     def __init__(
         self,
-        episode_end_ball_x_threshold_mm: float = 400.0,
+        episode_end_ball_x_threshold_mm: float = 550.0,#400.0,
         kick_observed_rod_id: int = 4,
         render_gui: bool = True,
+        self_play_config: dict | None = None,
     ):
         print(" ______         _             _____ ")
         print("|  ____|       | |      /\   |_   _|")
@@ -74,7 +76,7 @@ class FuzbAISim:
         self._end_episode_armed = False
 
         # Threshold of num of steps to end the iteration
-        self.max_num_steps = 25#40
+        self.max_num_steps = 40
         self.current_step = 0
 
         # Control loop period (seconds). One "step" for the agent completes when this time has elapsed.
@@ -103,60 +105,76 @@ class FuzbAISim:
         self.travels = [190, 356, 180, 116, 116, 180, 356, 190]
         self.redIndices = [0, 1, 3, 5]
 
-        # Agent modes:
-        # - "single_rod_ppo": old one-rod PPO training/inference
-        # - "two_rod_ppo": one controlled rod, one observed opponent rod
-        # - "pass_auxiliary_backbone": phase-0 supervised backbone training/inference
-        # - "pass_ppo": PPO passing training initialized from the auxiliary backbone
-        #self.agent1_mode = "single_rod_ppo"
-        self.agent1_mode = "two_rod_ppo"
-        #self.agent1_mode = "pass_auxiliary_backbone"
-        #self.agent1_mode = "pass_ppo"
-        if self.agent1_mode == "pass_auxiliary_backbone":
-            self.p1 = PassAuxiliaryBackboneAgent(
-                passer_rod_id=4,
-                receiver_rod_id=6,
-                opponent_rod_id=5,
-                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_ppo_steps_1274559.pth",
-                load_model=True,
-                inference=True,
-                training_enabled=False,
+        self.self_play_manager = None
+        self.self_play_enabled = self_play_config is not None
+
+        if self.self_play_enabled:
+            self.self_play_manager = create_self_play_manager(
+                self_play_config["participant_1_spec"],
+                self_play_config["participant_2_spec"],
+                participant_1_kwargs=self_play_config.get("participant_1_kwargs"),
+                participant_2_kwargs=self_play_config.get("participant_2_kwargs"),
+                participant_1_player_id=self_play_config.get("participant_1_player_id", 1),
+                participant_2_player_id=self_play_config.get("participant_2_player_id", 2),
             )
-        elif self.agent1_mode == "pass_ppo":
-            self.p1 = PassPPOAgent(
-                passer_rod_id=4,
-                receiver_rod_id=6,
-                opponent_rod_id=5,
-                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_ppo_steps_505221.pth",
-                load_model=True,
-                inference=True,
-                training_enabeled=False,
-            )
-        elif self.agent1_mode == "two_rod_ppo":
-            self.p1 = TwoRodPPOAgent(
-                controlled_rod_id=6,
-                observed_rod_id=5,
-                training_task="shooting",
-                opponent_active=False,
-                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#25_1.pth",
-                load_model=True,
-                inference=True,
-                training_enabeled=False,
-            )
+            self.p1 = self.self_play_manager.participants[0].agent
+            self.p2 = self.self_play_manager.participants[1].agent
+            self.agent1_mode = "self_play"
         else:
-            self.p1 = PPOAgent(
-                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#18.pth",
-                load_model=True,
-                inference=True,
-                training_enabeled=False,
-            )
-        self.p2 = PlayerAgent()
+            # Agent modes:
+            # - "single_rod_ppo": old one-rod PPO training/inference
+            # - "two_rod_ppo": one controlled rod, one observed opponent rod
+            # - "pass_auxiliary_backbone": phase-0 supervised backbone training/inference
+            # - "pass_ppo": PPO passing training initialized from the auxiliary backbone
+            #self.agent1_mode = "single_rod_ppo"
+            self.agent1_mode = "two_rod_ppo"
+            #self.agent1_mode = "pass_auxiliary_backbone"
+            #self.agent1_mode = "pass_ppo"
+            if self.agent1_mode == "pass_auxiliary_backbone":
+                self.p1 = PassAuxiliaryBackboneAgent(
+                    passer_rod_id=4,
+                    receiver_rod_id=6,
+                    opponent_rod_id=5,
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_ppo_steps_1274559.pth",
+                    load_model=True,
+                    inference=True,
+                    training_enabled=False,
+                )
+            elif self.agent1_mode == "pass_ppo":
+                self.p1 = PassPPOAgent(
+                    passer_rod_id=4,
+                    receiver_rod_id=6,
+                    opponent_rod_id=5,
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_ppo_steps_505221.pth",
+                    load_model=True,
+                    inference=True,
+                    training_enabeled=False,
+                )
+            elif self.agent1_mode == "two_rod_ppo":
+                self.p1 = TwoRodPPOAgent(
+                    controlled_rod_id=6,
+                    observed_rod_id=7,
+                    training_task="shooting",
+                    opponent_active=False,
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#25_1.pth",
+                    load_model=True,
+                    inference=False,
+                    training_enabeled=True,
+                )
+            else:
+                self.p1 = PPOAgent(
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#18.pth",
+                    load_model=True,
+                    inference=True,
+                    training_enabeled=False,
+                )
+            self.p2 = PlayerAgent()
 
 
-        for name, _ in self.p1.ac.named_parameters():
-            print(f"Parameter: {name}")
+        #for name, _ in self.p1.ac.named_parameters():
+        #    print(f"Parameter: {name}")
 
-        #if self.agent1_mode == "pass_ppo" and self.p1.training_enabled:
+        if self.agent1_mode == "pass_ppo" and self.p1.training_enabled:
             
             """modules_to_reinitialize = [
                 self.p1.ac.critic,
@@ -174,7 +192,7 @@ class FuzbAISim:
             # [receiver_rotation_target, receiver_rotation_velocity,
             #  receiver_translation_target, receiver_translation_velocity].
             #self.p1.learning_action_slice = slice(4, 8)
-            self.p1.learning_action_slice = slice(0, 3)
+            #self.p1.learning_action_slice = slice(0, 3)
             #self.p1.log_std.data[4:8].fill_(math.log(0.30))
 
             """self.p1.freeze_layers(self.p1.ac, {
@@ -784,13 +802,24 @@ class FuzbAISim:
 
 
                     try:     
-                        if self.status_player1 == 0:             
-                            # Robust (no-delay) training: feed the current snapshot directly.
-                            motors1 = self.p1.process_data(self.getCameraDict(1))
+                        if self.self_play_manager is not None:
+                            motors1, motors2 = self.self_play_manager.step(self.getCameraDict(1), self.getCameraDict(2))
                         else:
-                            # Use the external motor data...
-                            motors1 = self.motorCommandsExternal1
-                            self.motorCommandsExternal1 = []        
+                            if self.status_player1 == 0:
+                                # Robust (no-delay) training: feed the current snapshot directly.
+                                motors1 = self.p1.process_data(self.getCameraDict(1))
+                            else:
+                                # Use the external motor data...
+                                motors1 = self.motorCommandsExternal1
+                                self.motorCommandsExternal1 = []
+
+                            if self.status_player2 == 0:
+                                # Robust (no-delay) training: feed the current snapshot directly.
+                                motors2 = self.p2.process_data(self.getCameraDict(2))
+                            else:
+                                # Use the external motor data...
+                                motors2 = self.motorCommandsExternal2
+                                self.motorCommandsExternal2 = []
 
                         driveMap = [0, 1, 3, 5]
                         for m in motors1:
@@ -812,16 +841,8 @@ class FuzbAISim:
                         print("Exception in agent 1")
                         traceback.print_exc()
 
-                    try:                                               
-                        if self.status_player2 == 0:             
-                            # Robust (no-delay) training: feed the current snapshot directly.
-                            motors2 = self.p2.process_data(self.getCameraDict(2))
-                        else:
-                            # Use the external motor data...
-                            motors2 = self.motorCommandsExternal2
-                            self.motorCommandsExternal2 = []        
-
-                        driveMap = [7, 6, 4, 2]                        
+                    try:
+                        driveMap = [7, 6, 4, 2]
                         for m in motors2:
                             axisID = driveMap[m["driveID"]-1]
                             jId_rot = self.revJoints[axisID]
