@@ -17,6 +17,7 @@ from memory.main import PPOBuffer
 from reward.single_bar_shoting import (
     closest_player_alignment_reward,
     controllable_kick_reward,
+    kick_force_reward,
     kicking_reward,
     player_alignment_target,
     simple_reward,
@@ -515,6 +516,7 @@ class PPOAgent:
 
         # Events from environment - zajem podatkov o brci žoge in terminaciji zaradi premajhne x vrednosti
         ball_kicked = bool(camera.get("ball_kicked", False))
+        kick_normal_force = float(camera.get("kick_normal_force", 0.0))
         terminated_by_kick = bool(camera.get("terminated_by_kick", False))
         terminated_by_x_threshold = bool(camera.get("terminated_by_x_threshold", False))
         end_episode = bool(camera.get("end_episode", False))
@@ -1083,6 +1085,7 @@ class TwoRodPPOAgent(PPOAgent):
         *,
         goal_scored,
         ball_kicked,
+        kick_normal_force,
         terminated_by_x_threshold,
         end_episode,
     ):
@@ -1102,6 +1105,7 @@ class TwoRodPPOAgent(PPOAgent):
             return kicking_reward(
                 goal_scored=goal_scored,
                 ball_kicked=ball_kicked,
+                kick_normal_force=kick_normal_force,
                 ball_x=bxy[0],
                 ball_y=bxy[1],
                 forward_ball_vx=vxy[0],
@@ -1168,6 +1172,7 @@ class TwoRodPPOAgent(PPOAgent):
         }
 
         ball_kicked = bool(camera.get("ball_kicked", False))
+        kick_normal_force = float(camera.get("kick_normal_force", 0.0))
         terminated_by_kick = bool(camera.get("terminated_by_kick", False))
         terminated_by_x_threshold = bool(camera.get("terminated_by_x_threshold", False))
         end_episode = bool(camera.get("end_episode", False))
@@ -1193,6 +1198,7 @@ class TwoRodPPOAgent(PPOAgent):
                 controlled,
                 goal_scored=goal_scored,
                 ball_kicked=ball_kicked,
+                kick_normal_force=float(camera.get("kick_normal_force", 0.0)),
                 terminated_by_x_threshold=terminated_by_x_threshold,
                 end_episode=end_episode,
             )
@@ -1484,13 +1490,13 @@ class PassPPOAgent(PPOAgent):
 
     def compute_pass_reward(
         self,
-        
         bxy,
         vxy,
         receiver,
         passer,
         *,
         ball_kicked,
+        kick_normal_force,
         threshold_failure,
         episode_timeout,
     ):
@@ -1533,6 +1539,14 @@ class PassPPOAgent(PPOAgent):
             target_rod_angle=0.0
         )
 
+        kick_force = kick_force_reward(
+            ball_kicked=ball_kicked,
+            kick_normal_force=kick_normal_force,
+            desired_kick_force=12.0,
+            force_sigma=8.0,
+            reward_scale=0.35,
+        )
+
 
         # The rod's effective receiving area is close to its fixed x position.
         x_error_mm = abs(ball_x - receiver_x)
@@ -1569,18 +1583,20 @@ class PassPPOAgent(PPOAgent):
 
         threshold_failure_penalty = -1.5 if threshold_failure else 0.0
         timeout_penalty = -0.2 if episode_timeout else 0.0
+        
 
         
 
         reward_breakdown = {
-            "rod_angle_reward": rod_angle_reward * 0.25,
+            #"rod_angle_reward": rod_angle_reward * 0.25,
             #"rod_alignment_reward_passer": allignment_quality_passer,
-            "rod_alignment_reward_receiver": alignment_quality_receiver,
-            "vicinity_reward": vicinity_reward,
+            #"rod_alignment_reward_receiver": alignment_quality_receiver,
+            #"vicinity_reward": vicinity_reward,
             "speed_reduction_reward": speed_reduction_reward,
             "controlled_ball_reward": controlled_ball_reward,
             "stopped_ball_reward": stopped_ball_reward,
-            "threshold_failure": threshold_failure_penalty,
+            "kick_force": kick_force,
+            #"threshold_failure": threshold_failure_penalty,
             "episode_timeout": timeout_penalty,
         }
 
@@ -1635,6 +1651,7 @@ class PassPPOAgent(PPOAgent):
         terminated_by_kick = bool(camera.get("terminated_by_kick", False))
         terminated_by_x_threshold = bool(camera.get("terminated_by_x_threshold", False))
         ball_kicked = bool(camera.get("ball_kicked", False))
+        kick_normal_force = float(camera.get("kick_normal_force", 0.0))
 
         
 
@@ -1646,6 +1663,7 @@ class PassPPOAgent(PPOAgent):
                 receiver,
                 passer,
                 ball_kicked=ball_kicked,
+                kick_normal_force=float(camera.get("kick_normal_force", 0.0)),
                 threshold_failure=terminated_by_x_threshold,
                 episode_timeout=(
                     end_episode

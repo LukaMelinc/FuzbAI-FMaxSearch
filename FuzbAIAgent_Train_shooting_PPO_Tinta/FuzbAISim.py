@@ -63,6 +63,7 @@ class FuzbAISim:
         self.kick_observed_rod_id = int(kick_observed_rod_id)
         self._kick_player_links = set()
         self._link_names_by_index = {}
+        self._kick_normal_force = 0.0
 
         """LATCHES"""
         self._ball_kicked_latch = False
@@ -108,9 +109,9 @@ class FuzbAISim:
         # - "pass_auxiliary_backbone": phase-0 supervised backbone training/inference
         # - "pass_ppo": PPO passing training initialized from the auxiliary backbone
         #self.agent1_mode = "single_rod_ppo"
-        #self.agent1_mode = "two_rod_ppo"
+        self.agent1_mode = "two_rod_ppo"
         #self.agent1_mode = "pass_auxiliary_backbone"
-        self.agent1_mode = "pass_ppo"
+        #self.agent1_mode = "pass_ppo"
         if self.agent1_mode == "pass_auxiliary_backbone":
             self.p1 = PassAuxiliaryBackboneAgent(
                 passer_rod_id=4,
@@ -126,21 +127,21 @@ class FuzbAISim:
                 passer_rod_id=4,
                 receiver_rod_id=6,
                 opponent_rod_id=5,
-                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#23D.pth",
+                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_ppo_steps_505221.pth",
                 load_model=True,
-                inference=False,
-                training_enabeled=True,
+                inference=True,
+                training_enabeled=False,
             )
         elif self.agent1_mode == "two_rod_ppo":
             self.p1 = TwoRodPPOAgent(
                 controlled_rod_id=6,
                 observed_rod_id=5,
-                training_task="defending",
-                opponent_active=True,
-                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/two_rod_defend_shoot.pth",
-                load_model=False,
-                inference=False,
-                training_enabeled=True,
+                training_task="shooting",
+                opponent_active=False,
+                model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#25_1.pth",
+                load_model=True,
+                inference=True,
+                training_enabeled=False,
             )
         else:
             self.p1 = PPOAgent(
@@ -155,7 +156,7 @@ class FuzbAISim:
         for name, _ in self.p1.ac.named_parameters():
             print(f"Parameter: {name}")
 
-        if self.agent1_mode == "pass_ppo" and self.p1.training_enabled:
+        #if self.agent1_mode == "pass_ppo" and self.p1.training_enabled:
             
             """modules_to_reinitialize = [
                 self.p1.ac.critic,
@@ -172,18 +173,19 @@ class FuzbAISim:
             # Stage 2 learns only the receiver action dimensions:
             # [receiver_rotation_target, receiver_rotation_velocity,
             #  receiver_translation_target, receiver_translation_velocity].
-            self.p1.learning_action_slice = slice(4, 8)
+            #self.p1.learning_action_slice = slice(4, 8)
+            self.p1.learning_action_slice = slice(0, 3)
             #self.p1.log_std.data[4:8].fill_(math.log(0.30))
 
-            self.p1.freeze_layers(self.p1.ac, {
+            """self.p1.freeze_layers(self.p1.ac, {
                 # Stage 2 receiver training: keep the trained passer path fixed,
                 # and train only the receiver path plus the critic.
-                "receiver_encoder",
-                "receiver_translation_head",
-                "receiver_rotation_head",
+                "passer_encoder",
+                "passer_translation_head",
+                "passer_rotation_head",
                 "critic",
             })
-            self.p1.rebuild_optimizer()
+            self.p1.rebuild_optimizer()"""
 
         # Camera delay settings
         #self.simulatedDelay = 0.030
@@ -229,10 +231,10 @@ class FuzbAISim:
         # PyBullet x maps to camera x as: camera_x_mm = 1000 * x - 115.
         # Rod 6 is around camera_x=830 mm, so x ~= 0.945 m.
         self.ball_spawn_areas = {
-            "behind": (0.68, 0.69), #(0.62, 0.67), #0.75, 0.77)#
+            "behind": (0.93, 0.95),#(0.64, 0.66), #(0.62, 0.67), #0.75, 0.77)#
             #"ahead": (1.02, 1.16),
         }
-        self.ball_spawn_speed_range = (0.6, 1.2)
+        self.ball_spawn_speed_range = (0.0, 0.0)
 
     def _ball_x_mm_camera(self) -> float:
         # Must match getCameraDict mapping
@@ -331,6 +333,7 @@ class FuzbAISim:
                 continue
 
             self._ball_kicked_latch = True
+            self._kick_normal_force = float(normal_force)
             if self.terminate_episode_on_kick:
                 self._kick_terminated_latch = True
                 self.end_episode_latch = True
@@ -367,8 +370,8 @@ class FuzbAISim:
 
         # NOTE: Point of termination due to x-threshold crossing
         # Added another threshold for detecting when the ball failed to control the ball coming from behind
-        #if ball_x_mm < self.episode_end_ball_x_threshold_mm:   # Threshold behind the rod
-        if ball_x_mm < self.episode_end_ball_x_threshold_mm or ball_x_mm > self.episode_end_ball_other_x_threshold_mm:  # Threshold behind one rod and ahead of the other
+        if ball_x_mm < self.episode_end_ball_x_threshold_mm:   # Threshold behind the rod
+        #if ball_x_mm < self.episode_end_ball_x_threshold_mm or ball_x_mm > self.episode_end_ball_other_x_threshold_mm:  # Threshold behind one rod and ahead of the other
         #if ball_x_mm > self.episode_end_ball_other_x_threshold_mm:  # Threshold ahead of the rod 
             self._x_threshold_terminated_latch = True
             self.ResetBallToLocation()
@@ -434,6 +437,7 @@ class FuzbAISim:
             "curriculum_y_max": float(self._get_curriculum_y_range()[1]),
             # New observation/event flags
             "ball_kicked": bool(self._ball_kicked_latch),
+            "kick_normal_force": float(self._kick_normal_force),
             "terminated_by_kick": bool(self._kick_terminated_latch),
             "terminated_by_x_threshold": bool(self._x_threshold_terminated_latch),
             "end_episode": bool(self.end_episode_latch),
@@ -847,6 +851,7 @@ class FuzbAISim:
 
                     # Clear per-step latches after agents have consumed the observation stream
                     self._ball_kicked_latch = False
+                    self._kick_normal_force = 0.0
                     self._kick_terminated_latch = False
                     self._x_threshold_terminated_latch = False
                     self.end_episode_latch = False

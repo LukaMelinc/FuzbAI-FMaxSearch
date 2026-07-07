@@ -91,3 +91,43 @@ def compute_pass_reward(
 
         return float(sum(reward_breakdown.values())), reward_breakdown
 
+# 25 - strel na gol z napadalno palico v modelu 2-rod-agent
+def calculate_reward(
+        self,
+        bxy,
+        vxy,
+        controlled,
+        *,
+        goal_scored,
+        ball_kicked,
+        kick_normal_force,
+        terminated_by_x_threshold,
+        end_episode,
+    ):
+        alignment_reward = closest_player_alignment_reward(
+            ball_y=bxy[1],
+            rod_pos_calib=float(controlled["pos_calib"]),
+            rod_info=controlled["info"],
+        )
+        rod_angle_reward = calculate_rod_angle_reward(
+            rod_angle=float(controlled["angle"]),
+            target_rod_angle=self.target_rod_angle,
+        )
+
+        if self.training_task == "shooting":
+            shot_attempted = self.current_episode_ball_kicks > 0 or ball_kicked
+            missed_kick = bool((end_episode or terminated_by_x_threshold) and shot_attempted and not goal_scored)
+            return kicking_reward(
+                goal_scored=goal_scored,
+                ball_kicked=ball_kicked,
+                kick_normal_force=kick_normal_force,
+                ball_x=bxy[0],
+                ball_y=bxy[1],
+                forward_ball_vx=vxy[0],
+                ball_vy=vxy[1],
+                missed_kick=missed_kick,
+                episode_timeout=bool(end_episode and not (ball_kicked or terminated_by_x_threshold)),
+                rod_alignment_reward=alignment_reward,
+                rod_angle=float(controlled["angle"]),
+                target_rod_angle=self.target_rod_angle,
+            )
