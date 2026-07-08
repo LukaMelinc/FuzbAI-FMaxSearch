@@ -130,7 +130,7 @@ class PPOAgent:
                  model_save_path="./trained_models/STAGE_1_shooting_still_ball_a_bit_bigger_ball_spawn_area_MODEL#6.pth",   # Path for loading the model from
                  training_log_export_every=10,
                  l2_lambda=5e-4,
-                 controlled_rod_id=6,
+                 controlled_rod_id=4,
                  training_enabeled=True,
                  load_model=False,
                  inference=False,
@@ -151,6 +151,7 @@ class PPOAgent:
         self.action_std_override = action_std_override
         self.auto_train = bool(auto_train)
         self.pending_train = False
+        
         if self.inference and self.training_enabled:
             print("[PPOAgent] Inference mode enabled, disabling training.")
             self.training_enabled = False
@@ -165,6 +166,8 @@ class PPOAgent:
 
         with open('geometry.json') as f:
             self.geometry = json.load(f)
+
+        self.rods_by_id = {int(rod["id"]): rod for rod in self.geometry["rods"]}
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print("Using device:", self.device)
@@ -217,6 +220,12 @@ class PPOAgent:
         if self.should_load_model:
             self.load_model()
 
+    @staticmethod
+    def _as_float(value):
+        if isinstance(value, list):
+            value = value[0]
+        return float(value)
+
     def policy_log_std(self, mean):
         return torch.clamp(self.log_std, min=-5.0, max=2.0).unsqueeze(0).expand_as(mean)
 
@@ -267,20 +276,6 @@ class PPOAgent:
         else:
             print("[PPOAgent] No saved model found, skipping load.")
 
-    def normalize_observation(self, obs):
-       
-        obs[0] /= 1210
-        obs[1] /= 700
-        obs[2] /= 10
-        obs[3] /= 10
-
-        # Normalize the player positions and angles
-        for i in range(4, len(obs), 4):
-            obs[i + 1] /= 1210
-            obs[i + 2] /=  700
-            obs[i + 3] = (obs[i + 3] + 32) / 64
-
-        return obs
 
     def compute_action(self, obs, deterministic=False):
         """
@@ -511,7 +506,7 @@ class PPOAgent:
             print(f"Processing step {self.total_steps} at episode {self.episode_count}, step in episode: {self.episode_steps}")
 
         # Extract the current observation
-        obs, bxy, vxy, rod_angle = self.extract_observation(camera)
+        obs, bxy, vxy, rod_angle, active_rod = self.extract_observation(camera)
         self.latest_env_metrics = {
             "curriculum_round": int(camera.get("curriculum_round", -1)),
             "curriculum_y_min": float(camera.get("curriculum_y_min", float("nan"))),
@@ -550,66 +545,23 @@ class PPOAgent:
         episode_finished_this_sample = False
         if self.last_obs is not None:
 
-            # Calculate the reward for the previous step (s_t-1, a_t-1 -> r_t)
-
-            # 1) Calculate the rod alignment reward - that the player is behind the ball and alligned with it
-            rod_alignment_reward = self.calculate_rod_alignment_reward(camera)
-            #print(f"Rod allignment reward: {rod_alignment_reward:.3f}")
-
-            # 1.1) Calculate rod angle reward - how to rotate the rod
-            rod_angle_reward = calculate_rod_angle_reward(
-                rod_angle=rod_angle,
-                target_rod_angle = 0.085
+            allignment_quality_reward = closest_player_alignment_reward(
+                ball_y=bxy[1],
+                rod_pos_calib=float(active_rod["pos_calib"]),
+                rod_info=active_rod["info"],
+                reward_scale=1.0,
             )
-            #print(f"rod agle reward: {rod_angle_reward:.3f}")
-
-
-            # 2) Detecting, if the ball was kicked and if the episode ended with a missed kick
-            shot_attempted = self.current_episode_ball_kicks > 0 or ball_kicked
-            missed_kick = bool(
-                (end_episode or terminated_by_x_threshold)
-                and shot_attempted
-                and not goal_scored
-            )
-
-            # 3) Get the rod position calibration for the controlled rod
-            CD0 = camera["camData"][0] if camera["camData"][0] is not None else camera["camData"][1]
-            controlled_rod_info = next(
-                rod for rod in self.geometry["rods"] if rod["id"] == self.controlled_rod_id
-            )
-            rod_idx = self.controlled_rod_id - 1
-            rod_pos_calib = CD0["rod_position_calib"][rod_idx]
-            if isinstance(rod_pos_calib, list):
-                rod_pos_calib = rod_pos_calib[0]
-
-
-            # 4) Sampling the previous ball velocity for reward calculation for maintaining the ball
-            prev_ball_vx = self.prev_ball_vxy[0] if self.prev_ball_vxy is not None else None
-            prev_ball_vz = self.prev_ball_vxy[1] if self.prev_ball_vxy is not None else None
-
-            ball_behind_rod = bxy[0] < (controlled_rod_info["position"] - 10.0)
-            reward, reward_breakdown = maintaining_ball(
-                ball_x=bxy[0],
-                ball_vx=vxy[0],
-                ball_vz=vxy[1],
-                rod_x_pos=controlled_rod_info["position"],
-                threshold_crossed=terminated_by_x_threshold,
-                ball_behind_rod=ball_behind_rod,
-                prev_ball_vx=prev_ball_vx,
-                prev_ball_vz=prev_ball_vz,
-                episode_timeout=bool(end_episode and not terminated_by_x_threshold),
-                rod_angle_reward=rod_angle_reward,
-                player_alignment_reward=rod_alignment_reward,
-            )
-
             
+            
+            reward_breakdown = {}
+            reward = 0.0
+
             for key, value in reward_breakdown.items():
                 self.update_reward_breakdown_sums[key] = (
                     self.update_reward_breakdown_sums.get(key, 0.0) + float(value)
                 )
             if ball_kicked:
                 self.update_samples_with_kick += 1
-            #print(f"Reward calculate for step {self.episode_steps}, at episode: {self.episode_count}, calculated reward: {reward}")
 
             # NEW: Track step-level reward
             self.current_episode_step_rewards.append(reward)
@@ -684,6 +636,31 @@ class PPOAgent:
         commands = self.scale_to_motor_commands(action)
         return commands
 
+
+    def _camera_data(self, camera):
+        return camera["camData"][0] if camera["camData"][0] is not None else camera["camData"][1]
+
+    def _rod_state(self, cd, rod_id):
+        rod_idx = int(rod_id) - 1
+        rod_info = self.rods_by_id[int(rod_id)]
+        rod_pos_calib = self._as_float(cd["rod_position_calib"][rod_idx])
+        rod_angle = self._as_float(cd["rod_angle"][rod_idx])
+        rod_angle_normalized = float(np.clip(rod_angle / 32.0, -1.0, 1.0))
+        _, target_rod_pos, unavoidable_dist = player_alignment_target(
+            ball_y=cd["ball_y"],
+            rod_info=rod_info,
+        )
+        target_error = float(target_rod_pos) - rod_pos_calib
+        return {
+            "info": rod_info,
+            "pos_calib": rod_pos_calib,
+            "angle": rod_angle,
+            "angle_normalized": rod_angle_normalized,
+            "target_pos": float(target_rod_pos),
+            "target_error": target_error,
+            "unavoidable_dist": float(unavoidable_dist),
+        }
+
     def extract_observation(self, camera):
         """
         Convert camera dict into a flat numpy array (obs_dim).
@@ -691,9 +668,8 @@ class PPOAgent:
         NOTE: Currently training only 
         """
 
-        field = self.geometry["field"]
-        rods = self.geometry["rods"]
-        player_positions = []
+        cd = self._camera_data(camera)
+        active_rod = self._rod_state(cd, self.controlled_rod_id)
 
         # Just a minimal example:
         CD0 = camera["camData"][0] if camera["camData"][0] is not None else camera["camData"][1]
@@ -711,10 +687,12 @@ class PPOAgent:
             if rod["id"] == self.controlled_rod_id:
                 controlled_rod_info = rod
                 break
+
         
         if controlled_rod_info is None:
             raise ValueError(f"Rod {self.controlled_rod_id} not found in geometry")
         
+
         # Controlled rod state (5 values)
         """
         Blue rod idx: 
@@ -738,6 +716,7 @@ class PPOAgent:
         
         # Rod position (already normalized 0-1)
         rod_y_normalized = rod_pos_calib
+
         
         # Relative positioning - KEY FOR SINGLE ROD LEARNING
         rod_x_world = controlled_rod_info["position"]
@@ -752,6 +731,7 @@ class PPOAgent:
             rod_info=controlled_rod_info,
         )
         target_rod_error = target_rod_pos - rod_pos_calib
+
         
         # Rod angle normalized
         angle_normalized = np.clip(rod_angle / 32.0, -1, 1)  # Assuming ±45° range
@@ -768,11 +748,11 @@ class PPOAgent:
             angle_normalized,                            # Rod angle (1)
             ball_kicked                                  # Ball contact flag (1)
         ], dtype=np.float32)
-        
+
         # Verify size
         assert len(obs) == 10, f"Expected obs_dim=10, got {len(obs)}"
         
-        return obs, (CD0["ball_x"], CD0["ball_y"]), (CD0["ball_vx"], CD0["ball_vy"]), angle_normalized
+        return obs, (CD0["ball_x"], CD0["ball_y"]), (CD0["ball_vx"], CD0["ball_vy"]), angle_normalized, active_rod
 
     def calculate_rod_alignment_reward(self, camera):
         """Reward the controlled rod for placing any player close to the ball y."""
@@ -811,8 +791,10 @@ class PPOAgent:
         #trans_target = 0.8 * ((action[2] + 1) / 2)  # scale [-1,1]→[0,1], you might want full 0..1 0.5
         trans_velocity = 1.0 * (action[3] + 1) / 2   # scale [-1,1]→[0,1]
 
+        # driveID singals, which agent's rod is active. 1 for goalkeeper, 2 for the defender, 3 for midfield, 4 for attacker
+
         cmd = {
-            "driveID": 4,
+            "driveID": 3,
             "rotationTargetPosition": rot_target,
             "rotationVelocity": rot_velocity,
             "translationTargetPosition": trans_target,
@@ -829,7 +811,7 @@ class PPOAgent:
                 "translationVelocity": 0.0
             },
             {
-                "driveID": 3,
+                "driveID": 4,
                 "rotationTargetPosition": 0.5,
                 "rotationVelocity": 0.0,
                 "translationTargetPosition": 0.5,

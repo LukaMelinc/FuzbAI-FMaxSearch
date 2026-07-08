@@ -22,7 +22,7 @@ class FuzbAISim:
         episode_end_ball_x_threshold_mm: float = 550.0,#400.0,
         kick_observed_rod_id: int = 4,
         render_gui: bool = True,
-        self_play_config: dict | None = None,
+        self_play_config: dict = None,
     ):
         print(" ______         _             _____ ")
         print("|  ____|       | |      /\   |_   _|")
@@ -107,6 +107,7 @@ class FuzbAISim:
 
         self.self_play_manager = None
         self.self_play_enabled = self_play_config is not None
+        print(f"Self play enabled: {self.self_play_enabled}")
 
         if self.self_play_enabled:
             self.self_play_manager = create_self_play_manager(
@@ -126,10 +127,11 @@ class FuzbAISim:
             # - "two_rod_ppo": one controlled rod, one observed opponent rod
             # - "pass_auxiliary_backbone": phase-0 supervised backbone training/inference
             # - "pass_ppo": PPO passing training initialized from the auxiliary backbone
-            #self.agent1_mode = "single_rod_ppo"
-            self.agent1_mode = "two_rod_ppo"
-            #self.agent1_mode = "pass_auxiliary_backbone"
+            self.agent1_mode = "single_rod_ppo"
+            #self.agent1_mode = "two_rod_ppo"
+            #self.agent1_mode = ""
             #self.agent1_mode = "pass_ppo"
+            print(f"Agent 1 mode: {self.agent1_mode}")
             if self.agent1_mode == "pass_auxiliary_backbone":
                 self.p1 = PassAuxiliaryBackboneAgent(
                     passer_rod_id=4,
@@ -141,6 +143,7 @@ class FuzbAISim:
                     training_enabled=False,
                 )
             elif self.agent1_mode == "pass_ppo":
+                
                 self.p1 = PassPPOAgent(
                     passer_rod_id=4,
                     receiver_rod_id=6,
@@ -161,12 +164,13 @@ class FuzbAISim:
                     inference=False,
                     training_enabeled=True,
                 )
-            else:
+            elif self.agent1_mode == "single_rod_ppo":
+                print(f"Running single rod agent")
                 self.p1 = PPOAgent(
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#18.pth",
-                    load_model=True,
-                    inference=True,
-                    training_enabeled=False,
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#14.pth",
+                    load_model=False,
+                    inference=False,
+                    training_enabeled=True,
                 )
             self.p2 = PlayerAgent()
 
@@ -249,7 +253,7 @@ class FuzbAISim:
         # PyBullet x maps to camera x as: camera_x_mm = 1000 * x - 115.
         # Rod 6 is around camera_x=830 mm, so x ~= 0.945 m.
         self.ball_spawn_areas = {
-            "behind": (0.93, 0.95),#(0.64, 0.66), #(0.62, 0.67), #0.75, 0.77)#
+            "behind": (0.75, 0.77),#(0.64, 0.66), #(0.62, 0.67), #0.75, 0.77)#
             #"ahead": (1.02, 1.16),
         }
         self.ball_spawn_speed_range = (0.0, 0.0)
