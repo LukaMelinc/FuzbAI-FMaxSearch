@@ -135,7 +135,7 @@ class PPOAgent:
                  load_model=False,
                  inference=False,
                  auto_train=True,
-                 action_std_override=(0.8, 0.8, 0.15, 0.15)):      # std override - fist two rod rotation, last two rod translation
+                 action_std_override=(1.5, 1.5, 0.4, 0.4)):      # std override - fist two rod rotation, last two rod translation
 
         self.controlled_rod_id = controlled_rod_id
         self.obs_dim = obs_dim
@@ -155,7 +155,6 @@ class PPOAgent:
         if self.inference and self.training_enabled:
             print("[PPOAgent] Inference mode enabled, disabling training.")
             self.training_enabled = False
-
 
         self.prev_vel = None
         self.prev_ball_vxy = None
@@ -240,6 +239,42 @@ class PPOAgent:
             mean[..., action_slice],
             log_std[..., action_slice],
         )
+
+    def compute_ball_control_reward(
+        self,
+        bxy,
+        vxy,
+        active_rod,
+        *,
+        terminated_by_x_threshold,
+        end_episode,
+    ):
+        """Additional reward for intercepting, slowing, and controlling the ball."""
+        controlled_rod_x = float(active_rod["info"]["position"])
+        prev_ball_vx = self.prev_ball_vxy[0] if self.prev_ball_vxy is not None else None
+        prev_ball_vy = self.prev_ball_vxy[1] if self.prev_ball_vxy is not None else None
+
+        # For the red controlled rods, lower camera x is the protected side.
+        # Penalize once the ball slips behind the rod even before the simulator
+        # threshold ends the episode.
+        ball_behind_rod = float(bxy[0]) < (controlled_rod_x - 10.0)
+
+        reward, reward_breakdown = maintaining_ball(
+            ball_x=bxy[0],
+            ball_vx=vxy[0],
+            ball_vz=vxy[1],
+            rod_x_pos=controlled_rod_x,
+            threshold_crossed=terminated_by_x_threshold,
+            ball_behind_rod=ball_behind_rod,
+            prev_ball_vx=prev_ball_vx,
+            prev_ball_vz=prev_ball_vy,
+            episode_timeout=bool(end_episode and not terminated_by_x_threshold),
+        )
+
+        return reward, {
+            f"ball_control_{key}": value
+            for key, value in reward_breakdown.items()
+        }
 
     def save_model(self, path=None):
         if path is None:
@@ -551,10 +586,31 @@ class PPOAgent:
                 rod_info=active_rod["info"],
                 reward_scale=1.0,
             )
+
+
+            rod_angle_reward = calculate_rod_angle_reward(
+                rod_angle=float(active_rod["angle"]),
+                reward_scale=1,
+                target_rod_angle=0.0,
+                rotation_buffer_def=3
+                )
+
             
-            
-            reward_breakdown = {}
-            reward = 0.0
+            reward_breakdown = {
+                "allignment": allignment_quality_reward,
+                "rod_angle": rod_angle_reward * 0.33,
+            }
+            _, ball_control_breakdown = self.compute_ball_control_reward(
+                bxy,
+                vxy,
+                active_rod,
+                terminated_by_x_threshold=terminated_by_x_threshold,
+                end_episode=end_episode,
+            )
+            reward_breakdown.update(ball_control_breakdown)
+
+            reward = sum(reward_breakdown.values())
+
 
             for key, value in reward_breakdown.items():
                 self.update_reward_breakdown_sums[key] = (
@@ -753,29 +809,6 @@ class PPOAgent:
         assert len(obs) == 10, f"Expected obs_dim=10, got {len(obs)}"
         
         return obs, (CD0["ball_x"], CD0["ball_y"]), (CD0["ball_vx"], CD0["ball_vy"]), angle_normalized, active_rod
-
-    def calculate_rod_alignment_reward(self, camera):
-        """Reward the controlled rod for placing any player close to the ball y."""
-        CD0 = camera["camData"][0] if camera["camData"][0] is not None else camera["camData"][1]
-        rod_idx = self.controlled_rod_id - 1
-        rod_pos_calib = CD0["rod_position_calib"][rod_idx]
-        if isinstance(rod_pos_calib, list):
-            rod_pos_calib = rod_pos_calib[0]
-
-        controlled_rod_info = None
-        for rod in self.geometry["rods"]:
-            if rod["id"] == self.controlled_rod_id:
-                controlled_rod_info = rod
-                break
-
-        if controlled_rod_info is None:
-            raise ValueError(f"Rod {self.controlled_rod_id} not found in geometry")
-
-        return closest_player_alignment_reward(
-            ball_y=CD0["ball_y"],
-            rod_pos_calib=rod_pos_calib,
-            rod_info=controlled_rod_info,
-        )
 
     def scale_to_motor_commands(self, action):
         """
@@ -1226,7 +1259,6 @@ class TwoRodPPOAgent(PPOAgent):
         self.current_step += 1
 
         return self.scale_to_motor_commands(action)
-
 
 class PassPPOAgent(PPOAgent):
     """
@@ -1758,7 +1790,6 @@ class PassPPOAgent(PPOAgent):
             avg_reward = np.mean(self.episode_rewards[-100:]) if self.episode_rewards else 0.0
             print(f"[PassPPO] Episode {self.episode_count}, avg reward last 100: {avg_reward:.3f}")
             self.save_model()
-
 
 # --------------------------------------------
 # If you want to run standalone:

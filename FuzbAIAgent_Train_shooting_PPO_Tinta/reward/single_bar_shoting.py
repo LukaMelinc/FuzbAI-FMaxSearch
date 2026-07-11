@@ -357,9 +357,17 @@ def calculate_rod_angle_reward(
     rod_angle: float,
     target_rod_angle: float = 0.40,
     reward_scale: float = 0.6,
+    rotation_buffer_def: float = 5, 
     angle_sigma: float = 9.0,
 ):
     """Reward for rotating the rod to a specific angle."""
-    angle_error = float(rod_angle) - float(target_rod_angle)
+    
+    if abs(float(rod_angle)) <= float(rotation_buffer_def):
+        angle_error = 0
+    elif abs(float(rod_angle)) > float(rotation_buffer_def):
+        angle_error = float(rod_angle) - float(target_rod_angle)
+
+
+    #angle_error = float(rod_angle) - float(target_rod_angle)
     angle_reward = float(reward_scale) * math.exp(-((angle_error / max(float(angle_sigma), 1e-6)) ** 2))
     return angle_reward

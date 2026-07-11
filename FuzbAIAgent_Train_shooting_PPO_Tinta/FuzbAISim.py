@@ -19,7 +19,7 @@ from log_utils import setup_logging
 class FuzbAISim:
     def __init__(
         self,
-        episode_end_ball_x_threshold_mm: float = 550.0,#400.0,
+        episode_end_ball_x_threshold_mm: float = 400.0,
         kick_observed_rod_id: int = 4,
         render_gui: bool = True,
         self_play_config: dict = None,
@@ -167,8 +167,8 @@ class FuzbAISim:
             elif self.agent1_mode == "single_rod_ppo":
                 print(f"Running single rod agent")
                 self.p1 = PPOAgent(
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#14.pth",
-                    load_model=False,
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#26A.pth",
+                    load_model=True,
                     inference=False,
                     training_enabeled=True,
                 )
@@ -253,10 +253,10 @@ class FuzbAISim:
         # PyBullet x maps to camera x as: camera_x_mm = 1000 * x - 115.
         # Rod 6 is around camera_x=830 mm, so x ~= 0.945 m.
         self.ball_spawn_areas = {
-            "behind": (0.75, 0.77),#(0.64, 0.66), #(0.62, 0.67), #0.75, 0.77)#
+            "behind": (0.90, 0.91),#(0.64, 0.66), #(0.62, 0.67), #0.75, 0.77)#
             #"ahead": (1.02, 1.16),
         }
-        self.ball_spawn_speed_range = (0.0, 0.0)
+        self.ball_spawn_speed_range = (0.2, 0.5)
 
     def _ball_x_mm_camera(self) -> float:
         # Must match getCameraDict mapping
@@ -567,8 +567,8 @@ class FuzbAISim:
 
         # Send the ball toward rod 6 from either side.
         x_sign = 1.0 if spawn_side == "behind" else -1.0
-        rnd_vector_x = random.uniform(0.0, 1.0)
-        rnd_vector_y = random.uniform(0.0, 0.0)
+        rnd_vector_x = random.uniform(-1.0, 0.0)
+        rnd_vector_y = random.uniform(-0.0, 0.0)
         #rnd_vector_y = random.uniform(-0.35, 0.35)
         velocity_vector = [x_sign * rnd_vector_x, rnd_vector_y, 0.0]
         norm = (velocity_vector[0]**2 + velocity_vector[1]**2) ** 0.5
