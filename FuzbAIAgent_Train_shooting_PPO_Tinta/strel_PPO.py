@@ -115,7 +115,7 @@ class PPOAgent:
       - Uses a buffer to accumulate experiences for PPO updates.
     """
     def __init__(self,
-                 obs_dim=10, # ball(4) + rod(5) + ball_kicked(1)
+                 obs_dim=8, #ball(4) + controlled rod rot and trans(2) + 2 engineered features (TODO: Keep them or change to 6)    #10, # ball(4) + rod(5) + ball_kicked(1)
                  act_dim=4, #act_dim=4,          # 1 rod × 4 numbers each
                  hidden_size=512,
                  steps_per_env=512,#256,  # how many steps per iteration
@@ -310,7 +310,6 @@ class PPOAgent:
             print(f"[PPOAgent] Model loaded from {path}")
         else:
             print("[PPOAgent] No saved model found, skipping load.")
-
 
     def compute_action(self, obs, deterministic=False):
         """
@@ -794,19 +793,21 @@ class PPOAgent:
         
         # Combine: Ball(4) + Rod(5) = 9 total
         ball_kicked = float(camera.get("ball_kicked", False))
+        print(F"ball rod dist x: {ball_rod_dist_x}, target rod error: {target_rod_error}")
 
         # Combine: Ball(4) + Rod(5) + ball_kicked(1) = 10 total
         obs = np.array([
             ball_x, ball_y, ball_vx, ball_vy,           # Ball state (4)
-            team,                                        # Rod team (1)
-            ball_rod_dist_x, target_rod_error,          # Relative position / target error (2)
+            #team,                                        # Rod team (1)
+            ball_rod_dist_x,                # Distance of the ball to the observed rod in x distance
+            target_rod_error,          # Relative error between the the ball and the closest player on the rod in y position
             rod_y_normalized,                            # Rod position (1) 
             angle_normalized,                            # Rod angle (1)
-            ball_kicked                                  # Ball contact flag (1)
+            #ball_kicked                                  # Ball contact flag (1)
         ], dtype=np.float32)
 
         # Verify size
-        assert len(obs) == 10, f"Expected obs_dim=10, got {len(obs)}"
+        #assert len(obs) == 10, f"Expected obs_dim=10, got {len(obs)}"
         
         return obs, (CD0["ball_x"], CD0["ball_y"]), (CD0["ball_vx"], CD0["ball_vy"]), angle_normalized, active_rod
 
@@ -941,7 +942,7 @@ class TwoRodPPOAgent(PPOAgent):
 
     def __init__(
         self,
-        obs_dim=16,
+        obs_dim=14,#16,
         act_dim=4,
         hidden_size=512,
         steps_per_env=512,
@@ -1060,19 +1061,19 @@ class TwoRodPPOAgent(PPOAgent):
 
         obs = np.array(
             [
-                (ball_x - self.field_x / 2.0) / (self.field_x / 2.0),
-                (ball_y - self.field_y / 2.0) / (self.field_y / 2.0),
-                np.clip(ball_vx / 5.0, -2.0, 2.0),
-                np.clip(ball_vy / 5.0, -2.0, 2.0),
+                (ball_x - self.field_x / 2.0) / (self.field_x / 2.0),   # Ball normalized x direction
+                (ball_y - self.field_y / 2.0) / (self.field_y / 2.0),   # Ball normalized y direction
+                np.clip(ball_vx / 5.0, -2.0, 2.0),                      # Ball vx
+                np.clip(ball_vy / 5.0, -2.0, 2.0),                      # Ball vy
                 *self._rod_features(controlled),
                 *self._rod_features(observed),
-                float(camera.get("ball_kicked", False)),
-                opponent_active,
+                #float(camera.get("ball_kicked", False)),
+                #opponent_active,
             ],
             dtype=np.float32,
         )
 
-        assert len(obs) == self.obs_dim, f"Expected obs_dim={self.obs_dim}, got {len(obs)}"
+        #assert len(obs) == self.obs_dim, f"Expected obs_dim={self.obs_dim}, got {len(obs)}"
         return obs, (ball_x, ball_y), (ball_vx, ball_vy), controlled, observed
 
     def calculate_reward(
@@ -1285,7 +1286,7 @@ class PassPPOAgent(PPOAgent):
 
     def __init__(
         self,
-        obs_dim=20,
+        obs_dim=19,#20,
         act_dim=8,
         hidden_size=512,
         steps_per_env=512,
@@ -1483,12 +1484,12 @@ class PassPPOAgent(PPOAgent):
                 *rod_features(passer),
                 *rod_features(receiver),
                 *rod_features(opponent),
-                float(camera.get("ball_kicked", False)),
+                #float(camera.get("ball_kicked", False)),
             ],
             dtype=np.float32,
         )
 
-        assert len(obs) == self.obs_dim, f"Expected obs_dim={self.obs_dim}, got {len(obs)}"
+        #assert len(obs) == self.obs_dim, f"Expected obs_dim={self.obs_dim}, got {len(obs)}"
         return obs, (ball_x, ball_y), (ball_vx, ball_vy), passer, receiver, opponent
 
     def compute_pass_reward(

@@ -11,6 +11,7 @@ from FuzbAIAgent_Example import PlayerAgent
 from agent_factory import create_self_play_manager
 from strel_PPO import PPOAgent, TwoRodPPOAgent, PassPPOAgent
 from pass_auxiliary_backbone import PassAuxiliaryBackboneAgent
+from state_imitation import ScriptedStateRecorder, StateImitationPPOAgent
 import random
 import traceback
 
@@ -23,6 +24,9 @@ class FuzbAISim:
         kick_observed_rod_id: int = 4,
         render_gui: bool = True,
         self_play_config: dict = None,
+        agent1_mode: str = "pass_ppo",#"single_rod_ppo",
+        agent1_kwargs: dict = None,
+        imitation_ball_x_threshold: float = 605.0,
     ):
         print(" ______         _             _____ ")
         print("|  ____|       | |      /\   |_   _|")
@@ -127,11 +131,10 @@ class FuzbAISim:
             # - "two_rod_ppo": one controlled rod, one observed opponent rod
             # - "pass_auxiliary_backbone": phase-0 supervised backbone training/inference
             # - "pass_ppo": PPO passing training initialized from the auxiliary backbone
-            self.agent1_mode = "single_rod_ppo"
+            self.agent1_mode = str(agent1_mode)
             #self.agent1_mode = "two_rod_ppo"
             #self.agent1_mode = ""
             #self.agent1_mode = "pass_ppo"
-            print(f"Agent 1 mode: {self.agent1_mode}")
             if self.agent1_mode == "pass_auxiliary_backbone":
                 self.p1 = PassAuxiliaryBackboneAgent(
                     passer_rod_id=4,
@@ -168,10 +171,16 @@ class FuzbAISim:
                 print(f"Running single rod agent")
                 self.p1 = PPOAgent(
                     model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#26A.pth",
-                    load_model=True,
+                    load_model=False,
                     inference=False,
                     training_enabeled=True,
                 )
+            elif self.agent1_mode == "scripted_imitation":
+                self.p1 = ScriptedStateRecorder(**dict(agent1_kwargs or {}))
+            elif self.agent1_mode == "state_imitation":
+                self.p1 = StateImitationPPOAgent(**dict(agent1_kwargs or {}))
+            else:
+                raise ValueError(f"Unknown agent1_mode: {self.agent1_mode}")
             self.p2 = PlayerAgent()
 
 
@@ -256,7 +265,17 @@ class FuzbAISim:
             "behind": (0.90, 0.91),#(0.64, 0.66), #(0.62, 0.67), #0.75, 0.77)#
             #"ahead": (1.02, 1.16),
         }
-        self.ball_spawn_speed_range = (0.2, 0.5)
+        self.ball_spawn_speed_range = (0.0, 0.0)
+        if self.agent1_mode in {"scripted_imitation", "state_imitation"}:
+            # PyBullet x maps to camera x as 1000*x - 115.  Spawn balanced
+            # episodes on both sides of the teacher's threshold during recording
+            # and imitation-guided PPO training.
+            threshold_mm = float(imitation_ball_x_threshold)
+            threshold_x = (threshold_mm + 115.0) / 1000.0
+            self.ball_spawn_areas = {
+                "behind": (threshold_x - 0.12, threshold_x - 0.04),
+                "ahead": (threshold_x + 0.04, threshold_x + 0.12),
+            }
 
     def _ball_x_mm_camera(self) -> float:
         # Must match getCameraDict mapping
@@ -733,7 +752,7 @@ class FuzbAISim:
 
         prev_key_t = 0
 
-        PARAM_linVel = 1
+        PARAM_linVel = 1 # NOTE: Probat, če se podvoji faktor iz 1 na 2, če pol ujame use receiver
         PARAM_force = 5                                         
         PARAM_positionGain = 0.2
         PARAM_velocityGain = 4.5
@@ -948,17 +967,64 @@ if __name__ == "__main__":
         action="store_true",
         help="Run PyBullet in DIRECT mode without opening the GUI.",
     )
+    parser.add_argument(
+        "--mode",
+        choices=("single_rod_ppo", "scripted_imitation", "state_imitation"),
+        default="single_rod_ppo",
+    )
+    parser.add_argument(
+        "--expert-csv",
+        default="imitation_data/threshold_expert.csv",
+        help="Output path in scripted mode; input path in imitation mode.",
+    )
+    parser.add_argument("--episodes", type=int, default=100)
+    parser.add_argument("--ball-x-threshold", type=float, default=605.0)
+    parser.add_argument("--steps-per-env", type=int, default=512)
+    parser.add_argument("--save-model-every", type=int, default=50)
+    parser.add_argument("--checkpoint", default=None)
+    parser.add_argument(
+        "--inference",
+        action="store_true",
+        help="Run a loaded state-imitation checkpoint deterministically.",
+    )
     args = parser.parse_args()
 
     print("Working with up-to-date code")
     setup_logging()
-    sim = FuzbAISim(render_gui=not args.headless)
+    agent_kwargs = {}
+    if args.mode == "scripted_imitation":
+        agent_kwargs = {
+            "output_path": args.expert_csv,
+            "num_episodes": args.episodes,
+            "ball_x_threshold": args.ball_x_threshold,
+        }
+    elif args.mode == "state_imitation":
+        agent_kwargs = {
+            "expert_csv": args.expert_csv,
+            "model_save_path": args.checkpoint or "trained_models/state_imitation",
+            "load_model": bool(args.checkpoint),
+            "training_enabeled": not args.inference,
+            "inference": args.inference,
+            "steps_per_env": args.steps_per_env,
+            "save_model_every": args.save_model_every,
+        }
+    sim = FuzbAISim(
+        render_gui=not args.headless,
+        agent1_mode=args.mode,
+        agent1_kwargs=agent_kwargs,
+        imitation_ball_x_threshold=args.ball_x_threshold,
+    )
     sim.run()
 
     try:
         while sim.isRunning:
+            if getattr(sim.p1, "completed", False):
+                sim.stop()
+                break
             time.sleep(0.1)
     except KeyboardInterrupt:
         sim.stop()
         if sim.simThread is not None:
             sim.simThread.join()
+        if args.mode == "state_imitation" and not args.inference:
+            sim.p1.save_model()
