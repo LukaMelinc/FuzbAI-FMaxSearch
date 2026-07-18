@@ -133,6 +133,8 @@ class PPOAgent:
                  controlled_rod_id=4,
                  training_enabeled=True,
                  load_model=False,
+                 pretrained_actor_path=None,
+                 load_pretrained_log_std=False,
                  inference=False,
                  auto_train=True,
                  action_std_override=(1.5, 1.5, 0.4, 0.4)):      # std override - fist two rod rotation, last two rod translation
@@ -147,6 +149,8 @@ class PPOAgent:
         self.l2_lambda = l2_lambda  # L2 regularization strength
         self.inference = inference
         self.should_load_model = load_model
+        self.pretrained_actor_path = pretrained_actor_path
+        self.load_pretrained_log_std = bool(load_pretrained_log_std)
         self.training_enabled = training_enabeled # For training mode vs. inference mode
         self.action_std_override = action_std_override
         self.auto_train = bool(auto_train)
@@ -178,6 +182,15 @@ class PPOAgent:
         # Separate or shared log_std for continuous actions
         self.log_std = nn.Parameter(-1*torch.ones(act_dim, dtype=torch.float32, device=self.device), requires_grad=True)
         self.log_std = self.log_std.to(self.device)
+
+        # Imitation pretraining and task PPO have different critics/rewards.  For
+        # RL fine-tuning, transfer only the policy (and optionally its exploration
+        # scale) while leaving this newly-created critic untouched.
+        if self.pretrained_actor_path is not None:
+            self.load_pretrained_actor(
+                self.pretrained_actor_path,
+                load_log_std=self.load_pretrained_log_std,
+            )
 
         # Optimizer
         self.optimizer = optim.Adam(list(self.ac.parameters()) + [self.log_std], lr=lr)
@@ -285,10 +298,37 @@ class PPOAgent:
             path = os.path.join(save_dir, f"{self.model_name}_steps_{self.total_steps}.pth")
         torch.save({
             "actor_critic_state_dict": self.ac.state_dict(),
+            "actor_state_dict": self.ac.actor.state_dict(),
+            "critic_state_dict": self.ac.critic.state_dict(),
             "log_std": self.log_std.detach().cpu(),
             "training_count": self.training_count,
         }, path)
         print(f"[PPOAgent] Model saved to {path}")
+
+    def load_pretrained_actor(self, checkpoint_path, *, load_log_std=False):
+        """Initialize the policy from imitation while keeping a fresh RL critic."""
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location=self.device,
+            weights_only=True,
+        )
+        if not isinstance(checkpoint, dict) or "actor_state_dict" not in checkpoint:
+            raise KeyError(
+                f"Imitation checkpoint {checkpoint_path!r} has no actor_state_dict"
+            )
+        self.ac.actor.load_state_dict(checkpoint["actor_state_dict"], strict=True)
+        if load_log_std and "log_std" in checkpoint:
+            source_log_std = checkpoint["log_std"].to(self.device)
+            if source_log_std.shape != self.log_std.shape:
+                raise ValueError(
+                    "Imitation log_std shape does not match the RL action space: "
+                    f"{tuple(source_log_std.shape)} != {tuple(self.log_std.shape)}"
+                )
+            self.log_std.data.copy_(source_log_std)
+        print(
+            f"[PPOAgent] Loaded imitation-pretrained actor from {checkpoint_path}; "
+            "RL critic remains freshly initialized."
+        )
 
     def load_model(self, path=None):
 

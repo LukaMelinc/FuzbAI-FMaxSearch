@@ -26,6 +26,10 @@ import torch.nn as nn
 import torch.optim as optim
 
 from strel_PPO import PPOAgent
+from reward.single_bar_shoting import (
+    calculate_rod_angle_reward,
+    closest_player_alignment_reward,
+)
 
 
 OBS_COLUMNS = (
@@ -96,6 +100,10 @@ class ScriptedStateRecorder(PPOAgent):
             return []
 
         obs, bxy, _, _, active_rod = self.extract_observation(camera)
+        assert len(obs) == len(OBS_COLUMNS), (
+            f"Observation has {len(obs)} values but OBS_COLUMNS has "
+            f"{len(OBS_COLUMNS)}"
+        )
         row = {
             "episode_id": self.episode_id,
             "step": self.episode_step,
@@ -142,6 +150,12 @@ class ExpertTransitionDataset:
         if not transitions:
             raise ValueError(f"No within-episode transitions found in {csv_path}")
         self.transitions = torch.as_tensor(np.stack(transitions), dtype=torch.float32)
+        expected_width = 2 * len(OBS_COLUMNS)
+        if self.transitions.shape[1] != expected_width:
+            raise ValueError(
+                f"Expert transitions have width {self.transitions.shape[1]}, "
+                f"expected {expected_width}"
+            )
         print(
             f"[ExpertDataset] Loaded {len(self.transitions)} state transitions "
             f"from {csv_path}"
@@ -338,3 +352,176 @@ class StateImitationPPOAgent(PPOAgent):
             self.discriminator_ready = True
         self.training_count = int(checkpoint.get("training_count", 0))
         print(f"[StateImitation] Model loaded from {path}")
+
+
+class HybridImitationPPOAgent(StateImitationPPOAgent):
+    """Normal task PPO augmented with a learned state-imitation reward.
+
+    The first rollout uses only the environment reward while it gathers negative
+    examples for the discriminator.  Later rollouts use
+    ``environment_reward + imitation_weight * imitation_reward``.
+    """
+
+    def __init__(
+        self,
+        expert_csv,
+        imitation_weight=0.2,
+        final_imitation_weight=0.0,
+        imitation_anneal_steps=0,
+        pretrained_discriminator_path=None,
+        **ppo_kwargs,
+    ):
+        super().__init__(expert_csv=expert_csv, **ppo_kwargs)
+        self.initial_imitation_weight = float(imitation_weight)
+        self.final_imitation_weight = float(final_imitation_weight)
+        self.imitation_anneal_steps = int(imitation_anneal_steps)
+        self.model_name = "hybrid_imitation_ppo"
+
+        if pretrained_discriminator_path is not None:
+            checkpoint = torch.load(
+                pretrained_discriminator_path,
+                map_location=self.device,
+                weights_only=True,
+            )
+            if "discriminator_state_dict" not in checkpoint:
+                raise KeyError(
+                    f"Checkpoint {pretrained_discriminator_path!r} has no "
+                    "discriminator_state_dict"
+                )
+            self.discriminator.load_state_dict(
+                checkpoint["discriminator_state_dict"], strict=True
+            )
+            self.discriminator_ready = True
+            print(
+                "[HybridImitationPPO] Loaded pretrained discriminator from "
+                f"{pretrained_discriminator_path}"
+            )
+
+    def current_imitation_weight(self):
+        if self.imitation_anneal_steps <= 0:
+            return self.initial_imitation_weight
+        fraction = min(max(self.total_steps / self.imitation_anneal_steps, 0.0), 1.0)
+        return (
+            self.initial_imitation_weight
+            + fraction
+            * (self.final_imitation_weight - self.initial_imitation_weight)
+        )
+
+    def train_on_buffer(self):
+        # Unlike imitation-only training, the bootstrap rollout has valid task
+        # rewards, so it must still be used for a PPO update.
+        self.train_discriminator()
+        if not self.discriminator_ready:
+            self.discriminator_ready = True
+            print(
+                "[HybridImitationPPO] Discriminator bootstrapped; imitation "
+                "reward starts on the next rollout."
+            )
+        PPOAgent.train_on_buffer(self)
+
+    def process_data(self, camera):
+        self.total_steps += 1
+        obs, bxy, vxy, _, active_rod = self.extract_observation(camera)
+
+        if not self.training_enabled:
+            action, _, _ = self.compute_action(obs, deterministic=self.inference)
+            return self.scale_to_motor_commands(action)
+
+        ball_kicked = bool(camera.get("ball_kicked", False))
+        terminated_by_kick = bool(camera.get("terminated_by_kick", False))
+        terminated_by_x_threshold = bool(
+            camera.get("terminated_by_x_threshold", False)
+        )
+        end_episode = bool(camera.get("end_episode", False))
+        terminated = bool(
+            terminated_by_kick or terminated_by_x_threshold or end_episode
+        )
+
+        episode_finished = False
+        if self.last_obs is not None:
+            alignment_reward = closest_player_alignment_reward(
+                ball_y=bxy[1],
+                rod_pos_calib=float(active_rod["pos_calib"]),
+                rod_info=active_rod["info"],
+                reward_scale=1.0,
+            )
+            angle_reward = calculate_rod_angle_reward(
+                rod_angle=float(active_rod["angle"]),
+                reward_scale=1.0,
+                target_rod_angle=0.0,
+                rotation_buffer_def=3,
+            )
+            reward_breakdown = {
+                "allignment": float(alignment_reward),
+                "rod_angle": float(angle_reward) * 0.33,
+            }
+            _, ball_control_breakdown = self.compute_ball_control_reward(
+                bxy,
+                vxy,
+                active_rod,
+                terminated_by_x_threshold=terminated_by_x_threshold,
+                end_episode=end_episode,
+            )
+            reward_breakdown.update(ball_control_breakdown)
+            environment_reward = float(sum(reward_breakdown.values()))
+
+            imitation_reward = 0.0
+            imitation_weight = self.current_imitation_weight()
+            # Do not include reset teleports as discriminator examples.
+            if not terminated:
+                transition = np.concatenate((self.last_obs, obs)).astype(np.float32)
+                self.agent_transitions.append(transition)
+                if self.discriminator_ready:
+                    imitation_reward = self.imitation_reward(self.last_obs, obs)
+
+            weighted_imitation_reward = imitation_weight * imitation_reward
+            reward = environment_reward + weighted_imitation_reward
+            reward_breakdown.update({
+                "environment_total": environment_reward,
+                "imitation_raw": imitation_reward,
+                "imitation_weighted": weighted_imitation_reward,
+                "imitation_weight": imitation_weight,
+            })
+            for key, value in reward_breakdown.items():
+                self.update_reward_breakdown_sums[key] = (
+                    self.update_reward_breakdown_sums.get(key, 0.0) + float(value)
+                )
+
+            if ball_kicked:
+                self.current_episode_ball_kicks += 1
+                self.update_samples_with_kick += 1
+            self.current_episode_step_rewards.append(reward)
+            self.ep_reward += reward
+
+            stored = self.buf.store(
+                self.last_obs,
+                self.last_action,
+                reward,
+                self.last_val,
+                self.last_logp,
+            )
+            if not stored:
+                _, final_value, _ = self.compute_action(obs)
+                self.buf.finish_path(last_val=final_value)
+                self.train_on_buffer()
+                self.last_obs = None
+                episode_finished = True
+
+            if not episode_finished and terminated:
+                self.finish_episode(last_value=0.0)
+                self.episode_steps = 0
+                episode_finished = True
+
+        action, value, logp = self.compute_action(obs)
+        if not np.all(np.isfinite(action)):
+            action = np.zeros_like(action)
+
+        if not episode_finished:
+            self.last_obs = obs
+            self.last_action = action
+            self.last_val = value
+            self.last_logp = logp
+            self.episode_steps += 1
+
+        self.prev_ball_vxy = vxy
+        return self.scale_to_motor_commands(action)

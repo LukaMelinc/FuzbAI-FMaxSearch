@@ -2,7 +2,7 @@
 set -euo pipefail
 
 checkpoint_dir="trained_models/state_imitation"
-expert_csv="imitation_data/threshold_expert.csv"
+expert_csv="imitation_data/threshold_expert_8d.csv"
 
 checkpoint="$(find "$checkpoint_dir" -maxdepth 1 -type f -name 'state_imitation_steps_*.pth' -printf '%f\n' \
     | sort -V \

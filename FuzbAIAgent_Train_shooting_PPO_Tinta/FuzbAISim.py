@@ -11,7 +11,11 @@ from FuzbAIAgent_Example import PlayerAgent
 from agent_factory import create_self_play_manager
 from strel_PPO import PPOAgent, TwoRodPPOAgent, PassPPOAgent
 from pass_auxiliary_backbone import PassAuxiliaryBackboneAgent
-from state_imitation import ScriptedStateRecorder, StateImitationPPOAgent
+from state_imitation import (
+    HybridImitationPPOAgent,
+    ScriptedStateRecorder,
+    StateImitationPPOAgent,
+)
 import random
 import traceback
 
@@ -169,16 +173,17 @@ class FuzbAISim:
                 )
             elif self.agent1_mode == "single_rod_ppo":
                 print(f"Running single rod agent")
-                self.p1 = PPOAgent(
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#26A.pth",
-                    load_model=False,
-                    inference=False,
-                    training_enabeled=True,
+                kwargs = dict(agent1_kwargs or {})
+                kwargs.setdefault(
+                    "model_save_path", "trained_models/single_rod_ppo"
                 )
+                self.p1 = PPOAgent(**kwargs)
             elif self.agent1_mode == "scripted_imitation":
                 self.p1 = ScriptedStateRecorder(**dict(agent1_kwargs or {}))
             elif self.agent1_mode == "state_imitation":
                 self.p1 = StateImitationPPOAgent(**dict(agent1_kwargs or {}))
+            elif self.agent1_mode == "hybrid_imitation_ppo":
+                self.p1 = HybridImitationPPOAgent(**dict(agent1_kwargs or {}))
             else:
                 raise ValueError(f"Unknown agent1_mode: {self.agent1_mode}")
             self.p2 = PlayerAgent()
@@ -266,7 +271,11 @@ class FuzbAISim:
             #"ahead": (1.02, 1.16),
         }
         self.ball_spawn_speed_range = (0.0, 0.0)
-        if self.agent1_mode in {"scripted_imitation", "state_imitation"}:
+        if self.agent1_mode in {
+            "scripted_imitation",
+            "state_imitation",
+            "hybrid_imitation_ppo",
+        }:
             # PyBullet x maps to camera x as 1000*x - 115.  Spawn balanced
             # episodes on both sides of the teacher's threshold during recording
             # and imitation-guided PPO training.
@@ -969,12 +978,17 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--mode",
-        choices=("single_rod_ppo", "scripted_imitation", "state_imitation"),
+        choices=(
+            "single_rod_ppo",
+            "scripted_imitation",
+            "state_imitation",
+            "hybrid_imitation_ppo",
+        ),
         default="single_rod_ppo",
     )
     parser.add_argument(
         "--expert-csv",
-        default="imitation_data/threshold_expert.csv",
+        default="imitation_data/threshold_expert_8d.csv",
         help="Output path in scripted mode; input path in imitation mode.",
     )
     parser.add_argument("--episodes", type=int, default=100)
@@ -983,11 +997,28 @@ if __name__ == "__main__":
     parser.add_argument("--save-model-every", type=int, default=50)
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument(
+        "--pretrained-imitation-checkpoint",
+        default=None,
+        help=(
+            "Load actor_state_dict from this imitation checkpoint before pure "
+            "RL or hybrid training. The imitation critic is not loaded."
+        ),
+    )
+    parser.add_argument("--imitation-weight", type=float, default=0.2)
+    parser.add_argument("--final-imitation-weight", type=float, default=0.0)
+    parser.add_argument("--imitation-anneal-steps", type=int, default=0)
+    parser.add_argument(
         "--inference",
         action="store_true",
-        help="Run a loaded state-imitation checkpoint deterministically.",
+        help="Run the selected agent and checkpoint deterministically.",
     )
     args = parser.parse_args()
+    if args.checkpoint and args.pretrained_imitation_checkpoint:
+        parser.error(
+            "--checkpoint resumes a complete checkpoint, whereas "
+            "--pretrained-imitation-checkpoint starts a new run from an "
+            "imitation actor; choose only one"
+        )
 
     print("Working with up-to-date code")
     setup_logging()
@@ -1008,6 +1039,31 @@ if __name__ == "__main__":
             "steps_per_env": args.steps_per_env,
             "save_model_every": args.save_model_every,
         }
+    elif args.mode == "single_rod_ppo":
+        agent_kwargs = {
+            "pretrained_actor_path": args.pretrained_imitation_checkpoint,
+            "model_save_path": args.checkpoint or "trained_models/imitation_finetuned_ppo",
+            "load_model": bool(args.checkpoint),
+            "training_enabeled": not args.inference,
+            "inference": args.inference,
+            "steps_per_env": args.steps_per_env,
+            "save_model_every": args.save_model_every,
+        }
+    elif args.mode == "hybrid_imitation_ppo":
+        agent_kwargs = {
+            "expert_csv": args.expert_csv,
+            "pretrained_actor_path": args.pretrained_imitation_checkpoint,
+            "pretrained_discriminator_path": args.pretrained_imitation_checkpoint,
+            "model_save_path": args.checkpoint or "trained_models/hybrid_imitation_ppo",
+            "load_model": bool(args.checkpoint),
+            "training_enabeled": not args.inference,
+            "inference": args.inference,
+            "steps_per_env": args.steps_per_env,
+            "save_model_every": args.save_model_every,
+            "imitation_weight": args.imitation_weight,
+            "final_imitation_weight": args.final_imitation_weight,
+            "imitation_anneal_steps": args.imitation_anneal_steps,
+        }
     sim = FuzbAISim(
         render_gui=not args.headless,
         agent1_mode=args.mode,
@@ -1026,5 +1082,9 @@ if __name__ == "__main__":
         sim.stop()
         if sim.simThread is not None:
             sim.simThread.join()
-        if args.mode == "state_imitation" and not args.inference:
+        if args.mode in {
+            "single_rod_ppo",
+            "state_imitation",
+            "hybrid_imitation_ppo",
+        } and not args.inference:
             sim.p1.save_model()

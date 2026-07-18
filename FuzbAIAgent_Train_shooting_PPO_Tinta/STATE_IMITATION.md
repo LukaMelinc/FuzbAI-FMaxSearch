@@ -72,3 +72,45 @@ ppo_agent.ac.actor.load_state_dict(checkpoint["actor_state_dict"])
 
 Initialize the new critic separately when changing the reward or task. Do not
 transfer the discriminator unless continuing the same imitation experiment.
+
+## Pure PPO fine-tuning from an imitation actor
+
+Start a new PPO run that loads only the imitation actor. The PPO critic remains
+fresh because the task reward differs from the discriminator reward:
+
+```bash
+python3 FuzbAISim.py \
+  --headless \
+  --mode single_rod_ppo \
+  --pretrained-imitation-checkpoint trained_models/state_imitation/state_imitation_steps_STEP.pth \
+  --steps-per-env 512 \
+  --save-model-every 50
+```
+
+New checkpoints are written under `trained_models/imitation_finetuned_ppo`.
+Use `--checkpoint PATH` without `--pretrained-imitation-checkpoint` to resume a
+fine-tuning checkpoint.
+
+## PPO with environment and imitation rewards
+
+Hybrid mode trains PPO with the normal task reward plus a weighted state-only
+imitation reward. Supplying the imitation checkpoint initializes both its actor
+and discriminator:
+
+```bash
+python3 FuzbAISim.py \
+  --headless \
+  --mode hybrid_imitation_ppo \
+  --expert-csv imitation_data/threshold_expert_8d.csv \
+  --pretrained-imitation-checkpoint trained_models/state_imitation/state_imitation_steps_STEP.pth \
+  --imitation-weight 0.2 \
+  --final-imitation-weight 0.0 \
+  --imitation-anneal-steps 1000000 \
+  --steps-per-env 512 \
+  --save-model-every 50
+```
+
+With `--imitation-anneal-steps 0`, the initial imitation weight remains
+constant. With a positive value, it changes linearly to
+`--final-imitation-weight` over that many environment steps. Hybrid checkpoints
+are written under `trained_models/hybrid_imitation_ppo`.
