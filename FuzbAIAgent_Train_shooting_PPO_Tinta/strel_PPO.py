@@ -22,7 +22,8 @@ from reward.single_bar_shoting import (
     player_alignment_target,
     simple_reward,
     maintaining_ball,
-    calculate_rod_angle_reward
+    calculate_rod_angle_reward,
+    predictive_player_alignment_reward
 )
 
 
@@ -126,7 +127,7 @@ class PPOAgent:
                  train_iters=4,
                  target_kl=0.01,
                  delay_step=2,
-                 save_model_every=500,   # save every N episodes
+                 save_model_every=1500,   # save every N episodes
                  model_save_path="./trained_models/STAGE_1_shooting_still_ball_a_bit_bigger_ball_spawn_area_MODEL#6.pth",   # Path for loading the model from
                  training_log_export_every=10,
                  l2_lambda=5e-4,
@@ -296,13 +297,23 @@ class PPOAgent:
                 save_dir = os.path.dirname(save_dir) or "."
             os.makedirs(save_dir, exist_ok=True)
             path = os.path.join(save_dir, f"{self.model_name}_steps_{self.total_steps}.pth")
-        torch.save({
+        checkpoint = {
             "actor_critic_state_dict": self.ac.state_dict(),
-            "actor_state_dict": self.ac.actor.state_dict(),
-            "critic_state_dict": self.ac.critic.state_dict(),
             "log_std": self.log_std.detach().cpu(),
             "training_count": self.training_count,
-        }, path)
+        }
+
+        # The original ActorCriticNet exposes a single ``actor`` module, while
+        # the multi-head agents expose encoders/action heads directly.  The
+        # complete actor-critic state above is the canonical checkpoint for all
+        # architectures; retain these component entries where they exist for
+        # compatibility with imitation-pretraining checkpoints.
+        if hasattr(self.ac, "actor"):
+            checkpoint["actor_state_dict"] = self.ac.actor.state_dict()
+        if hasattr(self.ac, "critic"):
+            checkpoint["critic_state_dict"] = self.ac.critic.state_dict()
+
+        torch.save(checkpoint, path)
         print(f"[PPOAgent] Model saved to {path}")
 
     def load_pretrained_actor(self, checkpoint_path, *, load_log_std=False):
@@ -576,8 +587,8 @@ class PPOAgent:
     def process_data(self, camera):
 
         self.total_steps += 1
-        if self.total_steps % 250 == 0:
-            print(f"Processing step {self.total_steps} at episode {self.episode_count}, step in episode: {self.episode_steps}")
+        #if self.total_steps % 250 == 0:
+        #    print(f"Processing step {self.total_steps} at episode {self.episode_count}, step in episode: {self.episode_steps}")
 
         # Extract the current observation
         obs, bxy, vxy, rod_angle, active_rod = self.extract_observation(camera)
@@ -626,6 +637,21 @@ class PPOAgent:
                 reward_scale=1.0,
             )
 
+            predictive_allignment_reward = predictive_player_alignment_reward(
+                ball_x=bxy[0],
+                ball_y=bxy[1],
+                ball_vx=vxy[0],
+                ball_vy=vxy[1],
+                rod_x=float(active_rod["info"]["position"]),
+                rod_pos_calib=float(active_rod["pos_calib"]),
+                rod_info=active_rod["info"],
+                vx_threshold=0.05,
+                t_max=0.5,
+                reward_scale=1.0,
+            )
+
+            #print(f"Ball x: {bxy[0]:.2f}, Ball y: {bxy[1]:.2f}, Rod pos: {active_rod['pos_calib']:.2f}, rod x: {float(active_rod['info']['position'])}, vx: {vxy[0]:.2f}, vy: {vxy[1]:.2f}")
+
 
             rod_angle_reward = calculate_rod_angle_reward(
                 rod_angle=float(active_rod["angle"]),
@@ -634,22 +660,15 @@ class PPOAgent:
                 rotation_buffer_def=3
                 )
 
+            #print(f"allignment: {allignment_quality_reward}, angle:{rod_angle_reward}" )
             
             reward_breakdown = {
-                "allignment": allignment_quality_reward,
+                #"allignment": allignment_quality_reward,
+                "predictive_allignment": predictive_allignment_reward,
                 "rod_angle": rod_angle_reward * 0.33,
             }
-            _, ball_control_breakdown = self.compute_ball_control_reward(
-                bxy,
-                vxy,
-                active_rod,
-                terminated_by_x_threshold=terminated_by_x_threshold,
-                end_episode=end_episode,
-            )
-            reward_breakdown.update(ball_control_breakdown)
 
             reward = sum(reward_breakdown.values())
-
 
             for key, value in reward_breakdown.items():
                 self.update_reward_breakdown_sums[key] = (
@@ -730,7 +749,6 @@ class PPOAgent:
 
         commands = self.scale_to_motor_commands(action)
         return commands
-
 
     def _camera_data(self, camera):
         return camera["camData"][0] if camera["camData"][0] is not None else camera["camData"][1]
@@ -833,7 +851,7 @@ class PPOAgent:
         
         # Combine: Ball(4) + Rod(5) = 9 total
         ball_kicked = float(camera.get("ball_kicked", False))
-        print(F"ball rod dist x: {ball_rod_dist_x}, target rod error: {target_rod_error}")
+        #print(F"ball rod dist x: {ball_rod_dist_x}, target rod error: {target_rod_error}")
 
         # Combine: Ball(4) + Rod(5) + ball_kicked(1) = 10 total
         obs = np.array([
@@ -1054,6 +1072,18 @@ class TwoRodPPOAgent(PPOAgent):
             value = value[0]
         return float(value)
 
+    @staticmethod
+    def freeze_layers(model, trainable_prefixes):
+        for name, param in model.named_parameters():
+            param.requires_grad = any(name.startswith(prefix) for prefix in trainable_prefixes)    
+
+    def rebuild_optimizer(self, lr=None):
+        if lr is None:
+            lr = self.optimizer.param_groups[0]["lr"]
+        trainable_params = [p for p in self.ac.parameters() if p.requires_grad]
+        trainable_params.append(self.log_std)
+        self.optimizer = optim.Adam(trainable_params, lr=lr)
+
     def _camera_data(self, camera):
         return camera["camData"][0] if camera["camData"][0] is not None else camera["camData"][1]
 
@@ -1132,11 +1162,19 @@ class TwoRodPPOAgent(PPOAgent):
             ball_y=bxy[1],
             rod_pos_calib=float(controlled["pos_calib"]),
             rod_info=controlled["info"],
+            reward_scale=1.0
         )
         rod_angle_reward = calculate_rod_angle_reward(
             rod_angle=float(controlled["angle"]),
             target_rod_angle=self.target_rod_angle,
         )
+
+
+        reward_breakdown = {
+            "allignment": alignment_reward 
+        }
+
+        return alignment_reward, reward_breakdown
 
         if self.training_task == "shooting":
             shot_attempted = self.current_episode_ball_kicks > 0 or ball_kicked
@@ -1341,7 +1379,7 @@ class PassPPOAgent(PPOAgent):
         backbone_model_path="./trained_models/pass_backbone_aux.pth",
         load_model=False,
         load_backbone=True,
-        training_log_export_every=10,
+        training_log_export_every=50,
         l2_lambda=5e-4,
         passer_rod_id=4,
         receiver_rod_id=6,

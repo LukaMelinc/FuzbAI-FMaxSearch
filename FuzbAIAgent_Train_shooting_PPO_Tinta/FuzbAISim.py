@@ -10,7 +10,6 @@ import torch
 from FuzbAIAgent_Example import PlayerAgent
 from agent_factory import create_self_play_manager
 from strel_PPO import PPOAgent, TwoRodPPOAgent, PassPPOAgent
-from pass_auxiliary_backbone import PassAuxiliaryBackboneAgent
 from state_imitation import (
     HybridImitationPPOAgent,
     ScriptedStateRecorder,
@@ -26,9 +25,9 @@ class FuzbAISim:
         self,
         episode_end_ball_x_threshold_mm: float = 400.0,
         kick_observed_rod_id: int = 4,
-        render_gui: bool = True,
-        self_play_config: dict = None,
-        agent1_mode: str = "pass_ppo",#"single_rod_ppo",
+        render_gui: bool = False,
+        self_play_config: bool = False,
+        agent1_mode: str = "single_rod_ppo",
         agent1_kwargs: dict = None,
         imitation_ball_x_threshold: float = 605.0,
     ):
@@ -98,9 +97,10 @@ class FuzbAISim:
         self._warned_empty_kick_links = False
         self.physics_timestep = 1.0 / 240.0
         self.physics_steps_per_loop = 4
-        self.gui_sleep_s = 0.0
+        self.gui_sleep_s = 0.00
 
         self.stepDisp = None
+        self.layer_freezing = True
 
         # Player object indices in the URDF tree model
         self.redPlayers = [ 2, 5, 6, 14, 15, 16, 17, 18, 28, 29, 30 ]
@@ -114,7 +114,7 @@ class FuzbAISim:
         self.redIndices = [0, 1, 3, 5]
 
         self.self_play_manager = None
-        self.self_play_enabled = self_play_config is not None
+        self.self_play_enabled = self_play_config
         print(f"Self play enabled: {self.self_play_enabled}")
 
         if self.self_play_enabled:
@@ -133,29 +133,18 @@ class FuzbAISim:
             # Agent modes:
             # - "single_rod_ppo": old one-rod PPO training/inference
             # - "two_rod_ppo": one controlled rod, one observed opponent rod
-            # - "pass_auxiliary_backbone": phase-0 supervised backbone training/inference
             # - "pass_ppo": PPO passing training initialized from the auxiliary backbone
             self.agent1_mode = str(agent1_mode)
             #self.agent1_mode = "two_rod_ppo"
-            #self.agent1_mode = ""
             #self.agent1_mode = "pass_ppo"
-            if self.agent1_mode == "pass_auxiliary_backbone":
-                self.p1 = PassAuxiliaryBackboneAgent(
-                    passer_rod_id=4,
-                    receiver_rod_id=6,
-                    opponent_rod_id=5,
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_ppo_steps_1274559.pth",
-                    load_model=True,
-                    inference=True,
-                    training_enabled=False,
-                )
-            elif self.agent1_mode == "pass_ppo":
+            
+            if self.agent1_mode == "pass_ppo":
                 
                 self.p1 = PassPPOAgent(
                     passer_rod_id=4,
                     receiver_rod_id=6,
                     opponent_rod_id=5,
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_ppo_steps_505221.pth",
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#1-allignment-speed1.pth",
                     load_model=True,
                     inference=True,
                     training_enabeled=False,
@@ -167,17 +156,23 @@ class FuzbAISim:
                     training_task="shooting",
                     opponent_active=False,
                     model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#25_1.pth",
-                    load_model=True,
+                    load_model=False,
                     inference=False,
                     training_enabeled=True,
                 )
             elif self.agent1_mode == "single_rod_ppo":
-                print(f"Running single rod agent")
-                kwargs = dict(agent1_kwargs or {})
+                """kwargs = dict(agent1_kwargs or {})
                 kwargs.setdefault(
                     "model_save_path", "trained_models/single_rod_ppo"
+                )"""
+                self.p1 = PPOAgent(
+                    controlled_rod_id=4,
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#18_steps_1912708.pth",
+                    load_model=True,
+                    inference=True,
+                    training_enabeled=False,    
                 )
-                self.p1 = PPOAgent(**kwargs)
+
             elif self.agent1_mode == "scripted_imitation":
                 self.p1 = ScriptedStateRecorder(**dict(agent1_kwargs or {}))
             elif self.agent1_mode == "state_imitation":
@@ -189,23 +184,24 @@ class FuzbAISim:
             self.p2 = PlayerAgent()
 
 
-        #for name, _ in self.p1.ac.named_parameters():
-        #    print(f"Parameter: {name}")
+        for name, _ in self.p1.ac.named_parameters():
+            print(f"Parameter: {name}")
 
-        if self.agent1_mode == "pass_ppo" and self.p1.training_enabled:
+        if self.p1.training_enabled and self.layer_freezing:
             
             """modules_to_reinitialize = [
                 self.p1.ac.critic,
                 self.p1.ac.receiver_encoder,
                 self.p1.ac.receiver_translation_head,
                 self.p1.ac.receiver_rotation_head,
-            ]"""
+            ]
 
-            """for root_module in modules_to_reinitialize:
+            for root_module in modules_to_reinitialize:
                 for module in root_module.modules():
                     if hasattr(module, "reset_parameters"):
                         module.reset_parameters()
             """
+
             # Stage 2 learns only the receiver action dimensions:
             # [receiver_rotation_target, receiver_rotation_velocity,
             #  receiver_translation_target, receiver_translation_velocity].
@@ -213,15 +209,12 @@ class FuzbAISim:
             #self.p1.learning_action_slice = slice(0, 3)
             #self.p1.log_std.data[4:8].fill_(math.log(0.30))
 
-            """self.p1.freeze_layers(self.p1.ac, {
+            #self.p1.freeze_layers(self.p1.ac, {
                 # Stage 2 receiver training: keep the trained passer path fixed,
                 # and train only the receiver path plus the critic.
-                "passer_encoder",
-                "passer_translation_head",
-                "passer_rotation_head",
-                "critic",
-            })
-            self.p1.rebuild_optimizer()"""
+                #"rotation_head",
+            #})
+            #self.p1.rebuild_optimizer()
 
         # Camera delay settings
         #self.simulatedDelay = 0.030
@@ -267,10 +260,12 @@ class FuzbAISim:
         # PyBullet x maps to camera x as: camera_x_mm = 1000 * x - 115.
         # Rod 6 is around camera_x=830 mm, so x ~= 0.945 m.
         self.ball_spawn_areas = {
-            "behind": (0.90, 0.91),#(0.64, 0.66), #(0.62, 0.67), #0.75, 0.77)#
+            "behind": (0.75, 0.85),#(0.64, 0.66), #(0.62, 0.67), #0.75, 0.77)#
             #"ahead": (1.02, 1.16),
         }
-        self.ball_spawn_speed_range = (0.0, 0.0)
+        self.ball_spawn_speed_range = (0.0, 0.8)
+        
+        # ONLY FOR IMITATION MODE #
         if self.agent1_mode in {
             "scripted_imitation",
             "state_imitation",
@@ -596,8 +591,8 @@ class FuzbAISim:
         # Send the ball toward rod 6 from either side.
         x_sign = 1.0 if spawn_side == "behind" else -1.0
         rnd_vector_x = random.uniform(-1.0, 0.0)
-        rnd_vector_y = random.uniform(-0.0, 0.0)
-        #rnd_vector_y = random.uniform(-0.35, 0.35)
+        #rnd_vector_y = random.uniform(-0.0, 0.0)
+        rnd_vector_y = random.uniform(-0.35, 0.35)
         velocity_vector = [x_sign * rnd_vector_x, rnd_vector_y, 0.0]
         norm = (velocity_vector[0]**2 + velocity_vector[1]**2) ** 0.5
         velocity = [v / norm * speed for v in velocity_vector]
@@ -651,7 +646,7 @@ class FuzbAISim:
         if self.render_gui:
             #p.configureDebugVisualizer(p.COV_ENABLE_WIREFRAME,0)
             #p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS,1)
-            p.configureDebugVisualizer(p.COV_ENABLE_GUI,0)
+            p.configureDebugVisualizer(p.COV_ENABLE_GUI, 0)
             #p.configureDebugVisualizer(p.COV_ENABLE_RENDERING,1)
             #p.configureDebugVisualizer(p.COV_ENABLE_KEYBOARD_SHORTCUTS,1)
             #p.configureDebugVisualizer(p.COV_ENABLE_MOUSE_PICKING,1)
@@ -747,7 +742,6 @@ class FuzbAISim:
 
         refPos = 0
         prev_t = 0
-        ball_moving = 0
             
         print(f'\n*********************************\nStarting main loop\n*********************************\n')
 
@@ -785,7 +779,6 @@ class FuzbAISim:
 
                 if self.ballPos[2] < 0.1:
                     goal_scored_this_step = False
-                    #print(ballPos)
                     # Is the ball under the table?
                     if (self.ballPos[0] > 0 and self.ballPos[0] < 1.4 and self.ballPos[1] > 0 and self.ballPos[1] < 0.7):
                         goal_scored_this_step = True
@@ -797,7 +790,6 @@ class FuzbAISim:
                         else:
                             # Red scored a goal
                             self.score[0] += 1
-                            #print(f'Red scored goal ({self.score[0]}:{self.score[1]})')
 
                         self.showScore()
                         self.showRound()
@@ -1066,9 +1058,9 @@ if __name__ == "__main__":
         }
     sim = FuzbAISim(
         render_gui=not args.headless,
-        agent1_mode=args.mode,
-        agent1_kwargs=agent_kwargs,
-        imitation_ball_x_threshold=args.ball_x_threshold,
+        #agent1_mode=args.mode,
+        #agent1_kwargs=agent_kwargs,
+        #imitation_ball_x_threshold=args.ball_x_threshold,
     )
     sim.run()
 

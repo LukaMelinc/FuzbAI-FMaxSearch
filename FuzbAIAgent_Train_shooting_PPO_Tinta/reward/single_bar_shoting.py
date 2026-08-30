@@ -352,6 +352,61 @@ def closest_player_alignment_reward(
 
     return float(reward_scale * y_alignment)
 
+
+def predictive_player_alignment_reward(
+    *,
+    ball_x: float,
+    ball_y: float,
+    ball_vx: float,
+    ball_vy: float,
+    rod_x: float,
+    rod_pos_calib: float,
+    rod_info: dict,
+    vx_threshold: float = 0.02,
+    t_max: float = 1.0,
+    reward_scale: float = 0.03,
+):
+    """Simple predictive alignment reward.
+
+    - Uses a linear extrapolation of the ball to predict its y when it crosses
+      the rod x position. Units: `ball_x`/`rod_x` are millimetres, `ball_vx`/
+      `ball_vy` are metres/second (consistent with other helpers here).
+    - If lateral (x) speed is small or predicted crossing time is negative or
+      beyond `t_max`, falls back to `closest_player_alignment_reward` using
+      the current `ball_y`.
+    - Keeps the same reward scale semantics as `closest_player_alignment_reward`.
+    """
+    try:
+        vx_mm_s = float(ball_vx) * 1000.0
+    except Exception:
+        return closest_player_alignment_reward(
+            ball_y=ball_y, rod_pos_calib=rod_pos_calib, rod_info=rod_info, reward_scale=reward_scale
+        )
+
+    # If lateral velocity is too small, use the instantaneous alignment reward
+    if abs(vx_mm_s) < float(vx_threshold) * 1000.0:
+        return closest_player_alignment_reward(
+            ball_y=ball_y, rod_pos_calib=rod_pos_calib, rod_info=rod_info, reward_scale=reward_scale
+        )
+
+    # Predict time to cross rod x (mm / (mm/s) = s)
+    t_cross = (float(rod_x) - float(ball_x)) / vx_mm_s
+
+    # If crossing is in the past or too far in the future, fall back
+    if t_cross <= 0.0 or abs(t_cross) > float(t_max):
+        return closest_player_alignment_reward(
+            ball_y=ball_y, rod_pos_calib=rod_pos_calib, rod_info=rod_info, reward_scale=reward_scale
+        )
+
+    # Predict crossing y in mm
+    vy_mm_s = float(ball_vy) * 1000.0
+    predicted_y = float(ball_y) + vy_mm_s * t_cross
+
+    # Reuse the existing closest-player calculation on the predicted y
+    return closest_player_alignment_reward(
+        ball_y=predicted_y, rod_pos_calib=rod_pos_calib, rod_info=rod_info, reward_scale=reward_scale
+    )
+
 def calculate_rod_angle_reward(
     *,
     rod_angle: float,
@@ -368,6 +423,5 @@ def calculate_rod_angle_reward(
         angle_error = float(rod_angle) - float(target_rod_angle)
 
 
-    #angle_error = float(rod_angle) - float(target_rod_angle)
     angle_reward = float(reward_scale) * math.exp(-((angle_error / max(float(angle_sigma), 1e-6)) ** 2))
     return angle_reward

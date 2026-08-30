@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from FuzbAIAgent_Example import PlayerAgent
-from pass_auxiliary_backbone import PassAuxiliaryBackboneAgent
 from strel_PPO import PPOAgent, PassPPOAgent, TwoRodPPOAgent
 from self_play_manager import SelfPlayManager, SelfPlayParticipant
 
@@ -14,7 +13,6 @@ _AGENT_REGISTRY = {
     "ppo": PPOAgent,
     "two_rod_ppo": TwoRodPPOAgent,
     "pass_ppo": PassPPOAgent,
-    "pass_auxiliary_backbone": PassAuxiliaryBackboneAgent,
 }
 
 
