@@ -27,7 +27,7 @@ class FuzbAISim:
         kick_observed_rod_id: int = 4,
         render_gui: bool = False,
         self_play_config: bool = False,
-        agent1_mode: str = "single_rod_ppo",
+        agent1_mode: str = "two_rod_ppo",
         agent1_kwargs: dict = None,
         imitation_ball_x_threshold: float = 605.0,
     ):
@@ -97,7 +97,7 @@ class FuzbAISim:
         self._warned_empty_kick_links = False
         self.physics_timestep = 1.0 / 240.0
         self.physics_steps_per_loop = 4
-        self.gui_sleep_s = 0.00
+        self.gui_sleep_s = 0.0
 
         self.stepDisp = None
         self.layer_freezing = True
@@ -115,7 +115,6 @@ class FuzbAISim:
 
         self.self_play_manager = None
         self.self_play_enabled = self_play_config
-        print(f"Self play enabled: {self.self_play_enabled}")
 
         if self.self_play_enabled:
             self.self_play_manager = create_self_play_manager(
@@ -167,10 +166,10 @@ class FuzbAISim:
                 )"""
                 self.p1 = PPOAgent(
                     controlled_rod_id=4,
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#18_steps_1912708.pth",
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#2-allignment-v2.pth",
                     load_model=True,
-                    inference=True,
-                    training_enabeled=False,    
+                    inference=False,
+                    training_enabeled=True,    
                 )
 
             elif self.agent1_mode == "scripted_imitation":
@@ -260,10 +259,10 @@ class FuzbAISim:
         # PyBullet x maps to camera x as: camera_x_mm = 1000 * x - 115.
         # Rod 6 is around camera_x=830 mm, so x ~= 0.945 m.
         self.ball_spawn_areas = {
-            "behind": (0.75, 0.85),#(0.64, 0.66), #(0.62, 0.67), #0.75, 0.77)#
+            "behind": (1.05, 1.1),#(0.64, 0.66), #(0.62, 0.67), #0.75, 0.77)#
             #"ahead": (1.02, 1.16),
         }
-        self.ball_spawn_speed_range = (0.0, 0.8)
+        self.ball_spawn_speed_range = (0.0, 0.0)
         
         # ONLY FOR IMITATION MODE #
         if self.agent1_mode in {

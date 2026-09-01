@@ -629,6 +629,8 @@ class PPOAgent:
         # Training: collect the step
         episode_finished_this_sample = False
         if self.last_obs is not None:
+            controlled_rod_x = float(active_rod["info"]["position"])
+            ball_past_rod = float(bxy[0]) < (controlled_rod_x - 10.0)
 
             allignment_quality_reward = closest_player_alignment_reward(
                 ball_y=bxy[1],
@@ -650,9 +652,6 @@ class PPOAgent:
                 reward_scale=1.0,
             )
 
-            #print(f"Ball x: {bxy[0]:.2f}, Ball y: {bxy[1]:.2f}, Rod pos: {active_rod['pos_calib']:.2f}, rod x: {float(active_rod['info']['position'])}, vx: {vxy[0]:.2f}, vy: {vxy[1]:.2f}")
-
-
             rod_angle_reward = calculate_rod_angle_reward(
                 rod_angle=float(active_rod["angle"]),
                 reward_scale=1,
@@ -664,8 +663,9 @@ class PPOAgent:
             
             reward_breakdown = {
                 #"allignment": allignment_quality_reward,
-                "predictive_allignment": predictive_allignment_reward,
-                "rod_angle": rod_angle_reward * 0.33,
+                "predictive_allignment": predictive_allignment_reward*0.5,
+                "rod_angle": rod_angle_reward * 0.15,
+                "past_rod": -1.0 if ball_past_rod else 0.0,
             }
 
             reward = sum(reward_breakdown.values())
@@ -688,6 +688,9 @@ class PPOAgent:
             if ball_kicked:
                 self.current_episode_ball_kicks += 1
             if terminated_by_x_threshold:
+                self.current_episode_x_threshold_terminations += 1
+
+            if ball_past_rod:
                 self.current_episode_x_threshold_terminations += 1
 
             # Shranitev celotne tranzicije (s_t-1, a_t-1, r_t, V_t-1)
@@ -719,6 +722,11 @@ class PPOAgent:
 
             # Early episode termination on kick/x-threshold/environment reset
             if (not episode_finished_this_sample) and (terminated_by_kick or terminated_by_x_threshold or end_episode):
+                self.finish_episode(last_value=0)
+                self.episode_steps = 0
+                episode_finished_this_sample = True
+
+            if (not episode_finished_this_sample) and ball_past_rod:
                 self.finish_episode(last_value=0)
                 self.episode_steps = 0
                 episode_finished_this_sample = True
@@ -1240,7 +1248,7 @@ class TwoRodPPOAgent(PPOAgent):
                 f"{self.episode_count}, step in episode: {self.episode_steps}"
             )
 
-        obs, bxy, vxy, controlled, _ = self.extract_observation(camera)
+        obs, bxy, vxy, controlled, observed = self.extract_observation(camera)
         self.latest_env_metrics = {
             "curriculum_round": int(camera.get("curriculum_round", -1)),
             "curriculum_y_min": float(camera.get("curriculum_y_min", float("nan"))),
@@ -1269,7 +1277,7 @@ class TwoRodPPOAgent(PPOAgent):
 
         episode_finished_this_sample = False
         if self.last_obs is not None:
-            reward, reward_breakdown = self.calculate_reward(
+            """reward, reward_breakdown = self.calculate_reward(
                 bxy,
                 vxy,
                 controlled,
@@ -1278,7 +1286,30 @@ class TwoRodPPOAgent(PPOAgent):
                 kick_normal_force=float(camera.get("kick_normal_force", 0.0)),
                 terminated_by_x_threshold=terminated_by_x_threshold,
                 end_episode=end_episode,
-            )
+            )"""
+
+            allignment_quality_reward = closest_player_alignment_reward(
+                            ball_y=bxy[1],
+                            rod_pos_calib=float(controlled["pos_calib"]),
+                            rod_info=controlled["info"],
+                            reward_scale=1.0,
+                        )
+
+            rod_angle_reward = calculate_rod_angle_reward(
+                            rod_angle=float(controlled["angle"]),
+                            reward_scale=1,
+                            target_rod_angle=0.0,
+                            rotation_buffer_def=3
+                            )
+
+            #print(f"angle: {controlled['angle']}, rod angle reward: {rod_angle_reward}")
+
+            reward_breakdown = {
+                "allignmment": allignment_quality_reward,
+                "rod_angle": rod_angle_reward * 0.25,
+            }
+            reward = sum(reward_breakdown.values())
+
 
             for key, value in reward_breakdown.items():
                 self.update_reward_breakdown_sums[key] = (
