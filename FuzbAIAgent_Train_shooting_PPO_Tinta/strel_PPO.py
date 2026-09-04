@@ -23,7 +23,8 @@ from reward.single_bar_shoting import (
     simple_reward,
     maintaining_ball,
     calculate_rod_angle_reward,
-    predictive_player_alignment_reward
+    predictive_player_alignment_reward,
+    forward_backward_kick_reward
 )
 
 
@@ -605,9 +606,6 @@ class PPOAgent:
         terminated_by_x_threshold = bool(camera.get("terminated_by_x_threshold", False))
         end_episode = bool(camera.get("end_episode", False))
 
-        #if end_episode:
-            #print(f"Enviroment singals episode end.")
-        # Goal detection via score delta (more reliable than ball position thresholds)
         # Za potrditev gola
         score = camera.get("score", None)
         goal_scored = False
@@ -625,7 +623,6 @@ class PPOAgent:
             commands = self.scale_to_motor_commands(action)
             return commands
 
-    
         # Training: collect the step
         episode_finished_this_sample = False
         if self.last_obs is not None:
@@ -731,7 +728,6 @@ class PPOAgent:
                 self.episode_steps = 0
                 episode_finished_this_sample = True
 
-
         else:
             print(f"=====First step, no reward yet =====")
 
@@ -744,7 +740,6 @@ class PPOAgent:
         if not np.all(np.isfinite(action)):
             print("Nan or Inf detected in action:", action)
             action = np.zeros_like(action)  # fallback to safe value
-
 
         self.prev_vel = vxy[0]
         self.prev_ball_vxy = vxy
@@ -958,14 +953,14 @@ class PPOAgent:
             self.episodes_with_goal += 1
 
         kick_rate = self.episodes_with_kick / self.episode_count if self.episode_count > 0 else 0.0
-        print(
+        """print(
             f"[Episode stats] Episode {self.episode_count}: "
             f"{'kick' if ended_with_kick else 'no kick'}, "
             f"kicks {self.episodes_with_kick}/{self.episode_count} "
             f"({100.0 * kick_rate:.1f}%), goals {self.episodes_with_goal}, "
             f"threshold {100.0 * self.kick_rate_threshold:.0f}% "
             f"{'reached' if kick_rate >= self.kick_rate_threshold else 'not reached'}."
-        )
+        )"""
 
         self.current_step = 0
         self.ep_reward = 0.0
@@ -1275,6 +1270,9 @@ class TwoRodPPOAgent(PPOAgent):
             action, _, _ = self.compute_action(obs, deterministic=self.inference)
             return self.scale_to_motor_commands(action)
 
+        #if ball_kicked:
+        #    print(f"Ball kicked")
+
         episode_finished_this_sample = False
         if self.last_obs is not None:
             """reward, reward_breakdown = self.calculate_reward(
@@ -1295,18 +1293,37 @@ class TwoRodPPOAgent(PPOAgent):
                             reward_scale=1.0,
                         )
 
-            rod_angle_reward = calculate_rod_angle_reward(
-                            rod_angle=float(controlled["angle"]),
-                            reward_scale=1,
-                            target_rod_angle=0.0,
-                            rotation_buffer_def=3
-                            )
+            min_forward_speed = 0.35
+            target_forward_speed = 1.0
+            forward_ball_vx = float(vxy[0])
+            useful_forward_kick = bool(
+                ball_kicked and forward_ball_vx >= min_forward_speed
+            )
+            episode_without_kick = bool(
+                (end_episode or terminated_by_x_threshold)
+                and not ball_kicked
+                and not terminated_by_kick
+            )
 
-            #print(f"angle: {controlled['angle']}, rod angle reward: {rod_angle_reward}")
+            kick_outcome_reward = 0.0
+            if useful_forward_kick:
+                speed_quality = np.clip(
+                    (forward_ball_vx - min_forward_speed)
+                    / (target_forward_speed - min_forward_speed),
+                    0.0,
+                    1.0,
+                )
+                kick_outcome_reward = 3.0 + 2.0 * float(speed_quality)
+            elif ball_kicked and forward_ball_vx < 0.0:
+                kick_outcome_reward = -1.5
+            elif ball_kicked:
+                kick_outcome_reward = -0.5
 
             reward_breakdown = {
-                "allignmment": allignment_quality_reward,
-                "rod_angle": rod_angle_reward * 0.25,
+                "time_penalty": -0.002,
+                "alignment": allignment_quality_reward * 0.02,
+                "kick_outcome": kick_outcome_reward,
+                "episode_without_kick": -1.0 if episode_without_kick else 0.0,
             }
             reward = sum(reward_breakdown.values())
 
@@ -1346,7 +1363,10 @@ class TwoRodPPOAgent(PPOAgent):
             else:
                 self.ep_reward += reward
 
-            if (not episode_finished_this_sample) and (terminated_by_kick or terminated_by_x_threshold or end_episode):
+            if (
+                not episode_finished_this_sample
+                and (ball_kicked or terminated_by_kick or terminated_by_x_threshold or end_episode)
+            ):
                 self.finish_episode(last_value=0)
                 self.episode_steps = 0
                 episode_finished_this_sample = True

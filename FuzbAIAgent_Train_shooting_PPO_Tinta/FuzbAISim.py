@@ -24,7 +24,7 @@ class FuzbAISim:
     def __init__(
         self,
         episode_end_ball_x_threshold_mm: float = 400.0,
-        kick_observed_rod_id: int = 4,
+        kick_observed_rod_id: int = 6,      # NOTE: Determine, for which rod the bal kicking is set
         render_gui: bool = False,
         self_play_config: bool = False,
         agent1_mode: str = "two_rod_ppo",
@@ -76,9 +76,9 @@ class FuzbAISim:
 
         """LATCHES"""
         self._ball_kicked_latch = False
-        self._kick_terminated_latch = False
+        self._kick_terminated_latch = True
         self._x_threshold_terminated_latch = False
-        self.terminate_episode_on_kick = False
+        self.terminate_episode_on_kick = True
         self.end_episode_latch = True
         self._end_episode_armed = False
 
@@ -134,8 +134,7 @@ class FuzbAISim:
             # - "two_rod_ppo": one controlled rod, one observed opponent rod
             # - "pass_ppo": PPO passing training initialized from the auxiliary backbone
             self.agent1_mode = str(agent1_mode)
-            #self.agent1_mode = "two_rod_ppo"
-            #self.agent1_mode = "pass_ppo"
+            
             
             if self.agent1_mode == "pass_ppo":
                 
@@ -154,16 +153,12 @@ class FuzbAISim:
                     observed_rod_id=7,
                     training_task="shooting",
                     opponent_active=False,
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/#25_1.pth",
-                    load_model=False,
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Shoting/#1.pth",
+                    load_model=True,
                     inference=False,
                     training_enabeled=True,
                 )
             elif self.agent1_mode == "single_rod_ppo":
-                """kwargs = dict(agent1_kwargs or {})
-                kwargs.setdefault(
-                    "model_save_path", "trained_models/single_rod_ppo"
-                )"""
                 self.p1 = PPOAgent(
                     controlled_rod_id=4,
                     model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#2-allignment-v2.pth",
@@ -259,7 +254,7 @@ class FuzbAISim:
         # PyBullet x maps to camera x as: camera_x_mm = 1000 * x - 115.
         # Rod 6 is around camera_x=830 mm, so x ~= 0.945 m.
         self.ball_spawn_areas = {
-            "behind": (1.05, 1.1),#(0.64, 0.66), #(0.62, 0.67), #0.75, 0.77)#
+            "behind": (0.93, 0.99),#(0.64, 0.66), #(0.62, 0.67), #0.75, 0.77)# 0.93 - 
             #"ahead": (1.02, 1.16),
         }
         self.ball_spawn_speed_range = (0.0, 0.0)
@@ -387,7 +382,7 @@ class FuzbAISim:
             # logs off should never change the reward/event behavior.
             if self.debug_print_red_kicks:
                 link_name = self._link_names_by_index.get(table_link, "unknown")
-                print(f"Ball kicked by link {table_link} ({link_name}), force={normal_force:.3f}, ")
+                #print(f"Ball kicked by link {table_link} ({link_name}), force={normal_force:.3f}, ")
 
             return
 

@@ -23,7 +23,6 @@ def player_alignment_target(*, ball_y: float, rod_info: dict):
     unavoidable_dist, player_index, target_rod_pos = min(candidates)
     return int(player_index), float(target_rod_pos), float(unavoidable_dist)
 
-
 def kick_force_reward(
     *,
     ball_kicked: bool,
@@ -41,7 +40,6 @@ def kick_force_reward(
     sigma = max(float(force_sigma), 1e-6)
     return float(reward_scale) * math.exp(-((force_error / sigma) ** 2))
 
-
 def simple_reward(*, goal_scored: bool, ball_kicked: bool, terminated_by_x_threshold: bool, rod_angle: float):
     """Event-based reward used for shooting PPO experiment.
 
@@ -58,7 +56,6 @@ def simple_reward(*, goal_scored: bool, ball_kicked: bool, terminated_by_x_thres
     }
     reward = float(sum(reward_breakdown.values()))
     return reward, reward_breakdown
-
 
 def shot_heading_goal_reward(
     *,
@@ -95,20 +92,47 @@ def shot_heading_goal_reward(
     sigma = max(float(y_sigma), 1e-6)
     return float(reward_scale) * math.exp(-((dist_to_goal_mouth / sigma) ** 2))
 
+def forward_backward_kick_reward(
+    *,
+    ball_kicked: bool,
+    forward_ball_vx: float,
+    forward_velocity_scale: float = 0.25,
+    backward_velocity_scale: float = 0.25,
+):
+    """Simple reward for teaching the agent to kick the ball forward.
+
+    This helper only looks at the ball's x velocity after a confirmed kick:
+    - positive x velocity gets a positive reward
+    - negative x velocity gets a negative penalty
+    """
+    # No kick means no direction reward.
+    if not ball_kicked:
+        return 0.0, {"forward_velocity": 0.0, "backward_velocity": 0.0}
+
+    # Split the x velocity into a forward part and a backward part.
+    forward_velocity = max(0.0, float(forward_ball_vx))
+    backward_velocity = max(0.0, -float(forward_ball_vx))
+
+    reward_breakdown = {
+        "forward_velocity": float(forward_velocity_scale) * forward_velocity,
+        "backward_velocity": -float(backward_velocity_scale) * backward_velocity,
+    }
+    reward = float(sum(reward_breakdown.values()))
+    return reward, reward_breakdown
 
 def kicking_reward(
     *,
-    goal_scored: bool,
+    #goal_scored: bool,
     ball_kicked: bool,
-    kick_normal_force: float | None = None,
-    ball_x: float,
-    ball_y: float,
+    #kick_normal_force: float | None = None,
+    #ball_x: float,
+    #ball_y: float,
     forward_ball_vx: float,
-    ball_vy: float,
-    missed_kick: bool = False,
-    episode_timeout: bool = False,
-    time_penalty: float = -0.001,
-    rod_alignment_reward: float = 0.0,
+    #ball_vy: float,
+    #missed_kick: bool = False,
+    #episode_timeout: bool = False,
+    #time_penalty: float = -0.001,
+    #rod_alignment_reward: float = 0.0,
     rod_angle: float = 0.0,
     target_rod_angle: float = 0.40,
     rod_angle_reward_scale: float = 0.006,
@@ -138,38 +162,41 @@ def kicking_reward(
     # --- Ball velocity rewards for kicking
     forward_velocity = max(0.0, float(forward_ball_vx)) if ball_kicked else 0.0
     backward_velocity = max(0.0, -float(forward_ball_vx)) if ball_kicked else 0.0
-    shot_heading_goal = shot_heading_goal_reward(
+    """shot_heading_goal = shot_heading_goal_reward(
         ball_kicked=ball_kicked,
         ball_x=ball_x,
         ball_y=ball_y,
         ball_vx=forward_ball_vx,
         ball_vy=ball_vy,
-    )
-    force_reward = kick_force_reward(
+    )"""
+    """force_reward = kick_force_reward(
         ball_kicked=ball_kicked,
         kick_normal_force=kick_normal_force,
         desired_kick_force=desired_kick_force,
         force_sigma=kick_force_sigma,
         reward_scale=kick_force_reward_scale,
-    )
+    )"""
+
+    #if ball_kicked:
+    #    print(f"Ball kicked, forward vx: {forward_velocity:.4f}, backward vx: {backward_velocity:.4f}")
 
     # --- Rod angle rewards for rotating the row for better kicking
-    angle_error = float(rod_angle) - float(target_rod_angle)
-    angle_sigma = max(float(rod_angle_sigma), 1e-6)
-    rod_angle_reward = float(rod_angle_reward_scale) * math.exp(-((angle_error / angle_sigma) ** 2))
+    #angle_error = float(rod_angle) - float(target_rod_angle)
+    #angle_sigma = max(float(rod_angle_sigma), 1e-6)
+    #rod_angle_reward = float(rod_angle_reward_scale) * math.exp(-((angle_error / angle_sigma) ** 2))
 
     reward_breakdown = {
-        "goal_scored": 10.0 if goal_scored else 0.0,
-        "time_penalty": float(time_penalty),
+        #"goal_scored": 10.0 if goal_scored else 0.0,
+        #"time_penalty": float(time_penalty),
         #"ball_kick": 0.25 if ball_kicked else 0.0,
         "forward_velocity": float(forward_velocity_scale) * forward_velocity,
         "backward_velocity": -float(backward_velocity_scale) * backward_velocity,
-        "shot_heading_goal": shot_heading_goal,
-        "kick_force": force_reward,
-        "missed_kick": -1.0 if missed_kick else 0.0,
-        "rod_alignment": 0.5 *float(rod_alignment_reward),
+        #"shot_heading_goal": shot_heading_goal,
+        #"kick_force": force_reward,
+        #"missed_kick": -1.0 if missed_kick else 0.0,
+        #"rod_alignment": 0.5 *float(rod_alignment_reward),
         #"rod_angle": rod_angle_reward,
-        "timeout": -0.2 if episode_timeout else 0.0,
+        #"timeout": -0.2 if episode_timeout else 0.0,
     }
     reward = float(sum(reward_breakdown.values()))
     #print(f"Reward: {reward:.4f}, target angle rod: {target_rod_angle:.4f}, rod angle: {rod_angle:.4f}, angle error: {angle_error:.4f}, angle reward: {rod_angle_reward:.4f}")
@@ -332,7 +359,6 @@ def maintaining_ball(
 
     return reward, reward_breakdown
     
-
 def closest_player_alignment_reward(
     *,
     ball_y: float,
@@ -351,7 +377,6 @@ def closest_player_alignment_reward(
     y_alignment = 1.0 - alignment_dist_y / float(rod_info["travel"])
 
     return float(reward_scale * y_alignment)
-
 
 def predictive_player_alignment_reward(
     *,
