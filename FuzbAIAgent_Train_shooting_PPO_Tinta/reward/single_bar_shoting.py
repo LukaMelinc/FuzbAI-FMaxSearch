@@ -444,9 +444,15 @@ def calculate_rod_angle_reward(
     
     if abs(float(rod_angle)) <= float(rotation_buffer_def):
         angle_error = 0
+    
+    #if abs(float(rod_angle)) == float(rotation_buffer_def):
+    #        angle_error = 0
+    
     elif abs(float(rod_angle)) > float(rotation_buffer_def):
         angle_error = float(rod_angle) - float(target_rod_angle)
 
+    #elif (float(rod_angle)) > float(rotation_buffer_def) or (float(rod_angle)) < float(rotation_buffer_def):
+    #        angle_error = float(rod_angle) - float(target_rod_angle)
 
     angle_reward = float(reward_scale) * math.exp(-((angle_error / max(float(angle_sigma), 1e-6)) ** 2))
     return angle_reward

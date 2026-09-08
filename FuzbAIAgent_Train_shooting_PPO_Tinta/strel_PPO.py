@@ -24,7 +24,8 @@ from reward.single_bar_shoting import (
     maintaining_ball,
     calculate_rod_angle_reward,
     predictive_player_alignment_reward,
-    forward_backward_kick_reward
+    forward_backward_kick_reward,
+    shot_heading_goal_reward,
 )
 
 
@@ -896,7 +897,7 @@ class PPOAgent:
             "translationVelocity": trans_velocity
         }
 
-        # Idle commands for the other rods
+        # Idle commands for the other rods - RED RODS
         idle_commands = [
             {
                 "driveID": 2,
@@ -1022,6 +1023,9 @@ class TwoRodPPOAgent(PPOAgent):
         training_task="defending",
         opponent_active=True,
         target_rod_angle=0.085,
+        desired_kick_force=12.0,
+        kick_force_sigma=8.0,
+        kick_force_reward_scale=0.35,
         training_enabeled=True,
         load_model=False,
         inference=False,
@@ -1055,6 +1059,9 @@ class TwoRodPPOAgent(PPOAgent):
         self.training_task = str(training_task).lower()
         self.opponent_active = bool(opponent_active)
         self.target_rod_angle = float(target_rod_angle)
+        self.desired_kick_force = float(desired_kick_force)
+        self.kick_force_sigma = float(kick_force_sigma)
+        self.kick_force_reward_scale = float(kick_force_reward_scale)
         self.model_name = f"two_rod_{self.training_task}"
         self.rods_by_id = {int(rod["id"]): rod for rod in self.geometry["rods"]}
         self.field_x = float(self.geometry["field"]["dimension_x"])
@@ -1275,16 +1282,7 @@ class TwoRodPPOAgent(PPOAgent):
 
         episode_finished_this_sample = False
         if self.last_obs is not None:
-            """reward, reward_breakdown = self.calculate_reward(
-                bxy,
-                vxy,
-                controlled,
-                goal_scored=goal_scored,
-                ball_kicked=ball_kicked,
-                kick_normal_force=float(camera.get("kick_normal_force", 0.0)),
-                terminated_by_x_threshold=terminated_by_x_threshold,
-                end_episode=end_episode,
-            )"""
+
 
             allignment_quality_reward = closest_player_alignment_reward(
                             ball_y=bxy[1],
@@ -1296,13 +1294,14 @@ class TwoRodPPOAgent(PPOAgent):
             min_forward_speed = 0.35
             target_forward_speed = 1.0
             forward_ball_vx = float(vxy[0])
+            shot_attempted = self.current_episode_ball_kicks > 0 or ball_kicked
+            first_kick = ball_kicked and self.current_episode_ball_kicks == 0
             useful_forward_kick = bool(
-                ball_kicked and forward_ball_vx >= min_forward_speed
+                first_kick and forward_ball_vx >= min_forward_speed
             )
-            episode_without_kick = bool(
-                (end_episode or terminated_by_x_threshold)
-                and not ball_kicked
-                and not terminated_by_kick
+            episode_ended = bool(end_episode or terminated_by_x_threshold)
+            missed_shot = bool(
+                episode_ended and shot_attempted and not goal_scored
             )
 
             kick_outcome_reward = 0.0
@@ -1313,17 +1312,43 @@ class TwoRodPPOAgent(PPOAgent):
                     0.0,
                     1.0,
                 )
-                kick_outcome_reward = 3.0 + 2.0 * float(speed_quality)
-            elif ball_kicked and forward_ball_vx < 0.0:
-                kick_outcome_reward = -1.5
-            elif ball_kicked:
+                kick_outcome_reward = 0.5 + 0.5 * float(speed_quality)
+            elif first_kick and forward_ball_vx < 0.0:
+                kick_outcome_reward = -1.0
+            elif first_kick:
                 kick_outcome_reward = -0.5
+
+            shot_aim_reward = shot_heading_goal_reward(
+                ball_kicked=useful_forward_kick,
+                ball_x=bxy[0],
+                ball_y=bxy[1],
+                ball_vx=forward_ball_vx,
+                ball_vy=float(vxy[1]),
+                goal_x=self.field_x,
+                goal_y_center=self.field_y / 2.0,
+                goal_width=float(self.geometry["goal_width"]),
+                min_forward_vx=min_forward_speed,
+                reward_scale=2.0,
+                y_sigma=100.0,
+            )
 
             reward_breakdown = {
                 "time_penalty": -0.002,
-                "alignment": allignment_quality_reward * 0.02,
+                "alignment": (
+                    allignment_quality_reward * 0.02
+                    if not shot_attempted
+                    else 0.0
+                ),
                 "kick_outcome": kick_outcome_reward,
-                "episode_without_kick": -1.0 if episode_without_kick else 0.0,
+                "shot_aim": shot_aim_reward,
+                "goal_scored": 10.0 if goal_scored else 0.0,
+                "opponent_goal": -5.0 if opponent_goal_scored else 0.0,
+                "missed_shot": -2.0 if missed_shot else 0.0,
+                "episode_without_shot": (
+                    -1.0
+                    if episode_ended and not shot_attempted and not goal_scored
+                    else 0.0
+                ),
             }
             reward = sum(reward_breakdown.values())
 
@@ -1365,7 +1390,7 @@ class TwoRodPPOAgent(PPOAgent):
 
             if (
                 not episode_finished_this_sample
-                and (ball_kicked or terminated_by_kick or terminated_by_x_threshold or end_episode)
+                and (terminated_by_kick or terminated_by_x_threshold or end_episode)
             ):
                 self.finish_episode(last_value=0)
                 self.episode_steps = 0
@@ -1440,12 +1465,22 @@ class PassPPOAgent(PPOAgent):
         auto_train=True,
         action_std_override=(0.3, 0.3, 0.30, 0.30, 0.3, 0.3, 0.30, 0.30),
         target_rod_angle=0.085,
+        desired_kick_force=12.0,
+        kick_force_sigma=8.0,
+        kick_force_reward_scale=0.35,
+        no_kick_timeout_penalty=-1.0,
     ):
         self.passer_rod_id = int(passer_rod_id)
         self.receiver_rod_id = int(receiver_rod_id)
         self.opponent_rod_id = int(opponent_rod_id)
         self.backbone_model_path = backbone_model_path
         self.target_rod_angle = float(target_rod_angle)
+        self.desired_kick_force = float(desired_kick_force)
+        self.kick_force_sigma = float(kick_force_sigma)
+        self.kick_force_reward_scale = float(kick_force_reward_scale)
+        self.no_kick_timeout_penalty = float(no_kick_timeout_penalty)
+        if not math.isfinite(self.no_kick_timeout_penalty) or self.no_kick_timeout_penalty > 0:
+            raise ValueError("no_kick_timeout_penalty must be finite and non-positive")
 
         self.obs_dim = int(obs_dim)
         self.act_dim = int(act_dim)
@@ -1621,120 +1656,7 @@ class PassPPOAgent(PPOAgent):
         #assert len(obs) == self.obs_dim, f"Expected obs_dim={self.obs_dim}, got {len(obs)}"
         return obs, (ball_x, ball_y), (ball_vx, ball_vy), passer, receiver, opponent
 
-    def compute_pass_reward(
-        self,
-        bxy,
-        vxy,
-        receiver,
-        passer,
-        *,
-        ball_kicked,
-        kick_normal_force,
-        threshold_failure,
-        episode_timeout,
-    ):
-        """
-        Allignment reciever/passing palice z žogico:
-            "rod_angle_reward": rod_angle_reward * 0.2,
-            "rod_alignment_reward": alignment_quality,
-
-        Passer kicking the ball:
-
-        Reciever stopping the ball:
-
-
-        End-to-end passing the ball:
-
-
-        """
-        ball_x = float(bxy[0])
-        ball_y = float(bxy[1])
-        ball_vx, ball_vy = (float(vxy[0]), float(vxy[1]))
-        receiver_x = float(receiver["info"]["position"])
-
-
-        alignment_quality_receiver = closest_player_alignment_reward(
-            ball_y=ball_y,
-            rod_pos_calib=float(receiver["pos_calib"]),
-            rod_info=receiver["info"],
-            reward_scale=1.0
-        )
-
-        allignment_quality_passer = closest_player_alignment_reward(
-            ball_y=ball_y,
-            rod_pos_calib=float(passer["pos_calib"]),
-            rod_info=passer["info"],
-            reward_scale=1.0,
-        )
-
-        rod_angle_reward = calculate_rod_angle_reward(
-            rod_angle=float(receiver["angle"]),
-            target_rod_angle=0.0
-        )
-
-        kick_force = kick_force_reward(
-            ball_kicked=ball_kicked,
-            kick_normal_force=kick_normal_force,
-            desired_kick_force=12.0,
-            force_sigma=8.0,
-            reward_scale=0.35,
-        )
-
-
-        # The rod's effective receiving area is close to its fixed x position.
-        x_error_mm = abs(ball_x - receiver_x)
-        x_zone_radius_mm = 70.0
-        in_receive_zone = x_error_mm <= x_zone_radius_mm
-        zone_quality = math.exp(-((x_error_mm / 55.0) ** 2))
-
-        abs_vx, abs_vy = abs(ball_vx), abs(ball_vy)
-        speed = math.hypot(ball_vx, ball_vy)
-        vx_reduction = 0.0
-        vy_reduction = 0.0
-        if self.prev_ball_vxy is not None:
-            prev_vx, prev_vy = map(float, self.prev_ball_vxy)
-            vx_reduction = max(0.0, abs(prev_vx) - abs_vx)
-            vy_reduction = max(0.0, abs(prev_vy) - abs_vy)
-
-        # A low-speed reward is continuous rather than a one-off event.  That
-        # makes "keep control" valuable until the normal episode timeout.
-        controlled_speed_quality = math.exp(-((speed / 0.12) ** 2))
-        stopped = speed <= 0.08
-
-        vicinity_reward = 0.05 * zone_quality
-        speed_reduction_reward = 0.0
-        if in_receive_zone:
-            speed_reduction_reward = 0.9 * (vx_reduction + 0.7 * vy_reduction) * zone_quality
-
-        controlled_ball_reward = 0.0
-        if in_receive_zone:
-            controlled_ball_reward = 0.75 * controlled_speed_quality * zone_quality
-
-        stopped_ball_reward = 0.0
-        if in_receive_zone and stopped:
-            stopped_ball_reward = 8.0 * zone_quality
-
-        threshold_failure_penalty = -1.5 if threshold_failure else 0.0
-        timeout_penalty = -0.2 if episode_timeout else 0.0
-        
-
-        
-
-        reward_breakdown = {
-            #"rod_angle_reward": rod_angle_reward * 0.25,
-            #"rod_alignment_reward_passer": allignment_quality_passer,
-            #"rod_alignment_reward_receiver": alignment_quality_receiver,
-            #"vicinity_reward": vicinity_reward,
-            "speed_reduction_reward": speed_reduction_reward,
-            "controlled_ball_reward": controlled_ball_reward,
-            "stopped_ball_reward": stopped_ball_reward,
-            "kick_force": kick_force,
-            #"threshold_failure": threshold_failure_penalty,
-            "episode_timeout": timeout_penalty,
-        }
-
-
-        return float(sum(reward_breakdown.values())), reward_breakdown
+    
 
     def scale_to_motor_commands(self, action):
         return [
@@ -1790,21 +1712,82 @@ class PassPPOAgent(PPOAgent):
 
         episode_finished_this_sample = False
         if self.last_obs is not None and self.training_enabled:
-            reward, reward_breakdown = self.compute_pass_reward(
-                bxy,
-                vxy,
-                receiver,
-                passer,
-                ball_kicked=ball_kicked,
-                kick_normal_force=float(camera.get("kick_normal_force", 0.0)),
-                threshold_failure=terminated_by_x_threshold,
-                episode_timeout=(
-                    end_episode
-                    and not terminated_by_kick
-                    and not terminated_by_x_threshold
-                    and not ball_kicked
-                ),
+
+            """ ### --- STEP 1 -> Maintaining alignment and rod angle --- ###
+
+            # Part1 - allignment quality reward
+            allignment_quality = closest_player_alignment_reward(
+                ball_y=bxy[1],
+                rod_pos_calib=float(passer["pos_calib"]),
+                rod_info=passer["info"],
+                reward_scale=1.0,
             )
+
+            # Part2 - rod angle reward
+            angle_reward = calculate_rod_angle_reward(
+                rod_angle=float(passer["angle"]),
+                reward_scale=1.0,
+                target_rod_angle=0.0,
+                rotation_buffer_def=3
+            )
+
+            #print(f"[PassPPO] Alignment quality: {allignment_quality:.3f}, Rod angle reward: {angle_reward:.3f}")
+            reward_breakdown = {
+                "alignment": allignment_quality,
+                #"rod_angle": angle_reward * 0.25,
+            }"""
+
+            """### --- STEP 2 -> Kicking forward with a certain speed --- ###
+            first_kick = ball_kicked and self.current_episode_ball_kicks == 0
+            no_kick_timeout = bool(
+                camera.get("terminated_by_timeout", False)
+                and not (ball_kicked or terminated_by_kick or terminated_by_x_threshold)
+                and self.current_episode_ball_kicks == 0
+            )
+            forward = first_kick and vxy[0] > 0
+            backward = first_kick and vxy[0] < 0
+
+
+
+            # 1. Reward forward kicks.
+            forward_reward = 4.0 if forward else 0.0
+
+            # 2. Penalize backward kicks.
+            backward_penalty = -1.0 if backward else 0.0
+
+            # 3. Reward force close to the target, only for forward kicks.
+            force_reward = kick_force_reward(
+                ball_kicked=forward,
+                kick_normal_force=kick_normal_force,
+                desired_kick_force=self.desired_kick_force,
+                force_sigma=self.kick_force_sigma,
+                reward_scale=self.kick_force_reward_scale,
+            )
+
+            allignment_quality = closest_player_alignment_reward(
+                            ball_y=bxy[1],
+                            rod_pos_calib=float(passer["pos_calib"]),
+                            rod_info=passer["info"],
+                            reward_scale=1.0,
+                        )
+
+            reward_breakdown = {
+                "forward_kick": forward_reward,
+                "backward_kick": backward_penalty,
+                "kick_force": force_reward,
+                "alignment": allignment_quality * 0.015,
+                "no_kick_timeout": self.no_kick_timeout_penalty if no_kick_timeout else 0.0,
+            }"""
+
+
+            ### --- STEP 3 -> Reward for kicking with a certain force --- ###
+
+            
+
+            reward = sum(reward_breakdown.values())
+
+            
+
             for key, value in reward_breakdown.items():
                 self.update_reward_breakdown_sums[key] = (
                     self.update_reward_breakdown_sums.get(key, 0.0) + float(value)

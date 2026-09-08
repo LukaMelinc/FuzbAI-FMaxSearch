@@ -92,7 +92,7 @@ class PlayerAgent():
                 if self.demo_state == -1:
                     cmd = {
                                 "driveID": playerMapping[i],
-                                "rotationTargetPosition": 0.0,      # Normal position
+                                "rotationTargetPosition": 0.5,      # Normal position
                                 "rotationVelocity": 0.5,            # Reduced rotational speed
                                 "translationTargetPosition": 0.5,
                                 "translationVelocity": 0.5 }        # Max translational speed
@@ -104,7 +104,7 @@ class PlayerAgent():
                         # Translational move                    
                         cmd = {
                                 "driveID": playerMapping[i],
-                                "rotationTargetPosition": 0.0,      # Normal position
+                                "rotationTargetPosition": 0.50,      # Normal position
                                 "rotationVelocity": 0.2,            # Reduced rotational speed
                                 "translationTargetPosition": 0.5 + math.sin(time.time() - self.demo_t) * 0.5,
                                 "translationVelocity": 1.0 }        # Max translational speed
@@ -160,7 +160,7 @@ class PlayerAgent():
                 if self.demo_state == -1:
                     cmd = {
                                 "driveID": playerMapping[i],
-                                "rotationTargetPosition": -0.0,      # Normal position
+                                "rotationTargetPosition": -0.5,      # Normal position
                                 "rotationVelocity": 0.5,            # Reduced rotational speed
                                 "translationTargetPosition": 0.50,
                                 "translationVelocity": 0.0 }        # Max translational speed

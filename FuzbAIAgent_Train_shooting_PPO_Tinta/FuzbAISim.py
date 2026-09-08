@@ -24,10 +24,10 @@ class FuzbAISim:
     def __init__(
         self,
         episode_end_ball_x_threshold_mm: float = 400.0,
-        kick_observed_rod_id: int = 6,      # NOTE: Determine, for which rod the bal kicking is set
+        kick_observed_rod_id: int = 4,      # NOTE: Determine, for which rod the bal kicking is set
         render_gui: bool = False,
         self_play_config: bool = False,
-        agent1_mode: str = "two_rod_ppo",
+        agent1_mode: str = "pass_ppo",
         agent1_kwargs: dict = None,
         imitation_ball_x_threshold: float = 605.0,
     ):
@@ -76,10 +76,11 @@ class FuzbAISim:
 
         """LATCHES"""
         self._ball_kicked_latch = False
-        self._kick_terminated_latch = True
+        self._kick_terminated_latch = False#True
         self._x_threshold_terminated_latch = False
-        self.terminate_episode_on_kick = True
-        self.end_episode_latch = True
+        self.terminate_episode_on_kick = False#True
+        self.end_episode_latch = False#True
+        self._timeout_terminated_latch = False
         self._end_episode_armed = False
 
         # Threshold of num of steps to end the iteration
@@ -98,6 +99,7 @@ class FuzbAISim:
         self.physics_timestep = 1.0 / 240.0
         self.physics_steps_per_loop = 4
         self.gui_sleep_s = 0.0
+
 
         self.stepDisp = None
         self.layer_freezing = True
@@ -142,7 +144,7 @@ class FuzbAISim:
                     passer_rod_id=4,
                     receiver_rod_id=6,
                     opponent_rod_id=5,
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#1-allignment-speed1.pth",
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Passing/pass_ppo_steps_855129.pth",
                     load_model=True,
                     inference=True,
                     training_enabeled=False,
@@ -155,8 +157,8 @@ class FuzbAISim:
                     opponent_active=False,
                     model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Shoting/#1.pth",
                     load_model=True,
-                    inference=False,
-                    training_enabeled=True,
+                    inference=True,
+                    training_enabeled=False,
                 )
             elif self.agent1_mode == "single_rod_ppo":
                 self.p1 = PPOAgent(
@@ -178,9 +180,6 @@ class FuzbAISim:
             self.p2 = PlayerAgent()
 
 
-        for name, _ in self.p1.ac.named_parameters():
-            print(f"Parameter: {name}")
-
         if self.p1.training_enabled and self.layer_freezing:
             
             """modules_to_reinitialize = [
@@ -200,15 +199,24 @@ class FuzbAISim:
             # [receiver_rotation_target, receiver_rotation_velocity,
             #  receiver_translation_target, receiver_translation_velocity].
             #self.p1.learning_action_slice = slice(4, 8)
-            #self.p1.learning_action_slice = slice(0, 3)
+            #print(self.p1.learning_action_slice)
+            #print(F"action slice")
+            #self.p1.learning_action_slice = slice(0, 4)
+            #self.p1.learning_action_slice = slice(2, 4)    # Passer translation
+            self.p1.learning_action_slice = slice(0, 2)    # Passer rotation
             #self.p1.log_std.data[4:8].fill_(math.log(0.30))
 
-            #self.p1.freeze_layers(self.p1.ac, {
-                # Stage 2 receiver training: keep the trained passer path fixed,
-                # and train only the receiver path plus the critic.
-                #"rotation_head",
-            #})
-            #self.p1.rebuild_optimizer()
+            self.p1.freeze_layers(self.p1.ac, {
+                "passer_encoder",
+                "passer_rotation_head",
+                #"passer_translation_head",
+                "critic",
+            })
+
+            #with torch.no_grad():
+            #    self.p1.log_std[:2].fill_(math.log(2.9))
+
+            self.p1.rebuild_optimizer()
 
         # Camera delay settings
         #self.simulatedDelay = 0.030
@@ -254,7 +262,7 @@ class FuzbAISim:
         # PyBullet x maps to camera x as: camera_x_mm = 1000 * x - 115.
         # Rod 6 is around camera_x=830 mm, so x ~= 0.945 m.
         self.ball_spawn_areas = {
-            "behind": (0.93, 0.99),#(0.64, 0.66), #(0.62, 0.67), #0.75, 0.77)# 0.93 - 
+            "behind": (0.64, 0.66), #(0.62, 0.67), #0.75, 0.77)# 0.93 - 0.62
             #"ahead": (1.02, 1.16),
         }
         self.ball_spawn_speed_range = (0.0, 0.0)
@@ -382,7 +390,7 @@ class FuzbAISim:
             # logs off should never change the reward/event behavior.
             if self.debug_print_red_kicks:
                 link_name = self._link_names_by_index.get(table_link, "unknown")
-                #print(f"Ball kicked by link {table_link} ({link_name}), force={normal_force:.3f}, ")
+                print(f"Ball kicked by link {table_link} ({link_name}), force={normal_force:.3f}, ")
 
             return
 
@@ -480,6 +488,7 @@ class FuzbAISim:
             "terminated_by_kick": bool(self._kick_terminated_latch),
             "terminated_by_x_threshold": bool(self._x_threshold_terminated_latch),
             "end_episode": bool(self.end_episode_latch),
+            "terminated_by_timeout": bool(self._timeout_terminated_latch),
         }
 
     def reset_step_counter(self):
@@ -569,7 +578,8 @@ class FuzbAISim:
 
         # IMPORTANT: Tilted groudn from 0.0 - 0.9 and from 0.67 on
 
-        y_range = (0.091, 0.67)
+        #0y_range = (0.091, 0.67)
+        y_range = (0.18, 0.55)  # Streljanje iz ožjega prostora
         spawn_side, x_range = random.choice(list(self.ball_spawn_areas.items()))
 
         custom_x = random.uniform(*x_range)
@@ -818,6 +828,14 @@ class FuzbAISim:
                     self.current_step += 1
                     self.showCurrentStep()
 
+                    # Deliver the terminal state before resetting the ball.
+                    if (self.current_step >= self.max_num_steps
+                            and not (self._kick_terminated_latch
+                                     or self._x_threshold_terminated_latch
+                                     or self.end_episode_latch)):
+                        self._timeout_terminated_latch = True
+                        self.end_episode_latch = True
+
 
                     try:     
                         if self.self_play_manager is not None:
@@ -881,12 +899,8 @@ class FuzbAISim:
 
                     prev_t = self.t
 
-                    episode_ended_this_control_step = bool(
-                        self._kick_terminated_latch
-                        or self._x_threshold_terminated_latch
-                        or self.end_episode_latch
-                    )
                     reset_after_kick = bool(self._kick_terminated_latch)
+                    reset_after_timeout = bool(self._timeout_terminated_latch)
 
                     # Clear per-step latches after agents have consumed the observation stream
                     self._ball_kicked_latch = False
@@ -894,13 +908,14 @@ class FuzbAISim:
                     self._kick_terminated_latch = False
                     self._x_threshold_terminated_latch = False
                     self.end_episode_latch = False
+                    self._timeout_terminated_latch = False
 
                     if reset_after_kick:
                         self.ResetBallToLocation(mark_episode_end=False)
                         self.round += 1
                         self.reset_step_counter()
-                    elif (not episode_ended_this_control_step) and self.current_step >= self.max_num_steps:
-                        self.ResetBallToLocation()
+                    elif reset_after_timeout:
+                        self.ResetBallToLocation(mark_episode_end=False)
                         self.round += 1
                         self.reset_step_counter()     
 
