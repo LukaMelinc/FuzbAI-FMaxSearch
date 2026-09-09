@@ -1559,7 +1559,6 @@ class PassPPOAgent(PPOAgent):
         elif load_backbone:
             self.load_backbone_model()
 
-
     @staticmethod
     def freeze_layers(model, trainable_prefixes):
         for name, param in model.named_parameters():
@@ -1708,6 +1707,8 @@ class PassPPOAgent(PPOAgent):
         ball_kicked = bool(camera.get("ball_kicked", False))
         kick_normal_force = float(camera.get("kick_normal_force", 0.0))
 
+        #print(f"Force: {kick_normal_force:.3}")
+
         
 
         episode_finished_this_sample = False
@@ -1780,7 +1781,60 @@ class PassPPOAgent(PPOAgent):
             }"""
 
 
-            ### --- STEP 3 -> Reward for kicking with a certain force --- ###
+            """### --- STEP 3 (2.1) -> Reward for kicking with a certain force --- ###
+
+            kick_power_reward = kick_force_reward(
+                ball_kicked=ball_kicked,
+                kick_normal_force=float(kick_normal_force),
+                desired_kick_force=12.0,
+                force_sigma=8.0,
+                reward_scale=2.0,
+            )
+
+            reward_breakdown = {
+                "kick_power": kick_power_reward,
+            }"""
+
+            ### --- RECEIVER TRAINING --- ###
+
+            ### --- STEP 4 -> Alligning the receiving rod with the ball trajectory --- ###
+            
+            allignment = predictive_player_alignment_reward(
+                ball_x=bxy[0],
+                ball_y=bxy[1],
+                ball_vx=vxy[0],
+                ball_vy=vxy[1],
+                rod_x=float(receiver['info']['position']),
+                rod_pos_calib=float(receiver['pos_calib']),
+                rod_info=receiver['info'],
+                vx_threshold=0.1,
+                t_max = 2.0,
+                reward_scale=1.0
+
+            )
+
+            print(f"Allignment reward. {allignment:.3f}")
+
+            rod_angle = calculate_rod_angle_reward(
+                rod_angle=float(receiver["angle"]),
+                reward_scale=1.0,
+                target_rod_angle=-3.0,
+                rotation_buffer_def=3
+                )
+
+            
+
+            reward_breakdown = {
+                "allignment": allignment,
+                "rod_angle": rod_angle
+            }
+
+            """### --- STEP 5
+            
+            """
+
+            ### --- END-TO-END TRAINING --- ###
+
 
             
 

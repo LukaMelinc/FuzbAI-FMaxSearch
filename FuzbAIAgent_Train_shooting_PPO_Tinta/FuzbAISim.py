@@ -23,7 +23,7 @@ from log_utils import setup_logging
 class FuzbAISim:
     def __init__(
         self,
-        episode_end_ball_x_threshold_mm: float = 400.0,
+        episode_end_ball_x_threshold_mm: float = 5.0,       # Threshold for terminating episodes
         kick_observed_rod_id: int = 4,      # NOTE: Determine, for which rod the bal kicking is set
         render_gui: bool = False,
         self_play_config: bool = False,
@@ -43,6 +43,8 @@ class FuzbAISim:
         self.ballPos = None
         self.ballVel = None
         self.render_gui = bool(render_gui)
+        self.rod6_crossing_y = None  # Predicted world Y in metres, or None.
+        self._trajectory_debug_ids = []
 
         self.scoreDisp = None # Text used for score display
         self.roundDisp = None # Text used for round count display
@@ -98,7 +100,7 @@ class FuzbAISim:
         self._warned_empty_kick_links = False
         self.physics_timestep = 1.0 / 240.0
         self.physics_steps_per_loop = 4
-        self.gui_sleep_s = 0.0
+        self.gui_sleep_s = 0.03
 
 
         self.stepDisp = None
@@ -144,10 +146,10 @@ class FuzbAISim:
                     passer_rod_id=4,
                     receiver_rod_id=6,
                     opponent_rod_id=5,
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Passing/pass_ppo_steps_855129.pth",
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Passing/#3.pth",
                     load_model=True,
-                    inference=True,
-                    training_enabeled=False,
+                    inference=False,
+                    training_enabeled=True,
                 )
             elif self.agent1_mode == "two_rod_ppo":
                 self.p1 = TwoRodPPOAgent(
@@ -181,40 +183,39 @@ class FuzbAISim:
 
 
         if self.p1.training_enabled and self.layer_freezing:
-            
-            """modules_to_reinitialize = [
+
+            # For reseting the networks
+            modules_to_reinitialize = [
                 self.p1.ac.critic,
-                self.p1.ac.receiver_encoder,
-                self.p1.ac.receiver_translation_head,
-                self.p1.ac.receiver_rotation_head,
+                #self.p1.ac.receiver_encoder,
+                #self.p1.ac.receiver_translation_head,
+                #self.p1.ac.receiver_rotation_head,
             ]
 
             for root_module in modules_to_reinitialize:
                 for module in root_module.modules():
                     if hasattr(module, "reset_parameters"):
                         module.reset_parameters()
-            """
-
-            # Stage 2 learns only the receiver action dimensions:
-            # [receiver_rotation_target, receiver_rotation_velocity,
-            #  receiver_translation_target, receiver_translation_velocity].
-            #self.p1.learning_action_slice = slice(4, 8)
+            
+            self.p1.learning_action_slice = slice(4, 8) # Which action dimensions to train (0-4: passer, 4-8: receiver)
             #print(self.p1.learning_action_slice)
             #print(F"action slice")
             #self.p1.learning_action_slice = slice(0, 4)
             #self.p1.learning_action_slice = slice(2, 4)    # Passer translation
-            self.p1.learning_action_slice = slice(0, 2)    # Passer rotation
+            #self.p1.learning_action_slice = slice(0, 2)    # Passer rotation
             #self.p1.log_std.data[4:8].fill_(math.log(0.30))
 
             self.p1.freeze_layers(self.p1.ac, {
-                "passer_encoder",
-                "passer_rotation_head",
+                "receiver_encoder",
+                "receiver_rotation_head",
+                "receiver_translation_head",
+                #"passer_encoder",
+                #"passer_rotation_head",
                 #"passer_translation_head",
                 "critic",
             })
 
-            #with torch.no_grad():
-            #    self.p1.log_std[:2].fill_(math.log(2.9))
+
 
             self.p1.rebuild_optimizer()
 
@@ -262,10 +263,10 @@ class FuzbAISim:
         # PyBullet x maps to camera x as: camera_x_mm = 1000 * x - 115.
         # Rod 6 is around camera_x=830 mm, so x ~= 0.945 m.
         self.ball_spawn_areas = {
-            "behind": (0.64, 0.66), #(0.62, 0.67), #0.75, 0.77)# 0.93 - 0.62
+            "behind": (0.15, 0.16), #(0.62, 0.67), #0.75, 0.77)# 0.93 - 0.62
             #"ahead": (1.02, 1.16),
         }
-        self.ball_spawn_speed_range = (0.0, 0.0)
+        self.ball_spawn_speed_range = (0.29, 0.3)
         
         # ONLY FOR IMITATION MODE #
         if self.agent1_mode in {
@@ -412,7 +413,6 @@ class FuzbAISim:
         except Exception:
             return
 
-        #print(f"ball x: {ball_x_mm:.1f} mm")
 
 
         # NOTE: Point of termination due to x-threshold crossing
@@ -553,6 +553,50 @@ class FuzbAISim:
             replaceItemUniqueId=replace_id,
         )
 
+    @staticmethod
+    def predict_crossing_y(position, velocity, target_x):
+        """Straight-line crossing in world metres; ignores collisions/acceleration."""
+        x, y = position[:2]
+        vx, vy = velocity[:2]
+        if vx <= 1e-6 or x >= target_x:
+            return None
+        time_to_rod = (target_x - x) / vx
+        return y + vy * time_to_rod
+
+    def showBallTrajectory(self):
+        target_x = self.rod6_x
+        self.rod6_crossing_y = self.predict_crossing_y(
+            self.ballPos, self.ballVel[0], target_x,
+        ) if self.ballPos[2] >= 0.1 else None
+        if not self.render_gui:
+            return
+        if self.rod6_crossing_y is None:
+            for item in self._trajectory_debug_ids:
+                p.removeUserDebugItem(item)
+            self._trajectory_debug_ids = []
+            return
+
+        y = self.rod6_crossing_y
+        z = self.ballPos[2] + 0.025  # Draw above the ball/table surface.
+        color = [0, 0.8, 1]
+        old_ids = self._trajectory_debug_ids or [-1] * 4
+        segments = [
+            ([self.ballPos[0], self.ballPos[1], z], [target_x, y, z]),
+            ([target_x - 0.015, y, z], [target_x + 0.015, y, z]),
+            ([target_x, y - 0.015, z], [target_x, y + 0.015, z]),
+        ]
+        self._trajectory_debug_ids = [
+            p.addUserDebugLine(start, end, color, lineWidth=3,
+                               replaceItemUniqueId=old_ids[i])
+            for i, (start, end) in enumerate(segments)
+        ]
+        # Match the player-1 camera Y convention used by getCameraDict().
+        self._trajectory_debug_ids.append(p.addUserDebugText(
+            f"Rod 6: Y={730 - 1000 * y:.1f} mm (straight-line)",
+            [target_x + 0.025, y, z + 0.025], textColorRGB=color,
+            textSize=1.2, replaceItemUniqueId=old_ids[3],
+        ))
+
     def sampleCameras(self, t):
         self.delayedMemory.append((t, self.getCameraDict(1), self.getCameraDict(2)))
         #print(self.delayedMemory[-1])
@@ -578,8 +622,8 @@ class FuzbAISim:
 
         # IMPORTANT: Tilted groudn from 0.0 - 0.9 and from 0.67 on
 
-        #0y_range = (0.091, 0.67)
-        y_range = (0.18, 0.55)  # Streljanje iz ožjega prostora
+        y_range = (0.091, 0.67)
+        #y_range = (0.18, 0.55)  # Streljanje iz ožjega prostora
         spawn_side, x_range = random.choice(list(self.ball_spawn_areas.items()))
 
         custom_x = random.uniform(*x_range)
@@ -594,9 +638,9 @@ class FuzbAISim:
 
         # Send the ball toward rod 6 from either side.
         x_sign = 1.0 if spawn_side == "behind" else -1.0
-        rnd_vector_x = random.uniform(-1.0, 0.0)
+        rnd_vector_x = random.uniform(1.0, 0.0)
         #rnd_vector_y = random.uniform(-0.0, 0.0)
-        rnd_vector_y = random.uniform(-0.35, 0.35)
+        rnd_vector_y = random.uniform(-0.25, 0.25)
         velocity_vector = [x_sign * rnd_vector_x, rnd_vector_y, 0.0]
         norm = (velocity_vector[0]**2 + velocity_vector[1]**2) ** 0.5
         velocity = [v / norm * speed for v in velocity_vector]
@@ -698,6 +742,8 @@ class FuzbAISim:
         
         # Import main URDF model
         self.mizaId = p.loadURDF("urdf/miza_garlando.urdf",mizaStartPos, mizaStartOrientation, useFixedBase=1)
+        # Use rod 6's actual world-frame X from the loaded model.
+        self.rod6_x = p.getLinkState(self.mizaId, self.revJoints[5])[4][0]
 
         # Resolve link indices for kick detection on the controlled rod
         self._init_kick_player_links()
@@ -779,6 +825,7 @@ class FuzbAISim:
 
                 self.ballPos, ballOrn = p.getBasePositionAndOrientation(self.ball)        
                 self.ballVel = p.getBaseVelocity(self.ball)
+                self.showBallTrajectory()
 
 
                 if self.ballPos[2] < 0.1:
