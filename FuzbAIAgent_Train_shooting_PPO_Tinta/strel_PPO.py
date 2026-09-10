@@ -901,8 +901,8 @@ class PPOAgent:
         idle_commands = [
             {
                 "driveID": 2,
-                "rotationTargetPosition": 0.5,
-                "rotationVelocity": 0.1,
+                "rotationTargetPosition": 5,
+                "rotationVelocity": 0.5,
                 "translationTargetPosition": 0.5,
                 "translationVelocity": 0.0
             },
@@ -1658,10 +1658,21 @@ class PassPPOAgent(PPOAgent):
     
 
     def scale_to_motor_commands(self, action):
-        return [
+        commands = [
             self._command_for_rod(self.passer_rod_id, action[0:4]),
             self._command_for_rod(self.receiver_rod_id, action[4:8]),
         ]
+        # Park the unused red goalkeeper and defenders with their legs up.
+        for rod_id in (1, 2, 3):
+            if rod_id not in (self.passer_rod_id, self.receiver_rod_id):
+                commands.append({
+                    "driveID": rod_id,  # Red rods 1 and 2 map to drives 1 and 2.
+                    "rotationTargetPosition": 0.5,  # Half a turn = legs up.
+                    "rotationVelocity": 0.5,
+                    "translationTargetPosition": 0.5,  # Centered.
+                    "translationVelocity": 0.5,
+                })
+        return commands
 
     def _command_for_rod(self, rod_id, action_slice):
         red_rod_to_drive_id = {
@@ -1707,7 +1718,6 @@ class PassPPOAgent(PPOAgent):
         ball_kicked = bool(camera.get("ball_kicked", False))
         kick_normal_force = float(camera.get("kick_normal_force", 0.0))
 
-        #print(f"Force: {kick_normal_force:.3}")
 
         
 
@@ -1808,25 +1818,25 @@ class PassPPOAgent(PPOAgent):
                 rod_pos_calib=float(receiver['pos_calib']),
                 rod_info=receiver['info'],
                 vx_threshold=0.1,
-                t_max = 2.0,
+                t_max = 5.0,
                 reward_scale=1.0
 
             )
 
-            print(f"Allignment reward. {allignment:.3f}")
+            #print(f"Allignment reward. {allignment:.3f}")
 
-            rod_angle = calculate_rod_angle_reward(
+            """rod_angle = calculate_rod_angle_reward(
                 rod_angle=float(receiver["angle"]),
                 reward_scale=1.0,
                 target_rod_angle=-3.0,
                 rotation_buffer_def=3
-                )
+                )"""
 
             
 
             reward_breakdown = {
                 "allignment": allignment,
-                "rod_angle": rod_angle
+                #"rod_angle": rod_angle
             }
 
             """### --- STEP 5
@@ -1884,23 +1894,7 @@ class PassPPOAgent(PPOAgent):
 
         action, value, logp = self.compute_action(obs, deterministic=self.inference)
 
-        #if self.total_steps % 250 == 0:
-        #    with torch.no_grad():
-        #        obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
-        #        mean, _ = self.ac(obs_t)
-        #        mean_action = torch.tanh(mean).detach().cpu().numpy()[0]
-        #
-        #    print(
-        #        "[receiver debug]",
-        #        "ball_y=", round(bxy[1], 2),
-        #        "pos=", round(receiver["pos_calib"], 3),
-        #        "target=", round(receiver["target_pos"], 3),
-        #        "error=", round(receiver["target_error"], 3),
-        #        "mean_action[4:8]=", np.round(mean_action[4:8], 3),
-        #        "sampled_action[4:8]=", np.round(action[4:8], 3),
-        #        "mean_trans=", round((mean_action[6] + 1.0) / 2.0, 3),
-        #    )
-
+    
 
         if not np.all(np.isfinite(action)):
             print("[PassPPO] Nan or Inf detected in action:", action)

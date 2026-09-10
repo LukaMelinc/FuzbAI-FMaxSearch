@@ -23,7 +23,7 @@ from log_utils import setup_logging
 class FuzbAISim:
     def __init__(
         self,
-        episode_end_ball_x_threshold_mm: float = 5.0,       # Threshold for terminating episodes
+        episode_end_ball_x_threshold_mm: float = 1.0,       # Threshold for terminating episodes
         kick_observed_rod_id: int = 4,      # NOTE: Determine, for which rod the bal kicking is set
         render_gui: bool = False,
         self_play_config: bool = False,
@@ -86,7 +86,7 @@ class FuzbAISim:
         self._end_episode_armed = False
 
         # Threshold of num of steps to end the iteration
-        self.max_num_steps = 40
+        self.max_num_steps = 25#40
         self.current_step = 0
 
         # Control loop period (seconds). One "step" for the agent completes when this time has elapsed.
@@ -100,7 +100,7 @@ class FuzbAISim:
         self._warned_empty_kick_links = False
         self.physics_timestep = 1.0 / 240.0
         self.physics_steps_per_loop = 4
-        self.gui_sleep_s = 0.03
+        self.gui_sleep_s = 0.0
 
 
         self.stepDisp = None
@@ -146,10 +146,10 @@ class FuzbAISim:
                     passer_rod_id=4,
                     receiver_rod_id=6,
                     opponent_rod_id=5,
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Passing/#3.pth",
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Passing/pass_ppo_steps_545385.pth",
                     load_model=True,
-                    inference=False,
-                    training_enabeled=True,
+                    inference=True,
+                    training_enabeled=False,
                 )
             elif self.agent1_mode == "two_rod_ppo":
                 self.p1 = TwoRodPPOAgent(
@@ -187,9 +187,9 @@ class FuzbAISim:
             # For reseting the networks
             modules_to_reinitialize = [
                 self.p1.ac.critic,
-                #self.p1.ac.receiver_encoder,
-                #self.p1.ac.receiver_translation_head,
-                #self.p1.ac.receiver_rotation_head,
+                self.p1.ac.receiver_encoder,
+                self.p1.ac.receiver_translation_head,
+                self.p1.ac.receiver_rotation_head,
             ]
 
             for root_module in modules_to_reinitialize:
@@ -197,17 +197,15 @@ class FuzbAISim:
                     if hasattr(module, "reset_parameters"):
                         module.reset_parameters()
             
-            self.p1.learning_action_slice = slice(4, 8) # Which action dimensions to train (0-4: passer, 4-8: receiver)
-            #print(self.p1.learning_action_slice)
-            #print(F"action slice")
+            self.p1.learning_action_slice = slice(6, 8) # Receiving rod translation
+            #self.p1.learning_action_slice = slice(4, 8) # Receiving rod rotation head
             #self.p1.learning_action_slice = slice(0, 4)
             #self.p1.learning_action_slice = slice(2, 4)    # Passer translation
             #self.p1.learning_action_slice = slice(0, 2)    # Passer rotation
-            #self.p1.log_std.data[4:8].fill_(math.log(0.30))
 
             self.p1.freeze_layers(self.p1.ac, {
                 "receiver_encoder",
-                "receiver_rotation_head",
+                #"receiver_rotation_head",
                 "receiver_translation_head",
                 #"passer_encoder",
                 #"passer_rotation_head",
@@ -263,10 +261,10 @@ class FuzbAISim:
         # PyBullet x maps to camera x as: camera_x_mm = 1000 * x - 115.
         # Rod 6 is around camera_x=830 mm, so x ~= 0.945 m.
         self.ball_spawn_areas = {
-            "behind": (0.15, 0.16), #(0.62, 0.67), #0.75, 0.77)# 0.93 - 0.62
+            "behind": (0.20, 0.21), #(0.62, 0.67), #0.75, 0.77)# 0.93 - 0.62
             #"ahead": (1.02, 1.16),
         }
-        self.ball_spawn_speed_range = (0.29, 0.3)
+        self.ball_spawn_speed_range = (0.44, 0.445)
         
         # ONLY FOR IMITATION MODE #
         if self.agent1_mode in {
@@ -622,8 +620,8 @@ class FuzbAISim:
 
         # IMPORTANT: Tilted groudn from 0.0 - 0.9 and from 0.67 on
 
-        y_range = (0.091, 0.67)
-        #y_range = (0.18, 0.55)  # Streljanje iz ožjega prostora
+        #y_range = (0.091, 0.67)
+        y_range = (0.18, 0.55)  # Streljanje iz ožjega prostora
         spawn_side, x_range = random.choice(list(self.ball_spawn_areas.items()))
 
         custom_x = random.uniform(*x_range)
@@ -638,9 +636,10 @@ class FuzbAISim:
 
         # Send the ball toward rod 6 from either side.
         x_sign = 1.0 if spawn_side == "behind" else -1.0
-        rnd_vector_x = random.uniform(1.0, 0.0)
+        rnd_vector_x = random.uniform(1.0, 0.2)
+        
         #rnd_vector_y = random.uniform(-0.0, 0.0)
-        rnd_vector_y = random.uniform(-0.25, 0.25)
+        rnd_vector_y = random.uniform(-0.05, 0.05)
         velocity_vector = [x_sign * rnd_vector_x, rnd_vector_y, 0.0]
         norm = (velocity_vector[0]**2 + velocity_vector[1]**2) ** 0.5
         velocity = [v / norm * speed for v in velocity_vector]

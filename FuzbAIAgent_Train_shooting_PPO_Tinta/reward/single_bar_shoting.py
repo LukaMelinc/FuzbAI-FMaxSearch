@@ -427,7 +427,7 @@ def predictive_player_alignment_reward(
     vy_mm_s = float(ball_vy) * 1000.0
     predicted_y = float(ball_y) + vy_mm_s * t_cross
 
-    print(f"Predicted y: {predicted_y:.3f}")
+    #print(f"Predicted y: {predicted_y:.3f}")
 
     # Reuse the existing closest-player calculation on the predicted y
     return closest_player_alignment_reward(
