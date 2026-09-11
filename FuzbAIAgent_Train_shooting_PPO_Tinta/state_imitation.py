@@ -45,87 +45,6 @@ OBS_COLUMNS = (
     #"ball_kicked",
 )
 
-#python3 FuzbAISim.py --mode state_imitation --inference --expert-csv imitation_data/threshold_expert.csv --ball-x-threshold 605 --checkpoint trained_models/state_imitation/state_imitation_steps_3040053.pth
-class ScriptedStateRecorder(PPOAgent):
-    """Threshold teacher that records state-only expert episodes."""
-
-    def __init__(
-        self,
-        output_path="imitation_data/threshold_expert.csv",
-        num_episodes=100,
-        ball_x_threshold=605.0,
-        clockwise_target=0.35,
-        anticlockwise_target=-0.35,
-        rotation_velocity=0.02,
-        controlled_rod_id=4,
-    ):
-        super().__init__(
-            controlled_rod_id=controlled_rod_id,
-            training_enabeled=False,
-            inference=True,
-            load_model=False,
-        )
-        self.output_path = Path(output_path)
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        self.num_episodes = int(num_episodes)
-        self.ball_x_threshold = float(ball_x_threshold)
-        self.clockwise_target = float(clockwise_target)
-        self.anticlockwise_target = float(anticlockwise_target)
-        self.rotation_velocity = float(rotation_velocity)
-        self.episode_id = 0
-        self.episode_step = 0
-        self.completed = False
-        self._file = self.output_path.open("w", newline="")
-        self._writer = csv.DictWriter(
-            self._file,
-            fieldnames=("episode_id", "step", "sim_time", *OBS_COLUMNS),
-        )
-        self._writer.writeheader()
-        print(f"[StateRecorder] Writing state-only demonstrations to {self.output_path}")
-
-    def close(self):
-        if not self._file.closed:
-            self._file.flush()
-            self._file.close()
-
-    def process_data(self, camera):
-        if bool(camera.get("end_episode", False)) and self.episode_step > 0:
-            self.episode_id += 1
-            self.episode_step = 0
-            self._file.flush()
-
-        if self.episode_id >= self.num_episodes:
-            self.completed = True
-            self.close()
-            return []
-
-        obs, bxy, _, _, active_rod = self.extract_observation(camera)
-        assert len(obs) == len(OBS_COLUMNS), (
-            f"Observation has {len(obs)} values but OBS_COLUMNS has "
-            f"{len(OBS_COLUMNS)}"
-        )
-        row = {
-            "episode_id": self.episode_id,
-            "step": self.episode_step,
-            "sim_time": self.episode_step,
-        }
-        row.update(zip(OBS_COLUMNS, (float(value) for value in obs)))
-        self._writer.writerow(row)
-        self.episode_step += 1
-
-        rotation_target = (
-            self.clockwise_target
-            if float(bxy[0]) < self.ball_x_threshold
-            else self.anticlockwise_target
-        )
-        return [{
-            "driveID": 3,
-            "rotationTargetPosition": rotation_target,
-            "rotationVelocity": self.rotation_velocity,
-            "translationTargetPosition": float(active_rod["pos_calib"]),
-            "translationVelocity": 0.5,
-        }]
-
 
 class ExpertTransitionDataset:
     """Loads adjacent state pairs without crossing episode boundaries."""
@@ -164,7 +83,6 @@ class ExpertTransitionDataset:
     def sample(self, batch_size, device):
         indices = torch.randint(0, len(self.transitions), (int(batch_size),))
         return self.transitions[indices].to(device)
-
 
 class TransitionDiscriminator(nn.Module):
     def __init__(self, obs_dim=10, hidden_size=128):

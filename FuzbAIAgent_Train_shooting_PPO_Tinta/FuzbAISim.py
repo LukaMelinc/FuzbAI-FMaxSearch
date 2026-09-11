@@ -12,7 +12,7 @@ from agent_factory import create_self_play_manager
 from strel_PPO import PPOAgent, TwoRodPPOAgent, PassPPOAgent
 from state_imitation import (
     HybridImitationPPOAgent,
-    ScriptedStateRecorder,
+    
     StateImitationPPOAgent,
 )
 import random
@@ -73,10 +73,12 @@ class FuzbAISim:
         # player links.
         self.kick_observed_rod_id = int(kick_observed_rod_id)
         self._kick_player_links = set()
+        self._receiver_player_links = set()
         self._link_names_by_index = {}
         self._kick_normal_force = 0.0
 
         """LATCHES"""
+        self._receiver_contact_latch = False
         self._ball_kicked_latch = False
         self._kick_terminated_latch = False#True
         self._x_threshold_terminated_latch = True
@@ -146,9 +148,9 @@ class FuzbAISim:
                     passer_rod_id=4,
                     receiver_rod_id=6,
                     opponent_rod_id=5,
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Passing/#4_2(3M).pth",
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Passing/pass_ppo_steps_1055927.pth",
                     load_model=True,
-                    inference=False,
+                    inference=True,
                     training_enabeled=True,
                 )
             elif self.agent1_mode == "two_rod_ppo":
@@ -171,8 +173,6 @@ class FuzbAISim:
                     training_enabeled=True,    
                 )
 
-            elif self.agent1_mode == "scripted_imitation":
-                self.p1 = ScriptedStateRecorder(**dict(agent1_kwargs or {}))
             elif self.agent1_mode == "state_imitation":
                 self.p1 = StateImitationPPOAgent(**dict(agent1_kwargs or {}))
             elif self.agent1_mode == "hybrid_imitation_ppo":
@@ -197,8 +197,8 @@ class FuzbAISim:
                     if hasattr(module, "reset_parameters"):
                         module.reset_parameters()"""
             
-            self.p1.learning_action_slice = slice(6, 8) # Receiving rod translation
-            #self.p1.learning_action_slice = slice(4, 8) # Receiving rod rotation head
+            #self.p1.learning_action_slice = slice(6, 8) # Receiving rod translation
+            self.p1.learning_action_slice = slice(4, 8) # Receiving rod rotation head
             #self.p1.learning_action_slice = slice(0, 4)
             #self.p1.learning_action_slice = slice(2, 4)    # Passer translation
             #self.p1.learning_action_slice = slice(0, 2)    # Passer rotation
@@ -264,7 +264,7 @@ class FuzbAISim:
             "behind": (0.55, 0.57), #(0.62, 0.67), #0.75, 0.77)# 0.93 - 0.62
             #"ahead": (1.02, 1.16),
         }
-        self.ball_spawn_speed_range = (0.44, 0.445)
+        self.ball_spawn_speed_range = (0.55, 0.56) # <- (0.44, 0.445)
         
         # ONLY FOR IMITATION MODE #
         if self.agent1_mode in {
@@ -330,6 +330,8 @@ class FuzbAISim:
                 except Exception:
                     link_name = str(jinfo[12])
                 self._link_names_by_index[ji] = link_name
+                if jname.lower().startswith(f"rod{getattr(self.p1, 'receiver_rod_id', 6)}_rigid"):
+                    self._receiver_player_links.add(ji)
                 if jname.lower().startswith(rod_prefix):
                     # In PyBullet, the joint index corresponds to the child link index.
                     self._kick_player_links.add(ji)
@@ -344,6 +346,11 @@ class FuzbAISim:
 
     def _update_kick_latch(self):
         """Latch True if the ball contacts the observed rod's player links in this interval."""
+
+        # Gentle receiver contacts must also be detected during kick cooldown.
+        for cp in p.getContactPoints(bodyA=self.ball, bodyB=self.mizaId):
+            if cp[4] in self._receiver_player_links and cp[9] > 0.0:
+                self._receiver_contact_latch = True
 
         # Cooldown to avoid spamming while in continuous contact
         #print(f"current time:{self.t}, last red kick time:{self._last_debug_red_kick_t}, cooldown: {self.debug_red_kick_cooldown_s}")
@@ -482,6 +489,7 @@ class FuzbAISim:
             "curriculum_y_min": float(self._get_curriculum_y_range()[0]),
             "curriculum_y_max": float(self._get_curriculum_y_range()[1]),
             # New observation/event flags
+            "receiver_contact": bool(self._receiver_contact_latch),
             "ball_kicked": bool(self._ball_kicked_latch),
             "kick_normal_force": float(self._kick_normal_force),
             "terminated_by_kick": bool(self._kick_terminated_latch),
@@ -951,6 +959,7 @@ class FuzbAISim:
                     reset_after_timeout = bool(self._timeout_terminated_latch)
 
                     # Clear per-step latches after agents have consumed the observation stream
+                    self._receiver_contact_latch = False
                     self._ball_kicked_latch = False
                     self._kick_normal_force = 0.0
                     self._kick_terminated_latch = False

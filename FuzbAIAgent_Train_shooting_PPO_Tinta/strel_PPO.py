@@ -21,6 +21,7 @@ from reward.single_bar_shoting import (
     kicking_reward,
     player_alignment_target,
     maintaining_ball,
+    receiving_reward,
     calculate_rod_angle_reward,
     predictive_player_alignment_reward,
     forward_backward_kick_reward,
@@ -1834,42 +1835,27 @@ class PassPPOAgent(PPOAgent):
                 "allignment": allignment,
             }"""
 
-            ### --- STEP 5 -> Stopping the ball with receiving rod
+            """### --- STEP 5 -> Stopping the ball with receiving rod
             
-            stopping_reward, stopping_breakdown = maintaining_ball(
-                ball_x=bxy[0],
-                ball_vx=vxy[0],
-                ball_vz=vxy[1],
-                rod_x_pos=float(receiver['info']['position']),
-                control_state=self.receiving_control_state,
-                sample_time=camera.get("simulation_time"),
+            reward_time = float(camera["simulation_time"])
+            previous_time = self.receiving_control_state.get("last_time", reward_time)
+            reward_dt = max(0.0, reward_time - previous_time)
+            stopping_reward, stopping_breakdown = receiving_reward(
+                ball_x=bxy[0], ball_y=bxy[1], ball_vx=vxy[0], ball_vy=vxy[1],
+                rod_info=receiver["info"], rod_pos_calib=receiver["pos_calib"],
+                receiver_contact=bool(camera.get("receiver_contact", False)),
+                control_state=self.receiving_control_state, sample_time=reward_time,
                 threshold_crossed=terminated_by_x_threshold,
-                ball_behind_rod=ball_behind_rod,
-                prev_ball_vx=prev_ball_vx,
-                prev_ball_vz=prev_ball_vy,
                 episode_timeout=bool(end_episode and not terminated_by_x_threshold),
-
             )
-
-            allignment = predictive_player_alignment_reward(
-                            ball_x=bxy[0],
-                            ball_y=bxy[1],
-                            ball_vx=vxy[0],
-                            ball_vy=vxy[1],
-                            rod_x=float(receiver['info']['position']),
-                            rod_pos_calib=float(receiver['pos_calib']),
-                            rod_info=receiver['info'],
-                            vx_threshold=0.1,
-                            t_max = 7.0,
-                            reward_scale=1.0
-            
-                        )
-
-            reward_breakdown = {
-                            "allignment": allignment,
-                            "stopping": stopping_reward,
-                        }
-
+            alignment = predictive_player_alignment_reward(
+                ball_x=bxy[0], ball_y=bxy[1], ball_vx=vxy[0], ball_vy=vxy[1],
+                rod_x=float(receiver["info"]["position"]),
+                rod_pos_calib=float(receiver["pos_calib"]), rod_info=receiver["info"],
+                vx_threshold=0.1, t_max=7.0, reward_scale=0.1,
+            ) * reward_dt if not self.receiving_control_state.get("contacted") else 0.0
+            reward_breakdown = {"alignment": alignment, **stopping_breakdown}
+            """
 
             ### --- END-TO-END TRAINING --- ###
 

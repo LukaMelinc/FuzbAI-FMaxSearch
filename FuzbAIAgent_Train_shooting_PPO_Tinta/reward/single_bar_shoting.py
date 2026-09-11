@@ -485,3 +485,57 @@ def calculate_rod_angle_reward(
 
     angle_reward = float(reward_scale) * math.exp(-((angle_error / max(float(angle_sigma), 1e-6)) ** 2))
     return angle_reward
+
+
+def receiving_reward(
+    *, ball_x, ball_y, ball_vx, ball_vy, rod_info, rod_pos_calib,
+    receiver_contact, control_state, sample_time,
+    threshold_crossed=False, episode_timeout=False,
+    stop_speed=0.08, hold_duration=0.3,
+):
+    """Contact-gated reception: mm, m/s, seconds. Reset state each episode.
+
+    Dense terms are rates per second; speed changes and hold are event rewards.
+    """
+    now = float(sample_time)
+    dt = max(0.0, now - control_state.get("last_time", now))
+    speed = math.hypot(ball_vx, ball_vy)
+    player_y = [rod_pos_calib * rod_info["travel"] + rod_info["first_offset"]
+                + i * rod_info["spacing"] for i in range(rod_info["players"])]
+    reachable = (abs(ball_x - rod_info["position"]) <= 89.0
+                 and min(abs(ball_y - y) for y in player_y) <= 35.0)
+    # Remember the approach direction before impact, not the rebound direction.
+    if not control_state.get("contacted") and not receiver_contact and abs(ball_vx) > stop_speed:
+        control_state["incoming_sign"] = math.copysign(1.0, ball_vx)
+    if receiver_contact:
+        control_state["contacted"] = True
+        control_state.setdefault("incoming_sign", math.copysign(1.0, rod_info["position"] - ball_x))
+    contacted = control_state.get("contacted", False)
+    active = contacted and reachable and not threshold_crossed
+    # Signed reduction makes speeding up costly as well as rewarding slowing down.
+    deceleration = control_state.get("speed", speed) - speed if active else 0.0
+    backwards = max(0.0, -ball_vx * control_state.get("incoming_sign", 0.0) - stop_speed)
+    held = False
+    if active and speed <= stop_speed:
+        start = control_state.setdefault("hold_start", now)
+        held = now - start >= hold_duration - 1e-9
+    else:
+        control_state.pop("hold_start", None)
+    first_hold = held and not control_state.get("hold_paid", False)
+    if first_hold:
+        control_state["hold_paid"] = True
+    escaped = contacted and not reachable and control_state.get("reachable", False)
+    terms = {
+        "time": -0.01 * dt,
+        "deceleration": deceleration,
+        "rebound": -4.0 * backwards * dt if contacted else 0.0,
+        "controlled": 0.5 * math.exp(-((speed / 0.20) ** 2)) * dt if active else 0.0,
+        "hold": 5.0 if first_hold else 0.0,
+        "escape": -2.0 if escaped and not control_state.get("escape_paid", False) else 0.0,
+        "failure": -5.0 if threshold_crossed else 0.0,
+        "timeout": -0.5 if episode_timeout and not control_state.get("hold_paid", False) else 0.0,
+    }
+    if escaped:
+        control_state["escape_paid"] = True
+    control_state.update(last_time=now, speed=speed, reachable=reachable)
+    return float(sum(terms.values())), terms
