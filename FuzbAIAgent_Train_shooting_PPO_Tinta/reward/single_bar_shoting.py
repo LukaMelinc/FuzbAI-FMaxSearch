@@ -40,23 +40,6 @@ def kick_force_reward(
     sigma = max(float(force_sigma), 1e-6)
     return float(reward_scale) * math.exp(-((force_error / sigma) ** 2))
 
-def simple_reward(*, goal_scored: bool, ball_kicked: bool, terminated_by_x_threshold: bool, rod_angle: float):
-    """Event-based reward used for shooting PPO experiment.
-
-    Reward spec (stack additively):
-    - +10 if a goal is scored by the learning agent's team
-    - +2 if a ball kick is detected (contact-based)
-    - -1.5 if the episode terminated due to ball_x below threshold
-    """
-    reward_breakdown = {
-        #"goal_scored": 1.0 if goal_scored else 0.0,
-        #"ball_kick": 0.25 if ball_kicked else 0.0,
-        #"x_threshold_termination": -0.15 if terminated_by_x_threshold else 0.0,
-        "rod_angle": rod_angle
-    }
-    reward = float(sum(reward_breakdown.values()))
-    return reward, reward_breakdown
-
 def shot_heading_goal_reward(
     *,
     ball_kicked: bool,
@@ -312,18 +295,30 @@ def maintaining_ball(
     behind_rod_penalty: float = -0.25,
     rod_angle_reward: float = 0.0,
     player_alignment_reward: float = 0.0,
+    control_state: dict | None = None,
+    sample_time: float | None = None,
+    hold_duration: float = 0.3,
+    hold_reward: float = 0.2,
+    acceleration_scale: float = 1.0,
+    rebound_scale: float = 2.0,
 ):
     """Reward for receiving and keeping the ball near a rod.
 
     Position units are millimeters and velocity units are meters/second.
-    ``ball_z``/``rod_z_pos`` are the lateral table coordinate; pass ball_y here
-    if the caller uses x/y naming. Speed reduction is rewarded only inside the
+    ``ball_vz`` is the lateral velocity; pass ball_vy here if appropriate.
+    Speed reduction is rewarded only inside the
     control zone, so slowing the ball elsewhere is not useful to the policy.
     ``player_alignment_reward`` provides light dense shaping toward the
     closest reachable player-ball alignment.
     ``ball_behind_rod`` should mean the ball crossed the protected side of the
     rod, but has not yet hit the episode termination threshold.
+    Pass a persistent ``control_state`` dictionary and simulation ``sample_time``
+    in seconds to enable sustained holding and rebound-exit detection. Clear
+    the dictionary on episode reset. Without timing state no hold reward is paid.
+    Holding is allowed on either side of the rod. A rebound means returning
+    through the entry side of the zone faster than ``stop_speed``.
     """
+
     dx = abs(float(ball_x) - float(rod_x_pos))
     speed = math.sqrt(float(ball_vx) ** 2 + float(ball_vz) ** 2)
 
@@ -333,11 +328,41 @@ def maintaining_ball(
     in_control_zone = dx <= float(x_zone_radius) 
     low_speed = math.exp(-((speed / max(float(speed_sigma), 1e-6)) ** 2))
     speed_reduction = 0.0
+    speed_increase = 0.0
     if prev_ball_vx is not None and prev_ball_vz is not None:
         prev_speed = math.sqrt(float(prev_ball_vx) ** 2 + float(prev_ball_vz) ** 2)
         speed_reduction = max(0.0, prev_speed - speed)
+        speed_increase = max(0.0, speed - prev_speed)
 
-    stopped = in_control_zone and speed <= float(stop_speed)
+    stopped = in_control_zone and speed <= float(stop_speed) and not threshold_crossed
+    held = False
+    rebound = 0.0
+    previously_in_zone = False
+    if control_state is not None:
+        previously_in_zone = control_state.get("in_zone", False)
+        offset = float(ball_x) - float(rod_x_pos)
+        if in_control_zone and not previously_in_zone:
+            # Incoming vx identifies the entry side even if one sample crosses
+            # the rod. Fall back to position when there is no incoming motion.
+            incoming_vx = prev_ball_vx if prev_ball_vx is not None else ball_vx
+            control_state["entry_side"] = (
+                -math.copysign(1.0, incoming_vx) if abs(incoming_vx) > stop_speed
+                else math.copysign(1.0, offset)
+            )
+        if previously_in_zone and not in_control_zone:
+            side = control_state.get("entry_side", 0.0)
+            if offset * side > 0 and float(ball_vx) * side > stop_speed:
+                rebound = -float(rebound_scale) * abs(float(ball_vx))
+        if stopped and sample_time is not None:
+            now = float(sample_time)
+            if now < control_state.get("last_time", now):
+                control_state.pop("hold_start", None)
+            start = control_state.setdefault("hold_start", now)
+            held = now - start >= float(hold_duration) - 1e-9
+            control_state["last_time"] = now
+        else:
+            control_state.pop("hold_start", None)
+        control_state["in_zone"] = in_control_zone
 
     reward_breakdown = {
         "time_penalty": float(time_penalty),
@@ -346,10 +371,12 @@ def maintaining_ball(
         "zone_position": 0.03 * zone_control,
         "kept_in_front": 0.08 * zone_control if not ball_behind_rod else 0.0,
         "speed_reduction": 0.7 * speed_reduction * zone_control if in_control_zone else 0.0,
+        "acceleration": -float(acceleration_scale) * speed_increase if (in_control_zone or previously_in_zone) else 0.0,
+        "rebound": rebound,
         "controlled_ball": 0.60 * zone_control * low_speed if in_control_zone else 0.0,
-        "stopped_ball": 12.5 * zone_control if stopped else 0.0,
+        "stopped_ball": float(hold_reward) * zone_control if held else 0.0,
         "timeout": -0.2 if episode_timeout else 0.0,
-        "rod_angle": 0.25 * rod_angle_reward,
+        #"rod_angle": 0.25 * rod_angle_reward,
         # This dense term tells the policy which player on the rod should
         # meet the ball.  Keep it small: the control/stop outcomes remain the
         # main objective rather than merely centering a player under the ball.

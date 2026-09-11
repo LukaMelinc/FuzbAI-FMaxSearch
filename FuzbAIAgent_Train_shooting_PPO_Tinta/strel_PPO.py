@@ -20,7 +20,6 @@ from reward.single_bar_shoting import (
     kick_force_reward,
     kicking_reward,
     player_alignment_target,
-    simple_reward,
     maintaining_ball,
     calculate_rod_angle_reward,
     predictive_player_alignment_reward,
@@ -1500,6 +1499,7 @@ class PassPPOAgent(PPOAgent):
 
         self.prev_ball_x = None
         self.prev_ball_vxy = None
+        self.receiving_control_state = {}
         self.prev_score = None
         self.kick_latch = False
         self.episode_steps = 0
@@ -1655,8 +1655,6 @@ class PassPPOAgent(PPOAgent):
         #assert len(obs) == self.obs_dim, f"Expected obs_dim={self.obs_dim}, got {len(obs)}"
         return obs, (ball_x, ball_y), (ball_vx, ball_vy), passer, receiver, opponent
 
-    
-
     def scale_to_motor_commands(self, action):
         commands = [
             self._command_for_rod(self.passer_rod_id, action[0:4]),
@@ -1718,11 +1716,15 @@ class PassPPOAgent(PPOAgent):
         ball_kicked = bool(camera.get("ball_kicked", False))
         kick_normal_force = float(camera.get("kick_normal_force", 0.0))
 
-
+        ball_behind_rod = float(bxy[0] > (float(receiver["info"]["position"]) + 8))
+        prev_ball_vx = self.prev_ball_vxy[0] if self.prev_ball_vxy is not None else None
+        prev_ball_vy = self.prev_ball_vxy[1] if self.prev_ball_vxy is not None else None
         
 
         episode_finished_this_sample = False
         if self.last_obs is not None and self.training_enabled:
+
+
 
             """ ### --- STEP 1 -> Maintaining alignment and rod angle --- ###
 
@@ -1790,7 +1792,6 @@ class PassPPOAgent(PPOAgent):
                 "no_kick_timeout": self.no_kick_timeout_penalty if no_kick_timeout else 0.0,
             }"""
 
-
             """### --- STEP 3 (2.1) -> Reward for kicking with a certain force --- ###
 
             kick_power_reward = kick_force_reward(
@@ -1807,7 +1808,10 @@ class PassPPOAgent(PPOAgent):
 
             ### --- RECEIVER TRAINING --- ###
 
-            ### --- STEP 4 -> Alligning the receiving rod with the ball trajectory --- ###
+            """### --- STEP 4 -> Alligning the receiving rod with the ball trajectory --- ###
+
+            
+
             
             allignment = predictive_player_alignment_reward(
                 ball_x=bxy[0],
@@ -1818,39 +1822,117 @@ class PassPPOAgent(PPOAgent):
                 rod_pos_calib=float(receiver['pos_calib']),
                 rod_info=receiver['info'],
                 vx_threshold=0.1,
-                t_max = 5.0,
+                t_max = 7.0,
                 reward_scale=1.0
 
             )
 
             #print(f"Allignment reward. {allignment:.3f}")
-
-            """rod_angle = calculate_rod_angle_reward(
-                rod_angle=float(receiver["angle"]),
-                reward_scale=1.0,
-                target_rod_angle=-3.0,
-                rotation_buffer_def=3
-                )"""
-
-            
+   
 
             reward_breakdown = {
                 "allignment": allignment,
-                #"rod_angle": rod_angle
-            }
+            }"""
 
-            """### --- STEP 5
+            ### --- STEP 5 -> Stopping the ball with receiving rod
             
-            """
+            stopping_reward, stopping_breakdown = maintaining_ball(
+                ball_x=bxy[0],
+                ball_vx=vxy[0],
+                ball_vz=vxy[1],
+                rod_x_pos=float(receiver['info']['position']),
+                control_state=self.receiving_control_state,
+                sample_time=camera.get("simulation_time"),
+                threshold_crossed=terminated_by_x_threshold,
+                ball_behind_rod=ball_behind_rod,
+                prev_ball_vx=prev_ball_vx,
+                prev_ball_vz=prev_ball_vy,
+                episode_timeout=bool(end_episode and not terminated_by_x_threshold),
+
+            )
+
+            allignment = predictive_player_alignment_reward(
+                            ball_x=bxy[0],
+                            ball_y=bxy[1],
+                            ball_vx=vxy[0],
+                            ball_vy=vxy[1],
+                            rod_x=float(receiver['info']['position']),
+                            rod_pos_calib=float(receiver['pos_calib']),
+                            rod_info=receiver['info'],
+                            vx_threshold=0.1,
+                            t_max = 7.0,
+                            reward_scale=1.0
+            
+                        )
+
+            reward_breakdown = {
+                            "allignment": allignment,
+                            "stopping": stopping_reward,
+                        }
+
 
             ### --- END-TO-END TRAINING --- ###
 
+            """ ### --- STEP 6 -> END TO END training --- ###
 
+
+            # - Kicking section
+
+            first_kick = ball_kicked and self.current_episode_ball_kicks == 0
+            no_kick_timeout = bool(
+                camera.get("terminated_by_timeout", False)
+                and not (ball_kicked or terminated_by_kick or terminated_by_x_threshold)
+                and self.current_episode_ball_kicks == 0
+            )
+            forward = first_kick and vxy[0] > 0
+            backward = first_kick and vxy[0] < 0
+
+
+
+            # 1. Reward forward kicks.
+            forward_reward = 4.0 if forward else 0.0
+
+            # 2. Penalize backward kicks.
+            backward_penalty = -1.0 if backward else 0.0
+
+            # - End of kicking section
             
+            stopping_reward = maintaining_ball(
+                            ball_x=bxy[0],
+                            ball_vx=vxy[0],
+                            ball_vz=vxy[1],
+                            rod_x_pos=float(receiver['info']['position']),
+                            threshold_crossed=terminated_by_x_threshold,
+                            ball_behind_rod=ball_behind_rod,
+                            prev_ball_vx=prev_ball_vx,
+                            prev_ball_vz=prev_ball_vy,
+                            episode_timeout=bool(end_episode and not terminated_by_x_threshold),
+            
+                        )
+            
+            allignment = predictive_player_alignment_reward(
+                            ball_x=bxy[0],
+                            ball_y=bxy[1],
+                            ball_vx=vxy[0],
+                            ball_vy=vxy[1],
+                            rod_x=float(receiver['info']['position']),
+                            rod_pos_calib=float(receiver['pos_calib']),
+                            rod_info=receiver['info'],
+                            vx_threshold=0.1,
+                            t_max = 7.0,
+                            reward_scale=1.0
+            
+                        )
+
+            reward_breakdown = {
+                            "allignment": allignment,
+                            "stopping": stopping_reward,
+                        }
+                        
+            """
+
 
             reward = sum(reward_breakdown.values())
-
-            
 
             for key, value in reward_breakdown.items():
                 self.update_reward_breakdown_sums[key] = (
@@ -1900,6 +1982,9 @@ class PassPPOAgent(PPOAgent):
             print("[PassPPO] Nan or Inf detected in action:", action)
             action = np.zeros_like(action)
 
+        if episode_finished_this_sample:
+            self.receiving_control_state.clear()
+
         self.prev_ball_x = bxy[0]
         self.prev_ball_vxy = vxy
         self.last_obs = obs
@@ -1940,6 +2025,7 @@ class PassPPOAgent(PPOAgent):
         self.last_logp = None
         self.prev_ball_x = None
         self.prev_ball_vxy = None
+        self.receiving_control_state = {}
         self.kick_latch = False
         self.current_episode_goals = 0
         self.current_episode_opponent_goals = 0
