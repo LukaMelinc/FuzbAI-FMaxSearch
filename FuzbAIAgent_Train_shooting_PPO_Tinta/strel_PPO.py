@@ -14,6 +14,7 @@ from pprint import pprint
 from actor_critic.main import ActorCriticNet, TwoRodActorCriticNet, ThreeRodActorCriticNet
 from export.main import Export
 from memory.main import PPOBuffer
+from recorded_expert import observation
 from reward.single_bar_shoting import (
     closest_player_alignment_reward,
     controllable_kick_reward,
@@ -617,6 +618,7 @@ class PPOAgent:
                 opponent_goal_scored = score[1] > self.prev_score[1]
             self.prev_score = list(score)
 
+
         # If not training, just run the policy forward pass
         # Not important during training, doesn't execute
         if not self.training_enabled:
@@ -779,99 +781,15 @@ class PPOAgent:
         }
 
     def extract_observation(self, camera):
-        """
-        Convert camera dict into a flat numpy array (obs_dim).
-        Fill in whatever you need: ball pos, ball vel, rod pos, rod angles, etc.
-        NOTE: Currently training only 
-        """
-
+        """Use the same eight features for simulator observations and table logs."""
         cd = self._camera_data(camera)
         active_rod = self._rod_state(cd, self.controlled_rod_id)
-
-        # Just a minimal example:
-        CD0 = camera["camData"][0] if camera["camData"][0] is not None else camera["camData"][1]
-
-        # Ball
-        ball_x = (CD0["ball_x"] - 605) / 605  # Center around table middle [-1,1]
-        ball_y = (CD0["ball_y"] - 350) / 350  # Center around table middle [-1,1]
-        ball_vx = np.clip(CD0["ball_vx"] / 5.0, -2, 2)  # Velocity normalized
-        ball_vy = np.clip(CD0["ball_vy"] / 5.0, -2, 2)
-
-
-        # Find controlled rod in geometry
-        controlled_rod_info = None
-        for rod in self.geometry["rods"]:
-            if rod["id"] == self.controlled_rod_id:
-                controlled_rod_info = rod
-                break
-
-        
-        if controlled_rod_info is None:
-            raise ValueError(f"Rod {self.controlled_rod_id} not found in geometry")
-        
-
-        # Controlled rod state (5 values)
-        """
-        Blue rod idx: 
-        2: Attack, 4: Middle, 6: Defender 7: Goalkeeper
-
-        Red rod idx:
-        0: Goalkeeper, 1: defender, 3: middle, 5: attack
-
-        Id of the rod in geometry is 1-based so red goalkeeper has id=1
-        """
-        rod_idx = self.controlled_rod_id - 1  # Convert to 0-based index
-        rod_pos_calib = CD0["rod_position_calib"][rod_idx]
-        rod_angle = CD0["rod_angle"][rod_idx]
-        
-        
-        if isinstance(rod_pos_calib, list):
-            rod_pos_calib = rod_pos_calib[0]
-        
-        # Team encoding (0=red, 1=blue)
-        team = 0.0 if controlled_rod_info["team"] == "red" else 1.0
-        
-        # Rod position (already normalized 0-1)
-        rod_y_normalized = rod_pos_calib
-
-        
-        # Relative positioning - KEY FOR SINGLE ROD LEARNING
-        rod_x_world = controlled_rod_info["position"]
-        ball_x_world = CD0["ball_x"]
-        ball_y_world = CD0["ball_y"] 
-        
-        # Give the policy the x distance and a direct error toward the player
-        # branch selected for this ball region.
-        ball_rod_dist_x = (ball_x_world - rod_x_world) / 605  # Normalized [-1,1]
-        _, target_rod_pos, _ = player_alignment_target(
-            ball_y=ball_y_world,
-            rod_info=controlled_rod_info,
+        obs = observation(
+            cd["ball_x"], cd["ball_y"], cd["ball_vx"], cd["ball_vy"],
+            active_rod["pos_calib"], active_rod["angle"], active_rod["info"],
         )
-        target_rod_error = target_rod_pos - rod_pos_calib
-
-        
-        # Rod angle normalized
-        angle_normalized = np.clip(rod_angle / 32.0, -1, 1)  # Assuming ±45° range
-        
-        # Combine: Ball(4) + Rod(5) = 9 total
-        ball_kicked = float(camera.get("ball_kicked", False))
-        #print(F"ball rod dist x: {ball_rod_dist_x}, target rod error: {target_rod_error}")
-
-        # Combine: Ball(4) + Rod(5) + ball_kicked(1) = 10 total
-        obs = np.array([
-            ball_x, ball_y, ball_vx, ball_vy,           # Ball state (4)
-            #team,                                        # Rod team (1)
-            ball_rod_dist_x,                # Distance of the ball to the observed rod in x distance
-            target_rod_error,          # Relative error between the the ball and the closest player on the rod in y position
-            rod_y_normalized,                            # Rod position (1) 
-            angle_normalized,                            # Rod angle (1)
-            #ball_kicked                                  # Ball contact flag (1)
-        ], dtype=np.float32)
-
-        # Verify size
-        #assert len(obs) == 10, f"Expected obs_dim=10, got {len(obs)}"
-        
-        return obs, (CD0["ball_x"], CD0["ball_y"]), (CD0["ball_vx"], CD0["ball_vy"]), angle_normalized, active_rod
+        return (obs, (cd["ball_x"], cd["ball_y"]), (cd["ball_vx"], cd["ball_vy"]),
+                active_rod["angle_normalized"], active_rod)
 
     def scale_to_motor_commands(self, action):
         """
@@ -1711,6 +1629,8 @@ class PassPPOAgent(PPOAgent):
             "curriculum_y_max": float(camera.get("curriculum_y_max", float("nan"))),
         }
 
+        print(f"Ball x: {bxy[0]:.2f} y: {bxy[1]:.2f}")
+
         end_episode = bool(camera.get("end_episode", False))
         terminated_by_kick = bool(camera.get("terminated_by_kick", False))
         terminated_by_x_threshold = bool(camera.get("terminated_by_x_threshold", False))
@@ -1917,6 +1837,7 @@ class PassPPOAgent(PPOAgent):
                         
             """
 
+            reward_breakdown = {}
 
             reward = sum(reward_breakdown.values())
 

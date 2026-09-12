@@ -33,3 +33,10 @@ kicking -> shooting
 
 POMEMBNO:
 poskusit z manjšo standardno deviacijo: 5.0 -> 2.0, da 
+
+
+Ukaz za poganjat imitacijo z transformacijo:
+python3 FuzbAISim.py \
+  --recording-config recording_config.json \
+  --max-agent-steps 300 \
+  --output-dir trained_models/table_imitation_rotated

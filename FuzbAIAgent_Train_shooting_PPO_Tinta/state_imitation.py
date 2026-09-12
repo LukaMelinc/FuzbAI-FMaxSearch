@@ -1,24 +1,13 @@
 """State-only imitation-from-observation experiment for the single-rod agent.
 
-The expert recorder intentionally stores observations, not teacher actions.  The
+Real table recordings supply calibrated observation transitions. The
 imitation agent learns a discriminator over (state, next_state) transitions and
 uses its output as the reward for an otherwise standard PPO policy.
 """
 
 from __future__ import annotations
 
-import csv
-import math
 import os
-from pathlib import Path
-
-"""python3 FuzbAISim.py \
-    --headless \
-    --mode state_imitation \
-    --expert-csv imitation_data/threshold_expert_8d.csv \
-    --ball-x-threshold 605 \
-    --steps-per-env 512 \
-    --save-model-every 50"""
 
 import numpy as np
 import torch
@@ -26,66 +15,13 @@ import torch.nn as nn
 import torch.optim as optim
 
 from strel_PPO import PPOAgent
-from reward.single_bar_shoting import (
-    calculate_rod_angle_reward,
-    closest_player_alignment_reward,
-)
 
 
-OBS_COLUMNS = (
-    "ball_x",
-    "ball_y",
-    "ball_vx",
-    "ball_vy",
-    #"team",
-    "ball_rod_dist_x",
-    "target_rod_error",
-    "rod_position",
-    "rod_angle",
-    #"ball_kicked",
-)
+from recorded_expert import OBS_COLUMNS, ExpertTransitionDataset, RecordingConfig
 
-
-class ExpertTransitionDataset:
-    """Loads adjacent state pairs without crossing episode boundaries."""
-
-    def __init__(self, csv_path):
-        states = []
-        episode_ids = []
-        with open(csv_path, newline="") as csv_file:
-            reader = csv.DictReader(csv_file)
-            missing = set(("episode_id", *OBS_COLUMNS)) - set(reader.fieldnames or ())
-            if missing:
-                raise ValueError(f"Expert CSV is missing columns: {sorted(missing)}")
-            for row in reader:
-                episode_ids.append(int(row["episode_id"]))
-                states.append([float(row[name]) for name in OBS_COLUMNS])
-
-        transitions = [
-            np.concatenate((states[i], states[i + 1])).astype(np.float32)
-            for i in range(len(states) - 1)
-            if episode_ids[i] == episode_ids[i + 1]
-        ]
-        if not transitions:
-            raise ValueError(f"No within-episode transitions found in {csv_path}")
-        self.transitions = torch.as_tensor(np.stack(transitions), dtype=torch.float32)
-        expected_width = 2 * len(OBS_COLUMNS)
-        if self.transitions.shape[1] != expected_width:
-            raise ValueError(
-                f"Expert transitions have width {self.transitions.shape[1]}, "
-                f"expected {expected_width}"
-            )
-        print(
-            f"[ExpertDataset] Loaded {len(self.transitions)} state transitions "
-            f"from {csv_path}"
-        )
-
-    def sample(self, batch_size, device):
-        indices = torch.randint(0, len(self.transitions), (int(batch_size),))
-        return self.transitions[indices].to(device)
 
 class TransitionDiscriminator(nn.Module):
-    def __init__(self, obs_dim=10, hidden_size=128):
+    def __init__(self, obs_dim=len(OBS_COLUMNS), hidden_size=128):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(2 * obs_dim, hidden_size),
@@ -104,7 +40,8 @@ class StateImitationPPOAgent(PPOAgent):
 
     def __init__(
         self,
-        expert_csv,
+        expert_data=None,
+        recording_config=None,
         discriminator_lr=3e-4,
         discriminator_updates=8,
         discriminator_batch_size=128,
@@ -113,7 +50,13 @@ class StateImitationPPOAgent(PPOAgent):
     ):
         should_load_model = bool(ppo_kwargs.pop("load_model", False))
         super().__init__(**ppo_kwargs)
-        self.expert_dataset = ExpertTransitionDataset(expert_csv)
+        self.recording_config = recording_config or RecordingConfig()
+        self.expert_dataset = (
+            ExpertTransitionDataset(expert_data, self.geometry, self.recording_config)
+            if expert_data is not None else None
+        )
+        if self.training_enabled and self.expert_dataset is None:
+            raise ValueError("Training requires --expert-data")
         self.discriminator = TransitionDiscriminator(self.obs_dim).to(self.device)
         self.discriminator_optimizer = optim.Adam(
             self.discriminator.parameters(), lr=float(discriminator_lr)
@@ -191,53 +134,49 @@ class StateImitationPPOAgent(PPOAgent):
             return
         super().train_on_buffer()
 
+    def transition_reward(self, camera, obs):
+        return self.imitation_reward(self.last_obs, obs) if self.discriminator_ready else 0.0
+
     def process_data(self, camera):
+        """Consume a physical terminal state before the simulator resets."""
         self.total_steps += 1
-        obs, _, _, _, _ = self.extract_observation(camera)
+        obs, c, _, _, _ = self.extract_observation(camera)
+
+        print(c)
         if not self.training_enabled:
             action, _, _ = self.compute_action(obs, deterministic=self.inference)
             return self.scale_to_motor_commands(action)
-        terminated = bool(
-            camera.get("terminated_by_kick", False)
-            or camera.get("terminated_by_x_threshold", False)
-            or camera.get("end_episode", False)
-        )
-
-        episode_finished = False
-        if terminated and self.last_obs is not None:
-            # The simulator reports termination together with the already-reset
-            # observation.  Do not teach the discriminator that teleporting from
-            # the old episode into the new spawn is an agent transition.
-            self.finish_episode(last_value=0.0)
-            episode_finished = True
-        elif self.last_obs is not None:
-            transition = np.concatenate((self.last_obs, obs)).astype(np.float32)
-            self.agent_transitions.append(transition)
-            reward = self.imitation_reward(self.last_obs, obs)
+        terminated = any(bool(camera.get(key, False)) for key in (
+            "end_episode", "terminated_by_kick", "terminated_by_x_threshold", "terminated_by_timeout"))
+        if self.last_obs is not None:
+            self.agent_transitions.append(np.concatenate((self.last_obs, obs)).astype(np.float32))
+            reward = self.transition_reward(camera, obs)
             self.current_episode_step_rewards.append(reward)
             self.ep_reward += reward
-            stored = self.buf.store(
-                self.last_obs, self.last_action, reward, self.last_val, self.last_logp
-            )
-            if not stored:
-                _, final_value, _ = self.compute_action(obs)
-                self.buf.finish_path(last_val=final_value)
-                self.train_on_buffer()
-                self.last_obs = None
-                episode_finished = True
-
+            if camera.get("ball_kicked", False):
+                self.current_episode_ball_kicks += 1
+                self.update_samples_with_kick += 1
+            if not self.buf.store(self.last_obs, self.last_action, reward, self.last_val, self.last_logp):
+                raise RuntimeError("PPO buffer was not drained before the next transition")
+        if terminated:
+            self.finish_episode(last_value=0.0)
+            self.episode_steps = 0
+            return []
+        if self.buf.ptr == self.buf.max_size:
+            _, value, _ = self.compute_action(obs)
+            self.buf.finish_path(last_val=value)
+            self.train_on_buffer()
         action, value, logp = self.compute_action(obs)
         if not np.all(np.isfinite(action)):
-            action = np.zeros_like(action)
-
-        if not episode_finished or terminated:
-            self.last_obs = obs
-            self.last_action = action
-            self.last_val = value
-            self.last_logp = logp
-            self.episode_steps += 1
-
+            raise RuntimeError("Policy produced a non-finite action")
+        self.last_obs, self.last_action = obs, action
+        self.last_val, self.last_logp = value, logp
+        self.episode_steps += 1
         return self.scale_to_motor_commands(action)
+
+    def scale_to_motor_commands(self, action):
+        # Other rods are initialized from the recording and held by the simulator.
+        return super().scale_to_motor_commands(action)[:1]
 
     def save_model(self, path=None):
         if path is None:
@@ -253,15 +192,27 @@ class StateImitationPPOAgent(PPOAgent):
             "log_std": self.log_std.detach().cpu(),
             "discriminator_state_dict": self.discriminator.state_dict(),
             "training_count": self.training_count,
+            "total_steps": self.total_steps,
+            "episode_count": self.episode_count,
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "discriminator_optimizer_state_dict": self.discriminator_optimizer.state_dict(),
+            "discriminator_ready": self.discriminator_ready,
+            "recording_config": vars(self.recording_config),
+            "episode_starts": self.expert_dataset.starts if self.expert_dataset is not None else self.episode_starts,
+            "observation_columns": list(OBS_COLUMNS),
         }, path)
         print(f"[StateImitation] Model saved to {path}")
 
     def load_model(self, path=None):
         path = path or self.model_save_path
         if not os.path.isfile(path):
-            print(f"[StateImitation] No checkpoint found at {path}")
-            return
+            raise FileNotFoundError(path)
         checkpoint = torch.load(path, map_location=self.device, weights_only=True)
+        if checkpoint.get("observation_columns") != list(OBS_COLUMNS):
+            raise ValueError("Checkpoint lacks the real-recording observation schema; start a new run")
+        if vars(RecordingConfig(**checkpoint.get("recording_config", {}))) != vars(self.recording_config):
+            raise ValueError("Checkpoint and recording calibration differ")
+        self.episode_starts = checkpoint["episode_starts"]
         self.ac.load_state_dict(checkpoint["actor_critic_state_dict"])
         if "log_std" in checkpoint:
             self.log_std.data.copy_(checkpoint["log_std"].to(self.device))
@@ -269,6 +220,12 @@ class StateImitationPPOAgent(PPOAgent):
             self.discriminator.load_state_dict(checkpoint["discriminator_state_dict"])
             self.discriminator_ready = True
         self.training_count = int(checkpoint.get("training_count", 0))
+        self.total_steps = int(checkpoint.get("total_steps", 0))
+        self.episode_count = int(checkpoint.get("episode_count", 0))
+        self.discriminator_ready = bool(checkpoint.get("discriminator_ready", False))
+        if self.training_enabled:
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            self.discriminator_optimizer.load_state_dict(checkpoint["discriminator_optimizer_state_dict"])
         print(f"[StateImitation] Model loaded from {path}")
 
 
@@ -282,14 +239,14 @@ class HybridImitationPPOAgent(StateImitationPPOAgent):
 
     def __init__(
         self,
-        expert_csv,
+        expert_data=None,
         imitation_weight=0.2,
         final_imitation_weight=0.0,
         imitation_anneal_steps=0,
         pretrained_discriminator_path=None,
         **ppo_kwargs,
     ):
-        super().__init__(expert_csv=expert_csv, **ppo_kwargs)
+        super().__init__(expert_data=expert_data, **ppo_kwargs)
         self.initial_imitation_weight = float(imitation_weight)
         self.final_imitation_weight = float(final_imitation_weight)
         self.imitation_anneal_steps = int(imitation_anneal_steps)
@@ -337,109 +294,12 @@ class HybridImitationPPOAgent(StateImitationPPOAgent):
             )
         PPOAgent.train_on_buffer(self)
 
-    def process_data(self, camera):
-        self.total_steps += 1
-        obs, bxy, vxy, _, active_rod = self.extract_observation(camera)
-
-        if not self.training_enabled:
-            action, _, _ = self.compute_action(obs, deterministic=self.inference)
-            return self.scale_to_motor_commands(action)
-
-        ball_kicked = bool(camera.get("ball_kicked", False))
-        terminated_by_kick = bool(camera.get("terminated_by_kick", False))
-        terminated_by_x_threshold = bool(
-            camera.get("terminated_by_x_threshold", False)
+    def transition_reward(self, camera, obs):
+        _, bxy, vxy, _, active_rod = self.extract_observation(camera)
+        # Forward kick objective: avoid a resting-angle reward that can oppose kicking.
+        from reward.single_bar_shoting import forward_backward_kick_reward
+        task_reward, _ = forward_backward_kick_reward(
+            ball_kicked=bool(camera.get("ball_kicked", False)), forward_ball_vx=vxy[0],
         )
-        end_episode = bool(camera.get("end_episode", False))
-        terminated = bool(
-            terminated_by_kick or terminated_by_x_threshold or end_episode
-        )
-
-        episode_finished = False
-        if self.last_obs is not None:
-            alignment_reward = closest_player_alignment_reward(
-                ball_y=bxy[1],
-                rod_pos_calib=float(active_rod["pos_calib"]),
-                rod_info=active_rod["info"],
-                reward_scale=1.0,
-            )
-            angle_reward = calculate_rod_angle_reward(
-                rod_angle=float(active_rod["angle"]),
-                reward_scale=1.0,
-                target_rod_angle=0.0,
-                rotation_buffer_def=3,
-            )
-            reward_breakdown = {
-                "allignment": float(alignment_reward),
-                "rod_angle": float(angle_reward) * 0.33,
-            }
-            _, ball_control_breakdown = self.compute_ball_control_reward(
-                bxy,
-                vxy,
-                active_rod,
-                terminated_by_x_threshold=terminated_by_x_threshold,
-                end_episode=end_episode,
-            )
-            reward_breakdown.update(ball_control_breakdown)
-            environment_reward = float(sum(reward_breakdown.values()))
-
-            imitation_reward = 0.0
-            imitation_weight = self.current_imitation_weight()
-            # Do not include reset teleports as discriminator examples.
-            if not terminated:
-                transition = np.concatenate((self.last_obs, obs)).astype(np.float32)
-                self.agent_transitions.append(transition)
-                if self.discriminator_ready:
-                    imitation_reward = self.imitation_reward(self.last_obs, obs)
-
-            weighted_imitation_reward = imitation_weight * imitation_reward
-            reward = environment_reward + weighted_imitation_reward
-            reward_breakdown.update({
-                "environment_total": environment_reward,
-                "imitation_raw": imitation_reward,
-                "imitation_weighted": weighted_imitation_reward,
-                "imitation_weight": imitation_weight,
-            })
-            for key, value in reward_breakdown.items():
-                self.update_reward_breakdown_sums[key] = (
-                    self.update_reward_breakdown_sums.get(key, 0.0) + float(value)
-                )
-
-            if ball_kicked:
-                self.current_episode_ball_kicks += 1
-                self.update_samples_with_kick += 1
-            self.current_episode_step_rewards.append(reward)
-            self.ep_reward += reward
-
-            stored = self.buf.store(
-                self.last_obs,
-                self.last_action,
-                reward,
-                self.last_val,
-                self.last_logp,
-            )
-            if not stored:
-                _, final_value, _ = self.compute_action(obs)
-                self.buf.finish_path(last_val=final_value)
-                self.train_on_buffer()
-                self.last_obs = None
-                episode_finished = True
-
-            if not episode_finished and terminated:
-                self.finish_episode(last_value=0.0)
-                self.episode_steps = 0
-                episode_finished = True
-
-        action, value, logp = self.compute_action(obs)
-        if not np.all(np.isfinite(action)):
-            action = np.zeros_like(action)
-
-        if not episode_finished:
-            self.last_obs = obs
-            self.last_action = action
-            self.last_val = value
-            self.last_logp = logp
-            self.episode_steps += 1
-
-        self.prev_ball_vxy = vxy
-        return self.scale_to_motor_commands(action)
+        imitation = super().transition_reward(camera, obs)
+        return task_reward + self.current_imitation_weight() * imitation

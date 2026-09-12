@@ -1,0 +1,15 @@
+{
+  "sample_dt": 0.05,
+  "max_gap": 0.1,
+  "rod_index": 4,
+  "angle_units": "radians",
+  "angle_sign": 1.0,
+  "angle_offset_radians": 0.0,
+  "x_scale": 1.0,
+  "x_offset_mm": 0.0,
+  "y_scale": 1.0,
+  "y_offset_mm": 0.0,
+  "velocity_scale": 1.0,
+  "invert_rod_position": false,
+  "rotate_table_180": true
+}

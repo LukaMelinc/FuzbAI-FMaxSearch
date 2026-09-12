@@ -5,6 +5,9 @@ from pprint import pprint
 import threading
 import math
 import argparse
+import json
+from pathlib import Path
+from recorded_expert import RecordingConfig
 
 import torch
 from FuzbAIAgent_Example import PlayerAgent
@@ -12,7 +15,6 @@ from agent_factory import create_self_play_manager
 from strel_PPO import PPOAgent, TwoRodPPOAgent, PassPPOAgent
 from state_imitation import (
     HybridImitationPPOAgent,
-    
     StateImitationPPOAgent,
 )
 import random
@@ -29,7 +31,7 @@ class FuzbAISim:
         self_play_config: bool = False,
         agent1_mode: str = "pass_ppo",
         agent1_kwargs: dict = None,
-        imitation_ball_x_threshold: float = 605.0,
+        max_agent_steps: int = 0,
     ):
         print(" ______         _             _____ ")
         print("|  ____|       | |      /\   |_   _|")
@@ -40,6 +42,9 @@ class FuzbAISim:
         print("")
         print("LAK FuzbAI simulator v1 - 2025")
 
+        self.recorded_imitation = agent1_mode in {"state_imitation", "hybrid_imitation_ppo"}
+        self.max_agent_steps = max_agent_steps
+        self.run_error = None
         self.ballPos = None
         self.ballVel = None
         self.render_gui = bool(render_gui)
@@ -80,10 +85,10 @@ class FuzbAISim:
         """LATCHES"""
         self._receiver_contact_latch = False
         self._ball_kicked_latch = False
-        self._kick_terminated_latch = False#True
-        self._x_threshold_terminated_latch = True
-        self.terminate_episode_on_kick = False#True
-        self.end_episode_latch = False#True
+        self._kick_terminated_latch = False
+        self._x_threshold_terminated_latch = False
+        self.terminate_episode_on_kick = False
+        self.end_episode_latch = False
         self._timeout_terminated_latch = False
         self._end_episode_armed = False
 
@@ -102,11 +107,11 @@ class FuzbAISim:
         self._warned_empty_kick_links = False
         self.physics_timestep = 1.0 / 240.0
         self.physics_steps_per_loop = 4
-        self.gui_sleep_s = 0.0
+        self.gui_sleep_s = 0.09
 
 
         self.stepDisp = None
-        self.layer_freezing = True
+        self.layer_freezing = False#True
 
         # Player object indices in the URDF tree model
         self.redPlayers = [ 2, 5, 6, 14, 15, 16, 17, 18, 28, 29, 30 ]
@@ -165,13 +170,7 @@ class FuzbAISim:
                     training_enabeled=False,
                 )
             elif self.agent1_mode == "single_rod_ppo":
-                self.p1 = PPOAgent(
-                    controlled_rod_id=4,
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#2-allignment-v2.pth",
-                    load_model=True,
-                    inference=False,
-                    training_enabeled=True,    
-                )
+                self.p1 = PPOAgent(**dict(agent1_kwargs or {}))
 
             elif self.agent1_mode == "state_imitation":
                 self.p1 = StateImitationPPOAgent(**dict(agent1_kwargs or {}))
@@ -182,7 +181,7 @@ class FuzbAISim:
             self.p2 = PlayerAgent()
 
 
-        if self.p1.training_enabled and self.layer_freezing:
+        if self.agent1_mode == "pass_ppo" and self.p1.training_enabled and self.layer_freezing:
 
             # For reseting the networks
             """modules_to_reinitialize = [
@@ -260,27 +259,32 @@ class FuzbAISim:
         # Ball-control finetuning spawn setup for rod 6.
         # PyBullet x maps to camera x as: camera_x_mm = 1000 * x - 115.
         # Rod 6 is around camera_x=830 mm, so x ~= 0.945 m.
-        self.ball_spawn_areas = {
-            "behind": (0.55, 0.57), #(0.62, 0.67), #0.75, 0.77)# 0.93 - 0.62
+        self.ball_spawn_areas = {       # NOTE: Za imitation learning (smoll kicking - 0.61 do 0.68)
+            "behind": (0.61, 0.68), #(0.62, 0.67), #0.75, 0.77)# 0.93 - 0.62        # od 0.61 do
             #"ahead": (1.02, 1.16),
         }
-        self.ball_spawn_speed_range = (0.55, 0.56) # <- (0.44, 0.445)
+        self.ball_spawn_speed_range = (0.0, 0.0) # <- (0.44, 0.445)
         
-        # ONLY FOR IMITATION MODE #
-        if self.agent1_mode in {
-            "scripted_imitation",
-            "state_imitation",
-            "hybrid_imitation_ppo",
-        }:
-            # PyBullet x maps to camera x as 1000*x - 115.  Spawn balanced
-            # episodes on both sides of the teacher's threshold during recording
-            # and imitation-guided PPO training.
-            threshold_mm = float(imitation_ball_x_threshold)
-            threshold_x = (threshold_mm + 115.0) / 1000.0
-            self.ball_spawn_areas = {
-                "behind": (threshold_x - 0.12, threshold_x - 0.04),
-                "ahead": (threshold_x + 0.04, threshold_x + 0.12),
-            }
+        if self.recorded_imitation:
+            dataset = self.p1.expert_dataset
+            self.recorded_starts = dataset.starts if dataset is not None else self.p1.episode_starts
+            print(f"Recorded imitation: {len(self.recorded_starts)} episode starts loaded.")
+            xs = sorted(start["state"][0] for start in self.recorded_starts)
+            ys = sorted(start["state"][1] for start in self.recorded_starts)
+            print(f"Recorded spawn camera coordinates (mm): "
+                  f"X median={xs[len(xs)//2]:.1f}, Y median={ys[len(ys)//2]:.1f}; "
+                  f"red midfield X=530, blue midfield X=680")
+            self.control_dt = self.p1.recording_config.sample_dt
+            self.curriculum_enabled = False
+            self.ballPosNoise = 0.0
+            self.episode_end_ball_other_x_threshold_mm = 1210.0
+            self._x_threshold_terminated_latch = False
+            self._kick_terminated_latch = False
+            self.terminate_episode_on_kick = False
+            self.end_episode_latch = False
+            self.gui_sleep_s = 0.09
+            self.debug_print_red_kicks = False
+            self._run_start_steps = self.p1.total_steps
 
     def _ball_x_mm_camera(self) -> float:
         # Must match getCameraDict mapping
@@ -426,6 +430,9 @@ class FuzbAISim:
         if ball_x_mm < self.episode_end_ball_x_threshold_mm or ball_x_mm > self.episode_end_ball_other_x_threshold_mm:  # Threshold behind one rod and ahead of the other
         #if ball_x_mm > self.episode_end_ball_other_x_threshold_mm:  # Threshold ahead of the rod 
             self._x_threshold_terminated_latch = True
+            if self.recorded_imitation:
+                self.end_episode_latch = True
+                return
             self.ResetBallToLocation()
             self.round += 1
             self.reset_step_counter()
@@ -625,12 +632,39 @@ class FuzbAISim:
         return self.delayedMemory[0][player]
 
     def ResetBallToLocation(self, mark_episode_end=True):
+        if self.recorded_imitation:
+            start = random.choice(self.recorded_starts)
+            state = start["state"]
+            self.max_num_steps = max(2, int(round(start["duration"] / self.control_dt)) + 1)
+            for i in range(8):
+                pos = self.travels[i] * (1 - state[4 + i]) / 1000
+                angle = state[12 + i]
+                p.resetJointState(self.mizaId, self.slideJoints[i], pos, 0)
+                p.resetJointState(self.mizaId, self.revJoints[i], angle, 0)
+                p.setJointMotorControl2(self.mizaId, self.slideJoints[i], p.POSITION_CONTROL,
+                                       targetPosition=pos, force=5)
+                p.setJointMotorControl2(self.mizaId, self.revJoints[i], p.POSITION_CONTROL,
+                                       targetPosition=angle, force=2.0943448919793832)
+                self.prevRefPositions[i] = self.travels[i] * (1 - state[4 + i])
+                self.motionDirection[i] = 1
+            p.resetBasePositionAndOrientation(self.ball,
+                [(state[0] + 115) / 1000, (730 - state[1]) / 1000, 0.191], [0, 0, 0, 1])
+            p.resetBaseVelocity(self.ball, [state[2], -state[3], 0], [0, 0, 0])
+            self.ballPos, _ = p.getBasePositionAndOrientation(self.ball)
+            self.ballVel = p.getBaseVelocity(self.ball)
+            self.rodPositions = state[4:12].copy()
+            self.rodAngles = [v * 32 / math.pi for v in state[12:20]]
+            self._ball_kicked_latch = False
+            self._kick_normal_force = 0.0
+            self.showRound()
+            return
+
         # Randomize the drop position within specified ranges
 
         # IMPORTANT: Tilted groudn from 0.0 - 0.9 and from 0.67 on
 
         #y_range = (0.091, 0.67)
-        y_range = (0.17, 0.6)#, 0.58)  # Streljanje iz ožjega prostora
+        y_range = (0.092, 0.166)#, 0.58)  # Streljanje iz ožjega prostora
         spawn_side, x_range = random.choice(list(self.ball_spawn_areas.items()))
 
         custom_x = random.uniform(*x_range)
@@ -855,9 +889,12 @@ class FuzbAISim:
                         self.showRound()
 
                     # Safe drop coordinates within table limits
-                    self.ResetBallToLocation()
-                    self.round += 1
-                    self.reset_step_counter()
+                    if self.recorded_imitation:
+                        self.end_episode_latch = True
+                    else:
+                        self.ResetBallToLocation()
+                        self.round += 1
+                        self.reset_step_counter()
                 
                 # Update episode/reset latches after the latest sampled ball state.
                 self._update_x_threshold_termination()
@@ -879,7 +916,7 @@ class FuzbAISim:
                 rotVel = 174.74649915501303
 
                 # Process the agents...
-                if self.t - prev_t > self.control_dt:
+                if self.t - prev_t + 1e-9 >= self.control_dt:
 
                     self.current_step += 1
                     self.showCurrentStep()
@@ -905,7 +942,9 @@ class FuzbAISim:
                                 motors1 = self.motorCommandsExternal1
                                 self.motorCommandsExternal1 = []
 
-                            if self.status_player2 == 0:
+                            if self.recorded_imitation:
+                                motors2 = []
+                            elif self.status_player2 == 0:
                                 # Robust (no-delay) training: feed the current snapshot directly.
                                 motors2 = self.p2.process_data(self.getCameraDict(2))
                             else:
@@ -932,6 +971,8 @@ class FuzbAISim:
                     except:
                         print("Exception in agent 1")
                         traceback.print_exc()
+                        if self.recorded_imitation:
+                            raise
 
                     try:
                         driveMap = [7, 6, 4, 2]
@@ -955,6 +996,7 @@ class FuzbAISim:
 
                     prev_t = self.t
 
+                    reset_after_episode = self.recorded_imitation and self.end_episode_latch
                     reset_after_kick = bool(self._kick_terminated_latch)
                     reset_after_timeout = bool(self._timeout_terminated_latch)
 
@@ -967,7 +1009,7 @@ class FuzbAISim:
                     self.end_episode_latch = False
                     self._timeout_terminated_latch = False
 
-                    if reset_after_kick:
+                    if reset_after_episode or reset_after_kick:
                         self.ResetBallToLocation(mark_episode_end=False)
                         self.round += 1
                         self.reset_step_counter()
@@ -975,6 +1017,10 @@ class FuzbAISim:
                         self.ResetBallToLocation(mark_episode_end=False)
                         self.round += 1
                         self.reset_step_counter()     
+
+                if (self.recorded_imitation and self.max_agent_steps
+                        and self.p1.total_steps - self._run_start_steps >= self.max_agent_steps):
+                    self.isRunning = False
 
                 # Zajemanje podatkov (gol, konec, podatki iz kamer)
                 self.sampleCameras(self.t)
@@ -987,7 +1033,10 @@ class FuzbAISim:
                         if (k == 65309 and (v & p.KEY_WAS_TRIGGERED)): # 65309 == enter
                             # Move the ball over the table
                             #p.resetBasePositionAndOrientation(self.ball, self.defaultBallPos, p.getQuaternionFromEuler([0,0,0]))
-                            self.ResetBallToLocation()
+                            if self.recorded_imitation:
+                                self.end_episode_latch = True
+                            else:
+                                self.ResetBallToLocation()
                         if (k == 32): # Esc
                             running = False 
                             break            
@@ -1020,12 +1069,105 @@ class FuzbAISim:
             p.disconnect()
             print("Stopping server...")
 
-        except:
-            pass
+        except Exception as exc:
+            self.run_error = exc
+            traceback.print_exc()
+            if p.isConnected():
+                p.disconnect()
 
         print(f'Main loop stopped')
 
         self.isRunning = False
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train a red midfield agent from table recordings")
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--mode", choices=("single_rod_ppo", "state_imitation", "hybrid_imitation_ppo"), default="state_imitation")
+    parser.add_argument("--expert-data", default="kick_imitation_smol", help="Directory of semicolon-separated table recordings")
+    parser.add_argument("--recording-config", help="Calibration JSON; fresh runs default to recording_config.json beside this script, resumes use checkpoint calibration")
+    parser.add_argument("--steps-per-env", type=int, default=512)
+    parser.add_argument("--save-model-every", type=int, default=50, help="Checkpoint interval in episodes")
+    parser.add_argument("--max-agent-steps", type=int, default=0, help="Stop and save after this many additional observations; 0 runs until interrupted")
+    parser.add_argument("--output-dir", default="trained_models/table_imitation")
+    parser.add_argument("--checkpoint", help="Resume a table-imitation checkpoint")
+    parser.add_argument("--pretrained-imitation-checkpoint")
+    parser.add_argument("--imitation-weight", type=float, default=0.2)
+    parser.add_argument("--final-imitation-weight", type=float, default=0.0)
+    parser.add_argument("--imitation-anneal-steps", type=int, default=0)
+    parser.add_argument("--inference", action="store_true")
+    parser.add_argument("--validate-data", action="store_true", help="Load/validate recordings and exit without starting physics")
+    args = parser.parse_args()
+    if args.steps_per_env < 2 or args.save_model_every < 1 or args.max_agent_steps < 0:
+        parser.error("Invalid buffer, checkpoint interval, or step limit")
+    if args.inference and not args.checkpoint:
+        parser.error("--inference requires --checkpoint")
+    if args.checkpoint and args.pretrained_imitation_checkpoint:
+        parser.error("Choose resume checkpoint or pretrained actor, not both")
+    config_values = {}
+    config_source = "RecordingConfig defaults"
+    if args.checkpoint:
+        config_values = torch.load(args.checkpoint, map_location="cpu", weights_only=True).get("recording_config", {})
+        config_source = f"checkpoint {args.checkpoint}"
+    config_path = Path(args.recording_config) if args.recording_config else None
+    if config_path is None and not args.checkpoint:
+        config_path = Path(__file__).resolve().with_name("recording_config.json")
+    if config_path is not None:
+        with config_path.open() as stream:
+            config_values = json.load(stream)
+        config_source = str(config_path.resolve())
+    config = RecordingConfig(**config_values)
+    print(f"[RecordingConfig] Source: {config_source}")
+    print(f"[RecordingConfig] recorded rod={config.rod_index + 1}, "
+          f"rotate_table_180={config.rotate_table_180}, sample_dt={config.sample_dt}")
+    # Physics advances in 1/60 s batches; keep expert transitions at exactly
+    # the same interval instead of silently rounding a requested control rate.
+    if abs(config.sample_dt * 60 - round(config.sample_dt * 60)) > 1e-6:
+        parser.error("sample_dt must be a multiple of 1/60 seconds")
+    if args.validate_data:
+        from recorded_expert import ExpertTransitionDataset
+        with open("geometry.json") as stream:
+            dataset = ExpertTransitionDataset(args.expert_data, json.load(stream), config)
+        raise SystemExit(0)
+    setup_logging()
+    agent_kwargs = dict(
+        model_save_path=args.output_dir,
+        training_enabeled=not args.inference, inference=args.inference,
+        steps_per_env=args.steps_per_env, save_model_every=args.save_model_every,
+    )
+    if args.mode in {"state_imitation", "hybrid_imitation_ppo"}:
+        agent_kwargs.update(expert_data=None if args.inference else args.expert_data,
+                            recording_config=config)
+        if args.inference:
+            agent_kwargs.update(model_save_path=args.checkpoint, load_model=True)
+    if args.mode == "single_rod_ppo" and args.inference:
+        agent_kwargs.update(model_save_path=args.checkpoint, load_model=True)
+    if args.mode == "hybrid_imitation_ppo":
+        agent_kwargs.update(imitation_weight=args.imitation_weight,
+                            final_imitation_weight=args.final_imitation_weight,
+                            imitation_anneal_steps=args.imitation_anneal_steps,
+                            pretrained_discriminator_path=args.pretrained_imitation_checkpoint)
+    if args.pretrained_imitation_checkpoint:
+        agent_kwargs["pretrained_actor_path"] = args.pretrained_imitation_checkpoint
+    sim = FuzbAISim(render_gui=not args.headless, agent1_mode=args.mode,
+                   agent1_kwargs=agent_kwargs, max_agent_steps=args.max_agent_steps)
+    if args.checkpoint and not args.inference:
+        sim.p1.load_model(args.checkpoint)
+        if sim.recorded_imitation:
+            sim._run_start_steps = sim.p1.total_steps
+    sim.run()
+    try:
+        while sim.isRunning:
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        sim.stop()
+    finally:
+        sim.stop()
+        sim.simThread.join()
+        if sim.run_error is None and not args.inference:
+            sim.p1.save_model()
+    if sim.run_error is not None:
+        raise RuntimeError("Simulation/training failed") from sim.run_error
+"""
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -1146,3 +1288,4 @@ if __name__ == "__main__":
             "hybrid_imitation_ppo",
         } and not args.inference:
             sim.p1.save_model()
+"""
