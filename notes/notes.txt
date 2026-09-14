@@ -40,3 +40,9 @@ python3 FuzbAISim.py \
   --recording-config recording_config.json \
   --max-agent-steps 300 \
   --output-dir trained_models/table_imitation_rotated
+
+Za poganjanje treniranega imitacijskega modela v inferenci:
+python3 FuzbAISim.py \
+  --mode state_imitation \
+  --inference \
+  --checkpoint trained_models/table_imitation_rotated/treniran_model.pth

@@ -1421,6 +1421,8 @@ class PassPPOAgent(PPOAgent):
         self.receiving_control_state = {}
         self.prev_score = None
         self.kick_latch = False
+        self.forward_kick_paid = False
+        self.pass_completed = False
         self.episode_steps = 0
 
         with open("geometry.json") as f:
@@ -1580,7 +1582,7 @@ class PassPPOAgent(PPOAgent):
             self._command_for_rod(self.receiver_rod_id, action[4:8]),
         ]
         # Park the unused red goalkeeper and defenders with their legs up.
-        for rod_id in (1, 2, 3):
+        for rod_id in (1, 2):
             if rod_id not in (self.passer_rod_id, self.receiver_rod_id):
                 commands.append({
                     "driveID": rod_id,  # Red rods 1 and 2 map to drives 1 and 2.
@@ -1629,7 +1631,7 @@ class PassPPOAgent(PPOAgent):
             "curriculum_y_max": float(camera.get("curriculum_y_max", float("nan"))),
         }
 
-        print(f"Ball x: {bxy[0]:.2f} y: {bxy[1]:.2f}")
+
 
         end_episode = bool(camera.get("end_episode", False))
         terminated_by_kick = bool(camera.get("terminated_by_kick", False))
@@ -1640,6 +1642,8 @@ class PassPPOAgent(PPOAgent):
         ball_behind_rod = float(bxy[0] > (float(receiver["info"]["position"]) + 8))
         prev_ball_vx = self.prev_ball_vxy[0] if self.prev_ball_vxy is not None else None
         prev_ball_vy = self.prev_ball_vxy[1] if self.prev_ball_vxy is not None else None
+
+
         
 
         episode_finished_this_sample = False
@@ -1730,9 +1734,6 @@ class PassPPOAgent(PPOAgent):
             ### --- RECEIVER TRAINING --- ###
 
             """### --- STEP 4 -> Alligning the receiving rod with the ball trajectory --- ###
-
-            
-
             
             allignment = predictive_player_alignment_reward(
                 ball_x=bxy[0],
@@ -1779,65 +1780,46 @@ class PassPPOAgent(PPOAgent):
 
             ### --- END-TO-END TRAINING --- ###
 
-            """ ### --- STEP 6 -> END TO END training --- ###
+            ### --- STEP 6 -> END TO END training --- ###
 
 
-            # - Kicking section
-
-            first_kick = ball_kicked and self.current_episode_ball_kicks == 0
+            # Pay for a forward launch once; repeated contacts cannot farm bonuses.
+            forward = ball_kicked and vxy[0] > 0.08
+            backward = ball_kicked and vxy[0] < -0.08
+            forward_reward = 2.0 if forward and not self.forward_kick_paid else 0.0
+            if forward:
+                self.forward_kick_paid = True
+            backward_penalty = -1.0 if backward else 0.0
             no_kick_timeout = bool(
                 camera.get("terminated_by_timeout", False)
-                and not (ball_kicked or terminated_by_kick or terminated_by_x_threshold)
-                and self.current_episode_ball_kicks == 0
+                and not self.forward_kick_paid
             )
-            forward = first_kick and vxy[0] > 0
-            backward = first_kick and vxy[0] < 0
 
-
-
-            # 1. Reward forward kicks.
-            forward_reward = 4.0 if forward else 0.0
-
-            # 2. Penalize backward kicks.
-            backward_penalty = -1.0 if backward else 0.0
-
-            # - End of kicking section
-            
-            stopping_reward = maintaining_ball(
-                            ball_x=bxy[0],
-                            ball_vx=vxy[0],
-                            ball_vz=vxy[1],
-                            rod_x_pos=float(receiver['info']['position']),
-                            threshold_crossed=terminated_by_x_threshold,
-                            ball_behind_rod=ball_behind_rod,
-                            prev_ball_vx=prev_ball_vx,
-                            prev_ball_vz=prev_ball_vy,
-                            episode_timeout=bool(end_episode and not terminated_by_x_threshold),
-            
-                        )
-            
-            allignment = predictive_player_alignment_reward(
-                            ball_x=bxy[0],
-                            ball_y=bxy[1],
-                            ball_vx=vxy[0],
-                            ball_vy=vxy[1],
-                            rod_x=float(receiver['info']['position']),
-                            rod_pos_calib=float(receiver['pos_calib']),
-                            rod_info=receiver['info'],
-                            vx_threshold=0.1,
-                            t_max = 7.0,
-                            reward_scale=1.0
-            
-                        )
-
+            reward_time = float(camera["simulation_time"])
+            previous_time = self.receiving_control_state.get("last_time", reward_time)
+            reward_dt = max(0.0, reward_time - previous_time)
+            stopping_reward, stopping_breakdown = receiving_reward(
+                ball_x=bxy[0], ball_y=bxy[1], ball_vx=vxy[0], ball_vy=vxy[1],
+                rod_info=receiver["info"], rod_pos_calib=receiver["pos_calib"],
+                receiver_contact=bool(camera.get("receiver_contact", False)),
+                control_state=self.receiving_control_state, sample_time=reward_time,
+                threshold_crossed=terminated_by_x_threshold,
+                episode_timeout=bool(end_episode and not terminated_by_x_threshold),
+            )
+            alignment = predictive_player_alignment_reward(
+                ball_x=bxy[0], ball_y=bxy[1], ball_vx=vxy[0], ball_vy=vxy[1],
+                rod_x=float(receiver["info"]["position"]),
+                rod_pos_calib=float(receiver["pos_calib"]), rod_info=receiver["info"],
+                vx_threshold=0.1, t_max=7.0, reward_scale=0.1,
+            ) * reward_dt if not self.receiving_control_state.get("contacted") else 0.0
             reward_breakdown = {
-                            "allignment": allignment,
-                            "stopping": stopping_reward,
-                        }
-                        
-            """
-
-            reward_breakdown = {}
+                "forward_kick": forward_reward,
+                "backward_kick": backward_penalty,
+                "no_kick_timeout": self.no_kick_timeout_penalty if no_kick_timeout else 0.0,
+                "alignment": alignment,
+                **stopping_breakdown,
+            }
+            self.pass_completed = bool(self.receiving_control_state.get("hold_paid", False))
 
             reward = sum(reward_breakdown.values())
 
@@ -1853,33 +1835,28 @@ class PassPPOAgent(PPOAgent):
                 self.current_episode_x_threshold_terminations += 1
 
             self.current_episode_step_rewards.append(reward)
-            stored = self.buf.store(self.last_obs, self.last_action, reward, self.last_val, self.last_logp)
-            if not stored:
+            if not self.buf.store(self.last_obs, self.last_action, reward, self.last_val, self.last_logp):
+                raise RuntimeError("PPO buffer must be drained before collecting another transition")
+            self.ep_reward += reward
+
+            if terminated_by_x_threshold or end_episode or self.pass_completed:
+                self.finish_episode(last_value=0)
+                self.episode_steps = 0
+                episode_finished_this_sample = True
+            elif self.buf.ptr == self.buf.max_size:
                 _, final_value, _ = self.compute_action(obs)
                 self.buf.finish_path(last_val=final_value)
-                print("[PassPPO] Buffer full, training now...")
                 if self.auto_train:
                     self.train_on_buffer()
                 else:
                     self.pending_train = True
-                self.episode_count += 1
-                self.episode_steps = 0
-                self.ep_reward = 0.0
-                self.last_obs = None
-                self.last_action = None
-                self.last_val = None
-                self.last_logp = None
-                episode_finished_this_sample = True
-            else:
-                self.ep_reward += reward
 
-            if (not episode_finished_this_sample) and (self.kick_latch or terminated_by_kick or terminated_by_x_threshold or end_episode):
-                self.finish_episode(last_value=0)
-                self.episode_steps = 0
-                episode_finished_this_sample = True
+        # The simulator consumes the terminal observation before resetting.
+        # Do not connect its next spawn to this episode's last action.
+        if episode_finished_this_sample:
+            return []
 
-        if not episode_finished_this_sample:
-            self.episode_steps += 1
+        self.episode_steps += 1
 
         action, value, logp = self.compute_action(obs, deterministic=self.inference)
 
@@ -1888,9 +1865,6 @@ class PassPPOAgent(PPOAgent):
         if not np.all(np.isfinite(action)):
             print("[PassPPO] Nan or Inf detected in action:", action)
             action = np.zeros_like(action)
-
-        if episode_finished_this_sample:
-            self.receiving_control_state.clear()
 
         self.prev_ball_x = bxy[0]
         self.prev_ball_vxy = vxy
@@ -1934,6 +1908,7 @@ class PassPPOAgent(PPOAgent):
         self.prev_ball_vxy = None
         self.receiving_control_state = {}
         self.kick_latch = False
+        self.forward_kick_paid = False
         self.current_episode_goals = 0
         self.current_episode_opponent_goals = 0
         self.current_episode_ball_kicks = 0

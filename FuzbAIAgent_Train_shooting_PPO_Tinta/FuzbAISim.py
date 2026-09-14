@@ -26,10 +26,10 @@ class FuzbAISim:
     def __init__(
         self,
         episode_end_ball_x_threshold_mm: float = 1.0,       # Threshold for terminating episodes
-        kick_observed_rod_id: int = 4,      # NOTE: Determine, for which rod the bal kicking is set
+        kick_observed_rod_id: int = 2,      # NOTE: Determine, for which rod the bal kicking is set
         render_gui: bool = False,
         self_play_config: bool = False,
-        agent1_mode: str = "pass_ppo",
+        agent1_mode: str = "two_rod_ppo",
         agent1_kwargs: dict = None,
         max_agent_steps: int = 0,
     ):
@@ -93,7 +93,7 @@ class FuzbAISim:
         self._end_episode_armed = False
 
         # Threshold of num of steps to end the iteration
-        self.max_num_steps = 40#40
+        self.max_num_steps = 40
         self.current_step = 0
 
         # Control loop period (seconds). One "step" for the agent completes when this time has elapsed.
@@ -107,7 +107,7 @@ class FuzbAISim:
         self._warned_empty_kick_links = False
         self.physics_timestep = 1.0 / 240.0
         self.physics_steps_per_loop = 4
-        self.gui_sleep_s = 0.09
+        self.gui_sleep_s = 0.0
 
 
         self.stepDisp = None
@@ -153,7 +153,8 @@ class FuzbAISim:
                     passer_rod_id=4,
                     receiver_rod_id=6,
                     opponent_rod_id=5,
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Passing/pass_ppo_steps_1055927.pth",
+                    #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_end_to_end/pass_ppo_steps_786116.pth",     # Funkcijonira bolje kot 5.4M
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_end_to_end/pass_ppo_steps_5481636.pth",
                     load_model=True,
                     inference=True,
                     training_enabeled=True,
@@ -164,13 +165,20 @@ class FuzbAISim:
                     observed_rod_id=7,
                     training_task="shooting",
                     opponent_active=False,
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Shoting/#1.pth",
+                    #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Shoting/#1.pth",
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Shoting/#3-2.pth",
                     load_model=True,
                     inference=True,
                     training_enabeled=False,
                 )
             elif self.agent1_mode == "single_rod_ppo":
-                self.p1 = PPOAgent(**dict(agent1_kwargs or {}))
+                self.p1 = PPOAgent(
+                    controller_rod_id=4,
+                    model_save_path="",
+                    load_model=False,
+                    inference=False,
+                    training_enabeled=True
+                )
 
             elif self.agent1_mode == "state_imitation":
                 self.p1 = StateImitationPPOAgent(**dict(agent1_kwargs or {}))
@@ -260,9 +268,15 @@ class FuzbAISim:
         # PyBullet x maps to camera x as: camera_x_mm = 1000 * x - 115.
         # Rod 6 is around camera_x=830 mm, so x ~= 0.945 m.
         self.ball_spawn_areas = {       # NOTE: Za imitation learning (smoll kicking - 0.61 do 0.68)
-            "behind": (0.61, 0.68), #(0.62, 0.67), #0.75, 0.77)# 0.93 - 0.62        # od 0.61 do
+            # Za podajo: (0.63, 0.66)
+            # Za strel: 
+              
+            "behind": (0.95, 0.97),
             #"ahead": (1.02, 1.16),
         }
+
+        # Za podajo in strel: (0.0, 0.0)
+        # Za prestrezanje: 
         self.ball_spawn_speed_range = (0.0, 0.0) # <- (0.44, 0.445)
         
         if self.recorded_imitation:
@@ -282,7 +296,6 @@ class FuzbAISim:
             self._kick_terminated_latch = False
             self.terminate_episode_on_kick = False
             self.end_episode_latch = False
-            self.gui_sleep_s = 0.09
             self.debug_print_red_kicks = False
             self._run_start_steps = self.p1.total_steps
 
@@ -427,15 +440,15 @@ class FuzbAISim:
         # NOTE: Point of termination due to x-threshold crossing
         # Added another threshold for detecting when the ball failed to control the ball coming from behind
         #if ball_x_mm < self.episode_end_ball_x_threshold_mm:   # Threshold behind the rod
-        if ball_x_mm < self.episode_end_ball_x_threshold_mm or ball_x_mm > self.episode_end_ball_other_x_threshold_mm:  # Threshold behind one rod and ahead of the other
+        """if ball_x_mm < self.episode_end_ball_x_threshold_mm or ball_x_mm > self.episode_end_ball_other_x_threshold_mm:  # Threshold behind one rod and ahead of the other
         #if ball_x_mm > self.episode_end_ball_other_x_threshold_mm:  # Threshold ahead of the rod 
             self._x_threshold_terminated_latch = True
-            if self.recorded_imitation:
+            if self.recorded_imitation or self.agent1_mode == "pass_ppo":
                 self.end_episode_latch = True
                 return
             self.ResetBallToLocation()
             self.round += 1
-            self.reset_step_counter()
+            self.reset_step_counter()"""
 
     def getCameraDict(self, player = 1): 
         ball_x, ball_y = 1000*self.ballPos[0] - 115, 730 - 1000*self.ballPos[1]
@@ -662,9 +675,13 @@ class FuzbAISim:
         # Randomize the drop position within specified ranges
 
         # IMPORTANT: Tilted groudn from 0.0 - 0.9 and from 0.67 on
+        # Širina za podajanje: (0.092, 0.166)
+        # Celotna širina: (0.091, 0.67)
+        # Ožja širina za streljanje: (0.16, 0.58)
 
-        #y_range = (0.091, 0.67)
-        y_range = (0.092, 0.166)#, 0.58)  # Streljanje iz ožjega prostora
+        #y_range = (0.091, 0.67)    # Celotna širina
+        y_range = (0.16, 0.58)     # Ožja širina -> Strel
+        #y_range = (0.092, 0.166)  # Širina za podajanje
         spawn_side, x_range = random.choice(list(self.ball_spawn_areas.items()))
 
         custom_x = random.uniform(*x_range)
@@ -889,7 +906,7 @@ class FuzbAISim:
                         self.showRound()
 
                     # Safe drop coordinates within table limits
-                    if self.recorded_imitation:
+                    if self.recorded_imitation or self.agent1_mode == "pass_ppo":
                         self.end_episode_latch = True
                     else:
                         self.ResetBallToLocation()
@@ -971,7 +988,7 @@ class FuzbAISim:
                     except:
                         print("Exception in agent 1")
                         traceback.print_exc()
-                        if self.recorded_imitation:
+                        if self.recorded_imitation or self.agent1_mode == "pass_ppo":
                             raise
 
                     try:
@@ -996,7 +1013,13 @@ class FuzbAISim:
 
                     prev_t = self.t
 
-                    reset_after_episode = self.recorded_imitation and self.end_episode_latch
+                    pass_completed = self.agent1_mode == "pass_ppo" and self.p1.pass_completed
+                    reset_after_episode = (
+                        (self.recorded_imitation or self.agent1_mode == "pass_ppo")
+                        and self.end_episode_latch
+                    ) or pass_completed
+                    if pass_completed:
+                        self.p1.pass_completed = False
                     reset_after_kick = bool(self._kick_terminated_latch)
                     reset_after_timeout = bool(self._timeout_terminated_latch)
 
@@ -1079,6 +1102,7 @@ class FuzbAISim:
 
         self.isRunning = False
 
+"""
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a red midfield agent from table recordings")
     parser.add_argument("--headless", action="store_true")
@@ -1167,7 +1191,9 @@ if __name__ == "__main__":
             sim.p1.save_model()
     if sim.run_error is not None:
         raise RuntimeError("Simulation/training failed") from sim.run_error
+
 """
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -1179,23 +1205,29 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mode",
         choices=(
+            "pass_ppo",
             "single_rod_ppo",
             "scripted_imitation",
             "state_imitation",
             "hybrid_imitation_ppo",
         ),
-        default="single_rod_ppo",
+        default="two_rod_ppo",
     )
     parser.add_argument(
         "--expert-csv",
         default="imitation_data/threshold_expert_8d.csv",
         help="Output path in scripted mode; input path in imitation mode.",
     )
+    parser.add_argument("--recording-config")
+    parser.add_argument("--expert-data", default="kick_imitation_smol")
+    parser.add_argument("--max-agent-steps", type=int, default=0)
+    parser.add_argument("--validate-data", action="store_true")
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--ball-x-threshold", type=float, default=605.0)
     parser.add_argument("--steps-per-env", type=int, default=512)
     parser.add_argument("--save-model-every", type=int, default=50)
     parser.add_argument("--checkpoint", default=None)
+    parser.add_argument("--output-dir", default="trained_models/pass_end_to_end")
     parser.add_argument(
         "--pretrained-imitation-checkpoint",
         default=None,
@@ -1213,6 +1245,29 @@ if __name__ == "__main__":
         help="Run the selected agent and checkpoint deterministically.",
     )
     args = parser.parse_args()
+    if args.steps_per_env < 2 or args.save_model_every < 1 or args.max_agent_steps < 0:
+        parser.error("Invalid buffer, checkpoint interval, or step limit")
+    if args.inference and not args.checkpoint:
+        parser.error("--inference requires --checkpoint")
+    config_values = {}
+    if args.checkpoint and args.mode in {"state_imitation", "hybrid_imitation_ppo"}:
+        config_values = torch.load(args.checkpoint, map_location="cpu", weights_only=True).get("recording_config", {})
+    config_path = Path(args.recording_config) if args.recording_config else None
+    if config_path is None and not args.checkpoint:
+        config_path = Path(__file__).resolve().with_name("recording_config.json")
+    if config_path is not None:
+        with config_path.open() as stream:
+            config_values = json.load(stream)
+    config = RecordingConfig(**config_values)
+    if args.mode in {"state_imitation", "hybrid_imitation_ppo"}:
+        if abs(config.sample_dt * 60 - round(config.sample_dt * 60)) > 1e-6:
+            parser.error("sample_dt must be a multiple of 1/60 seconds")
+        print(f"[RecordingConfig] {vars(config)}")
+    if args.validate_data:
+        from recorded_expert import ExpertTransitionDataset
+        with open("geometry.json") as stream:
+            ExpertTransitionDataset(args.expert_data, json.load(stream), config)
+        raise SystemExit(0)
     if args.checkpoint and args.pretrained_imitation_checkpoint:
         parser.error(
             "--checkpoint resumes a complete checkpoint, whereas "
@@ -1223,22 +1278,32 @@ if __name__ == "__main__":
     print("Working with up-to-date code")
     setup_logging()
     agent_kwargs = {}
-    if args.mode == "scripted_imitation":
+    if args.mode == "pass_ppo":
+        if args.inference and not args.checkpoint:
+            parser.error("--inference requires --checkpoint")
+        if args.pretrained_imitation_checkpoint:
+            parser.error("Passing requires a compatible PassPPOAgent --checkpoint")
+        agent_kwargs = dict(
+            model_save_path=args.checkpoint or "Final_models/Passing/#6.pth",
+            load_model=True, inference=args.inference,
+            training_enabeled=not args.inference,
+            steps_per_env=args.steps_per_env, save_model_every=args.save_model_every,
+        )
+    elif args.mode == "scripted_imitation":
         agent_kwargs = {
             "output_path": args.expert_csv,
             "num_episodes": args.episodes,
             "ball_x_threshold": args.ball_x_threshold,
         }
     elif args.mode == "state_imitation":
-        agent_kwargs = {
-            "expert_csv": args.expert_csv,
-            "model_save_path": args.checkpoint or "trained_models/state_imitation",
-            "load_model": bool(args.checkpoint),
-            "training_enabeled": not args.inference,
-            "inference": args.inference,
-            "steps_per_env": args.steps_per_env,
-            "save_model_every": args.save_model_every,
-        }
+        agent_kwargs = dict(
+            expert_data=None if args.inference else args.expert_data,
+            recording_config=config,
+            model_save_path=args.checkpoint if args.inference else args.output_dir,
+            load_model=args.inference, training_enabeled=not args.inference,
+            inference=args.inference, steps_per_env=args.steps_per_env,
+            save_model_every=args.save_model_every,
+        )
     elif args.mode == "single_rod_ppo":
         agent_kwargs = {
             "pretrained_actor_path": args.pretrained_imitation_checkpoint,
@@ -1266,10 +1331,16 @@ if __name__ == "__main__":
         }
     sim = FuzbAISim(
         render_gui=not args.headless,
-        #agent1_mode=args.mode,
-        #agent1_kwargs=agent_kwargs,
+        agent1_mode=args.mode,
+        agent1_kwargs=agent_kwargs,
+        max_agent_steps=args.max_agent_steps,
         #imitation_ball_x_threshold=args.ball_x_threshold,
     )
+    if args.mode == "state_imitation" and args.checkpoint and not args.inference:
+        sim.p1.load_model(args.checkpoint)
+        sim._run_start_steps = sim.p1.total_steps
+    if args.mode == "pass_ppo" and not args.inference:
+        sim.p1.model_save_path = args.output_dir
     sim.run()
 
     try:
@@ -1279,13 +1350,13 @@ if __name__ == "__main__":
                 break
             time.sleep(0.1)
     except KeyboardInterrupt:
+        pass
+    finally:
         sim.stop()
         if sim.simThread is not None:
             sim.simThread.join()
-        if args.mode in {
-            "single_rod_ppo",
-            "state_imitation",
-            "hybrid_imitation_ppo",
-        } and not args.inference:
+        if sim.run_error is None and sim.p1.training_enabled:
             sim.p1.save_model()
-"""
+            sim.p1.training_export.export_csv()
+    if sim.run_error is not None:
+        raise RuntimeError("Simulation/training failed") from sim.run_error

@@ -43,6 +43,8 @@ class RecordingConfig:
     velocity_scale: float = 1.0
     invert_rod_position: bool = False
     rotate_table_180: bool = False
+    trim_start_fraction: float = 0.0
+    trim_end_fraction: float = 0.0
 
     def __post_init__(self):
         if self.sample_dt <= 0 or self.max_gap < self.sample_dt:
@@ -56,6 +58,10 @@ class RecordingConfig:
         if self.x_scale == 0 or self.y_scale == 0 or self.angle_sign == 0:
             raise ValueError('Coordinate and angle scales cannot be zero')
 
+        if (self.trim_start_fraction < 0 or self.trim_end_fraction < 0
+                or self.trim_start_fraction + self.trim_end_fraction >= 1):
+            raise ValueError('Trim fractions must be non-negative and sum to less than 1')
+
     def angle(self, value):
         factors = {'radians': 1.0, 'degrees': np.pi / 180, 'simulator': np.pi / 32}
         return float(value) * factors[self.angle_units] * self.angle_sign + self.angle_offset_radians
@@ -65,8 +71,8 @@ class ExpertTransitionDataset:
     """Each file is an episode; invalid rows and time gaps split it into segments.
 
     Transitions never cross a segment. Only segments starting at the first valid
-    row of a file supply reset states; tracking reacquisition is not an episode
-    start. Metadata and a validation report make calibration reproducible.
+    retained valid row of a file supply reset states; tracking reacquisition
+    is not an additional episode start. Trimming uses elapsed recording time. Metadata and a validation report make calibration reproducible.
     """
     def __init__(self, path, geometry, config=None):
         self.config = config or RecordingConfig()
@@ -77,13 +83,14 @@ class ExpertTransitionDataset:
             raise ValueError(f'No recording CSV files found at {path}')
         self.episodes = []
         self.starts = []
-        report = dict(files=len(files), rows=0, invalid_rows=0, time_breaks=0, segments=0)
+        report = dict(files=len(files), rows=0, invalid_rows=0, time_breaks=0, segments=0, trimmed_rows=0, files_without_reset=0)
         cfg = self.config
         required = {'Timestamp', 'Ball_x', 'Ball_y', 'Ball_vx', 'Ball_vy', 'Ball_size'}
         required |= {f'Rod{i}_{suffix}' for i in range(8) for suffix in ('p', 'fi')}
         for file in files:
             segments, segment = [], []
             first_valid = None
+            timestamps = []
             with file.open(newline='', encoding='utf-8-sig') as stream:
                 reader = csv.DictReader(stream, delimiter=';')
                 missing = required - set(reader.fieldnames or [])
@@ -93,6 +100,7 @@ class ExpertTransitionDataset:
                     report['rows'] += 1
                     try:
                         t = datetime.strptime(row['Timestamp'], '%d.%m.%Y %H:%M:%S.%f')
+                        timestamps.append(t)
                         raw_x, raw_y = float(row['Ball_x']), float(row['Ball_y'])
                         positions = [float(row[f'Rod{i}_p']) for i in range(8)]
                         angles = [cfg.angle(row[f'Rod{i}_fi']) for i in range(8)]
@@ -131,6 +139,21 @@ class ExpertTransitionDataset:
                     segment.append((t, values))
             if segment:
                 segments.append(segment)
+            # Trim once per file, not separately around each tracking gap.
+            if timestamps and (cfg.trim_start_fraction or cfg.trim_end_fraction):
+                beginning, ending = min(timestamps), max(timestamps)
+                duration = ending - beginning
+                lower = beginning + duration * cfg.trim_start_fraction
+                upper = ending - duration * cfg.trim_end_fraction
+                trimmed = []
+                for segment in segments:
+                    retained = [(t, values) for t, values in segment if lower <= t <= upper]
+                    report['trimmed_rows'] += len(segment) - len(retained)
+                    if retained:
+                        trimmed.append(retained)
+                segments = trimmed
+                first_valid = segments[0][0][0] if segments else None
+            starts_before = len(self.starts)
             for segment in segments:
                 times = np.array([(r[0] - segment[0][0]).total_seconds() for r in segment])
                 if times[-1] + 1e-9 < cfg.sample_dt:
@@ -151,6 +174,8 @@ class ExpertTransitionDataset:
                 report['segments'] += 1
                 if segment[0][0] == first_valid:
                     self.starts.append({'state': sampled[0].tolist(), 'duration': float(grid[-1]), 'file': file.name})
+            if len(self.starts) == starts_before:
+                report['files_without_reset'] += 1
         if not self.episodes or not self.starts:
             raise ValueError('No valid transitions/episode starts after preprocessing; check calibration and gaps')
         transitions = np.concatenate([np.concatenate([s[:-1], s[1:]], axis=1) for s in self.episodes])

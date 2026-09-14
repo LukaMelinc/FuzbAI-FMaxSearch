@@ -11,5 +11,7 @@
   "y_offset_mm": 0.0,
   "velocity_scale": 1.0,
   "invert_rod_position": false,
-  "rotate_table_180": true
+  "rotate_table_180": true,
+  "trim_start_fraction": 0.25,
+  "trim_end_fraction": 0.25
 }

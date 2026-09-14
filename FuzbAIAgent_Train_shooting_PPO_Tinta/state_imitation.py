@@ -142,7 +142,6 @@ class StateImitationPPOAgent(PPOAgent):
         self.total_steps += 1
         obs, c, _, _, _ = self.extract_observation(camera)
 
-        print(c)
         if not self.training_enabled:
             action, _, _ = self.compute_action(obs, deterministic=self.inference)
             return self.scale_to_motor_commands(action)
