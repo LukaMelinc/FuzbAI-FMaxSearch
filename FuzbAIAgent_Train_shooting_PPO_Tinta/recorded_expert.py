@@ -27,6 +27,37 @@ def observation(ball_x, ball_y, ball_vx, ball_vy, rod_position, rod_angle, rod_i
     ], dtype=np.float32)
 
 
+MOTION_OBS_COLUMNS = OBS_COLUMNS + ('rod_angular_velocity', 'rod_lateral_velocity')
+MOTION_SCHEMA = {
+    'version': 1,
+    'angular_velocity_scale_rad_s': float(np.pi),
+    'lateral_velocity_scale_travel_s': 1.0,
+}
+
+
+class RodMotionObservation:
+    """Causal finite differences shared by recordings and live observations."""
+
+    def __init__(self, sample_dt):
+        self.sample_dt = float(sample_dt)
+        self.reset()
+
+    def reset(self):
+        self.previous = None
+
+    def update(self, base_observation, position, angle_radians):
+        angular_velocity = lateral_velocity = 0.0
+        if self.previous is not None:
+            old_position, old_angle = self.previous
+            # Shortest signed displacement handles the +/-pi wrap boundary.
+            delta = angle_radians - old_angle
+            delta = np.arctan2(np.sin(delta), np.cos(delta))
+            angular_velocity = delta / self.sample_dt / MOTION_SCHEMA['angular_velocity_scale_rad_s']
+            lateral_velocity = (position - old_position) / self.sample_dt
+        self.previous = (position, angle_radians)
+        return np.concatenate((base_observation, [angular_velocity, lateral_velocity])).astype(np.float32)
+
+
 @dataclass
 class RecordingConfig:
     # These defaults are assumptions, not an inferred table calibration.
@@ -169,7 +200,13 @@ class ExpertTransitionDataset:
                 if active_index != 3:
                     sampled[:, [7, 4 + active_index]] = sampled[:, [4 + active_index, 7]]
                     sampled[:, [15, 12 + active_index]] = sampled[:, [12 + active_index, 15]]
-                states = np.stack([observation(*v[:4], v[7], v[15] * 32 / np.pi, self.rod_info) for v in sampled])
+                motion = RodMotionObservation(cfg.sample_dt)
+                states = np.stack([
+                    motion.update(
+                        observation(*v[:4], v[7], v[15] * 32 / np.pi, self.rod_info),
+                        v[7], v[15],
+                    ) for v in sampled
+                ])
                 self.episodes.append(states)
                 report['segments'] += 1
                 if segment[0][0] == first_valid:

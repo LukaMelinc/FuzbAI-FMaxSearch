@@ -8,6 +8,7 @@ uses its output as the reward for an otherwise standard PPO policy.
 from __future__ import annotations
 
 import os
+from collections import deque
 
 import numpy as np
 import torch
@@ -17,11 +18,14 @@ import torch.optim as optim
 from strel_PPO import PPOAgent
 
 
-from recorded_expert import OBS_COLUMNS, ExpertTransitionDataset, RecordingConfig
+from recorded_expert import (
+    MOTION_OBS_COLUMNS, MOTION_SCHEMA, ExpertTransitionDataset,
+    RecordingConfig, RodMotionObservation,
+)
 
 
 class TransitionDiscriminator(nn.Module):
-    def __init__(self, obs_dim=len(OBS_COLUMNS), hidden_size=128):
+    def __init__(self, obs_dim=len(MOTION_OBS_COLUMNS), hidden_size=128):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(2 * obs_dim, hidden_size),
@@ -46,18 +50,30 @@ class StateImitationPPOAgent(PPOAgent):
         discriminator_updates=8,
         discriminator_batch_size=128,
         imitation_reward_scale=1.0,
+        history_length=5,
         **ppo_kwargs,
     ):
         should_load_model = bool(ppo_kwargs.pop("load_model", False))
+        if not isinstance(history_length, int) or history_length < 1:
+            raise ValueError("history_length must be a positive integer")
+        self.history_length = history_length
+        self.state_dim = len(MOTION_OBS_COLUMNS)
+        expected_dim = self.state_dim * history_length
+        if ppo_kwargs.get("obs_dim", expected_dim) != expected_dim:
+            raise ValueError("Imitation obs_dim must match motion features times history_length")
+        ppo_kwargs["obs_dim"] = expected_dim
         super().__init__(**ppo_kwargs)
         self.recording_config = recording_config or RecordingConfig()
+        self.motion = RodMotionObservation(self.recording_config.sample_dt)
+        self.observation_history = deque(maxlen=history_length)
+        self.last_state = None
         self.expert_dataset = (
             ExpertTransitionDataset(expert_data, self.geometry, self.recording_config)
             if expert_data is not None else None
         )
         if self.training_enabled and self.expert_dataset is None:
             raise ValueError("Training requires --expert-data")
-        self.discriminator = TransitionDiscriminator(self.obs_dim).to(self.device)
+        self.discriminator = TransitionDiscriminator(self.state_dim).to(self.device)
         self.discriminator_optimizer = optim.Adam(
             self.discriminator.parameters(), lr=float(discriminator_lr)
         )
@@ -135,21 +151,42 @@ class StateImitationPPOAgent(PPOAgent):
         super().train_on_buffer()
 
     def transition_reward(self, camera, obs):
-        return self.imitation_reward(self.last_obs, obs) if self.discriminator_ready else 0.0
+        return self.imitation_reward(self.last_state, obs) if self.discriminator_ready else 0.0
+
+    def reset_observation_history(self):
+        self.motion.reset()
+        self.observation_history.clear()
+        self.last_state = None
+        self.last_obs = None
+
+    def policy_observation(self, camera):
+        base, _, _, _, rod = self.extract_observation(camera)
+        state = self.motion.update(base, rod['pos_calib'], rod['angle'] * np.pi / 32)
+        if not self.observation_history:
+            self.observation_history.extend(state.copy() for _ in range(self.history_length))
+        else:
+            self.observation_history.append(state)
+        return state, np.concatenate(self.observation_history).astype(np.float32)
+
+    def finish_episode(self, last_value=0):
+        super().finish_episode(last_value)
+        self.reset_observation_history()
 
     def process_data(self, camera):
         """Consume a physical terminal state before the simulator resets."""
         self.total_steps += 1
-        obs, c, _, _, _ = self.extract_observation(camera)
-
-        if not self.training_enabled:
-            action, _, _ = self.compute_action(obs, deterministic=self.inference)
-            return self.scale_to_motor_commands(action)
+        state, obs = self.policy_observation(camera)
         terminated = any(bool(camera.get(key, False)) for key in (
             "end_episode", "terminated_by_kick", "terminated_by_x_threshold", "terminated_by_timeout"))
+        if not self.training_enabled:
+            if terminated:
+                self.reset_observation_history()
+                return []
+            action, _, _ = self.compute_action(obs, deterministic=self.inference)
+            return self.scale_to_motor_commands(action)
         if self.last_obs is not None:
-            self.agent_transitions.append(np.concatenate((self.last_obs, obs)).astype(np.float32))
-            reward = self.transition_reward(camera, obs)
+            self.agent_transitions.append(np.concatenate((self.last_state, state)).astype(np.float32))
+            reward = self.transition_reward(camera, state)
             self.current_episode_step_rewards.append(reward)
             self.ep_reward += reward
             if camera.get("ball_kicked", False):
@@ -169,6 +206,7 @@ class StateImitationPPOAgent(PPOAgent):
         if not np.all(np.isfinite(action)):
             raise RuntimeError("Policy produced a non-finite action")
         self.last_obs, self.last_action = obs, action
+        self.last_state = state
         self.last_val, self.last_logp = value, logp
         self.episode_steps += 1
         return self.scale_to_motor_commands(action)
@@ -198,7 +236,9 @@ class StateImitationPPOAgent(PPOAgent):
             "discriminator_ready": self.discriminator_ready,
             "recording_config": vars(self.recording_config),
             "episode_starts": self.expert_dataset.starts if self.expert_dataset is not None else self.episode_starts,
-            "observation_columns": list(OBS_COLUMNS),
+            "observation_columns": list(MOTION_OBS_COLUMNS),
+            "motion_schema": dict(MOTION_SCHEMA),
+            "history_length": self.history_length,
         }, path)
         print(f"[StateImitation] Model saved to {path}")
 
@@ -207,8 +247,10 @@ class StateImitationPPOAgent(PPOAgent):
         if not os.path.isfile(path):
             raise FileNotFoundError(path)
         checkpoint = torch.load(path, map_location=self.device, weights_only=True)
-        if checkpoint.get("observation_columns") != list(OBS_COLUMNS):
-            raise ValueError("Checkpoint lacks the real-recording observation schema; start a new run")
+        if (checkpoint.get("observation_columns") != list(MOTION_OBS_COLUMNS)
+                or checkpoint.get("motion_schema") != MOTION_SCHEMA
+                or checkpoint.get("history_length") != self.history_length):
+            raise ValueError("Checkpoint motion/history schema differs; old eight-feature policies require a new training run")
         if vars(RecordingConfig(**checkpoint.get("recording_config", {}))) != vars(self.recording_config):
             raise ValueError("Checkpoint and recording calibration differ")
         self.episode_starts = checkpoint["episode_starts"]
@@ -225,6 +267,7 @@ class StateImitationPPOAgent(PPOAgent):
         if self.training_enabled:
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             self.discriminator_optimizer.load_state_dict(checkpoint["discriminator_optimizer_state_dict"])
+        self.reset_observation_history()
         print(f"[StateImitation] Model loaded from {path}")
 
 
