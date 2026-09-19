@@ -1,7 +1,7 @@
 {
   "sample_dt": 0.05,
   "max_gap": 0.1,
-  "rod_index": 4,
+  "rod_index": 2,
   "angle_units": "radians",
   "angle_sign": 1.0,
   "angle_offset_radians": 0.0,

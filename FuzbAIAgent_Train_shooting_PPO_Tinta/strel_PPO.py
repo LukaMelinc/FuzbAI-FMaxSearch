@@ -8,13 +8,18 @@ import requests
 import math
 import json
 import csv
+import tempfile
+from collections import deque
 from datetime import datetime
 from pprint import pprint
 
 from actor_critic.main import ActorCriticNet, TwoRodActorCriticNet, ThreeRodActorCriticNet
 from export.main import Export
 from memory.main import PPOBuffer
-from recorded_expert import observation
+from recorded_expert import (
+    observation, MOTION_OBS_COLUMNS, MOTION_SCHEMA, RecordingConfig,
+    RodMotionObservation,
+)
 from reward.single_bar_shoting import (
     closest_player_alignment_reward,
     controllable_kick_reward,
@@ -805,10 +810,11 @@ class PPOAgent:
         #trans_target = 0.8 * ((action[2] + 1) / 2)  # scale [-1,1]→[0,1], you might want full 0..1 0.5
         trans_velocity = 1.0 * (action[3] + 1) / 2   # scale [-1,1]→[0,1]
 
-        # driveID singals, which agent's rod is active. 1 for goalkeeper, 2 for the defender, 3 for midfield, 4 for attacker
+        # State imitation controls the red attacking rod: geometry rod 6 maps
+        # to simulator drive 4.
 
         cmd = {
-            "driveID": 3,
+            "driveID": 4,
             "rotationTargetPosition": rot_target,
             "rotationVelocity": rot_velocity,
             "translationTargetPosition": trans_target,
@@ -825,7 +831,7 @@ class PPOAgent:
                 "translationVelocity": 0.0
             },
             {
-                "driveID": 4,
+                "driveID": 3,
                 "rotationTargetPosition": 0.5,
                 "rotationVelocity": 0.0,
                 "translationTargetPosition": 0.5,
@@ -902,6 +908,198 @@ class PPOAgent:
             avg_reward = np.mean(self.episode_rewards[-100:]) if self.episode_rewards else 0
             print(f"Episode {self.episode_count}, Avg Reward (last 100): {avg_reward:.2f}")
             self.save_model()
+
+class ImitationFineTunePPOAgent(PPOAgent):
+    """Task-only PPO with the recorded-imitation policy's observation contract.
+
+    Use pretrained_actor_path for a fresh RL run, or resume_checkpoint for an
+    RL checkpoint. Override calculate_task_reward to define another objective.
+    Episode durations are finite task horizons, including timeout terminals.
+    """
+
+    def __init__(self, pretrained_actor_path=None, resume_checkpoint=None,
+                 recording_config=None, load_pretrained_log_std=True, **ppo_kwargs):
+        if bool(pretrained_actor_path) == bool(resume_checkpoint):
+            raise ValueError("Provide exactly one pretrained_actor_path or resume_checkpoint")
+        source = resume_checkpoint or pretrained_actor_path
+        checkpoint = torch.load(source, map_location="cpu", weights_only=True)
+        self._validate_schema(checkpoint)
+        self.history_length = checkpoint["history_length"]
+        self.recording_config = RecordingConfig(**checkpoint["recording_config"])
+        if recording_config is not None and vars(recording_config) != vars(self.recording_config):
+            raise ValueError("Fine-tuning calibration must match the checkpoint")
+        self.episode_starts = checkpoint["episode_starts"]
+        if not self.episode_starts:
+            raise ValueError("Checkpoint has no episode reset states")
+        self.expert_dataset = None
+        self.motion = RodMotionObservation(self.recording_config.sample_dt)
+        self.observation_history = deque(maxlen=self.history_length)
+        dimensions = dict(obs_dim=len(MOTION_OBS_COLUMNS) * self.history_length,
+                          act_dim=4, hidden_size=checkpoint["actor_state_dict"]["0.weight"].shape[0],
+                          controlled_rod_id=6)
+        for key, value in dimensions.items():
+            if key in ppo_kwargs and ppo_kwargs[key] != value:
+                raise ValueError(f"{key} must match the imitation checkpoint: {value}")
+            ppo_kwargs[key] = value
+        if ppo_kwargs.pop("load_model", False):
+            raise ValueError("Use resume_checkpoint to resume fine-tuning")
+        ppo_kwargs.setdefault("lr", 3e-5)
+        ppo_kwargs.setdefault("model_save_path", "trained_models/imitation_finetune")
+        super().__init__(pretrained_actor_path=pretrained_actor_path,
+                         load_pretrained_log_std=load_pretrained_log_std, **ppo_kwargs)
+        self.model_name = "imitation_finetune_ppo"
+        if resume_checkpoint:
+            self.load_model(resume_checkpoint)
+
+    @staticmethod
+    def _validate_schema(checkpoint):
+        if (checkpoint.get("observation_columns") != list(MOTION_OBS_COLUMNS)
+                or checkpoint.get("motion_schema") != MOTION_SCHEMA
+                or type(checkpoint.get("history_length")) is not int
+                or checkpoint["history_length"] < 1):
+            raise ValueError("Checkpoint must use the current motion/history observation schema")
+
+    def reset_observation_history(self):
+        self.motion.reset()
+        self.observation_history.clear()
+        self.last_obs = None
+        self.prev_score = None
+
+    def policy_observation(self, camera):
+        base, _, _, _, rod = self.extract_observation(camera)
+        state = self.motion.update(base, rod['pos_calib'], rod['angle'] * np.pi / 32)
+        if not self.observation_history:
+            self.observation_history.extend(state.copy() for _ in range(self.history_length))
+        else:
+            self.observation_history.append(state)
+        return state, np.concatenate(self.observation_history).astype(np.float32)
+
+    def calculate_task_reward(self, camera):
+        """Give +1 per own goal; all other outcomes receive zero reward.
+
+        The camera reports [own score, opponent score]. Track changes rather
+        than the cumulative score so a goal is rewarded only once.
+        """
+        score = tuple(camera["score"])
+        goals = 0 if self.prev_score is None else max(0, score[0] - self.prev_score[0])
+        self.prev_score = score
+        return float(goals), {"goal": float(goals)}
+
+    def process_data(self, camera):
+        self.total_steps += 1
+        _, obs = self.policy_observation(camera)
+        terminated = any(bool(camera.get(key, False)) for key in (
+            "end_episode", "terminated_by_kick", "terminated_by_x_threshold", "terminated_by_timeout"))
+        if not self.training_enabled:
+            if terminated:
+                self.reset_observation_history()
+                return []
+            action, _, _ = self.compute_action(obs, deterministic=self.inference)
+            return self.scale_to_motor_commands(action)
+        if self.pending_train:
+            raise RuntimeError("Drain the pending PPO update before the next observation")
+        if self.last_obs is not None:
+            reward, components = self.calculate_task_reward(camera)
+            if not np.isfinite(reward):
+                raise ValueError("Task reward must be finite")
+            if not self.buf.store(self.last_obs, self.last_action, reward, self.last_val, self.last_logp):
+                raise RuntimeError("PPO buffer was not drained before the next transition")
+            self.ep_reward += reward
+            self.current_episode_step_rewards.append(reward)
+            for key, value in components.items():
+                self.update_reward_breakdown_sums[key] = self.update_reward_breakdown_sums.get(key, 0.0) + float(value)
+            self.current_episode_goals += int(components.get("goal", 0))
+            if camera.get("ball_kicked", False):
+                self.current_episode_ball_kicks += 1
+                self.update_samples_with_kick += 1
+        else:
+            # Establish the baseline before the first action of each episode.
+            self.prev_score = tuple(camera["score"])
+        if terminated:
+            self.finish_episode(last_value=0.0)
+            return []
+        if self.buf.ptr == self.buf.max_size:
+            _, value, _ = self.compute_action(obs, deterministic=True)
+            self.buf.finish_path(last_val=value)
+            if self.auto_train:
+                self.train_on_buffer()
+            else:
+                self.pending_train = True
+        action, value, logp = self.compute_action(obs)
+        if not np.all(np.isfinite(action)):
+            raise RuntimeError("Policy produced a non-finite action")
+        self.last_obs, self.last_action = obs, action
+        self.last_val, self.last_logp = value, logp
+        self.episode_steps += 1
+        return self.scale_to_motor_commands(action)
+
+    def finish_episode(self, last_value=0):
+        super().finish_episode(last_value)
+        self.episode_steps = 0
+        self.reset_observation_history()
+
+    def scale_to_motor_commands(self, action):
+        return super().scale_to_motor_commands(action)[:1]
+
+    def save_model(self, path=None):
+        if path is None:
+            directory = self.model_save_path
+            if os.path.splitext(directory)[1]:
+                directory = os.path.dirname(directory) or "."
+            os.makedirs(directory, exist_ok=True)
+            path = os.path.join(directory, f"{self.model_name}_steps_{self.total_steps}.pth")
+        checkpoint = {
+            "agent_type": "imitation_finetune_ppo",
+            "actor_critic_state_dict": self.ac.state_dict(),
+            "actor_state_dict": self.ac.actor.state_dict(),
+            "log_std": self.log_std.detach().cpu(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "training_count": self.training_count,
+            "total_steps": self.total_steps,
+            "episode_count": self.episode_count,
+            "recording_config": vars(self.recording_config),
+            "episode_starts": self.episode_starts,
+            "observation_columns": list(MOTION_OBS_COLUMNS),
+            "motion_schema": dict(MOTION_SCHEMA),
+            "history_length": self.history_length,
+        }
+        # Publish only a complete archive, preserving any existing checkpoint.
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                    mode="wb", dir=os.path.dirname(os.path.abspath(path)),
+                    prefix=".finetune-", suffix=".tmp", delete=False) as stream:
+                temporary_path = stream.name
+                torch.save(checkpoint, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, path)
+        finally:
+            if temporary_path is not None and os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+        print(f"[ImitationFineTunePPO] Model saved to {path}")
+
+    def load_model(self, path=None):
+        checkpoint = torch.load(path or self.model_save_path, map_location=self.device, weights_only=True)
+        self._validate_schema(checkpoint)
+        if checkpoint.get("agent_type") != "imitation_finetune_ppo":
+            raise ValueError("Use pretrained_actor_path to start from an imitation checkpoint")
+        if (checkpoint["history_length"] != self.history_length
+                or vars(RecordingConfig(**checkpoint["recording_config"])) != vars(self.recording_config)):
+            raise ValueError("Checkpoint observation configuration differs")
+        self.ac.load_state_dict(checkpoint["actor_critic_state_dict"])
+        with torch.no_grad():
+            self.log_std.copy_(checkpoint["log_std"])
+        if self.training_enabled:
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        self.episode_starts = checkpoint["episode_starts"]
+        self.training_count = int(checkpoint["training_count"])
+        self.total_steps = int(checkpoint["total_steps"])
+        self.episode_count = int(checkpoint["episode_count"])
+        self.buf.ptr = self.buf.path_start_idx = 0
+        self.pending_train = False
+        self.reset_observation_history()
+
 
 class TwoRodPPOAgent(PPOAgent):
     """

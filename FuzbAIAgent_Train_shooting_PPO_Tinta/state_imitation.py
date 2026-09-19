@@ -62,6 +62,8 @@ class StateImitationPPOAgent(PPOAgent):
         if ppo_kwargs.get("obs_dim", expected_dim) != expected_dim:
             raise ValueError("Imitation obs_dim must match motion features times history_length")
         ppo_kwargs["obs_dim"] = expected_dim
+        # State imitation is dedicated to the red three-player attacking rod.
+        ppo_kwargs["controlled_rod_id"] = 6
         super().__init__(**ppo_kwargs)
         self.recording_config = recording_config or RecordingConfig()
         self.motion = RodMotionObservation(self.recording_config.sample_dt)

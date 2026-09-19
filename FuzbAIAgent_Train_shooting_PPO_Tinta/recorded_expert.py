@@ -107,7 +107,9 @@ class ExpertTransitionDataset:
     """
     def __init__(self, path, geometry, config=None):
         self.config = config or RecordingConfig()
-        self.rod_info = next(r for r in geometry['rods'] if r['id'] == 4)
+        # Train against the red attacking rod (three players), not the
+        # five-player red midfield rod.
+        self.rod_info = next(r for r in geometry['rods'] if r['id'] == 6)
         source = Path(path)
         files = sorted(source.glob('*.csv')) if source.is_dir() else [source]
         if not files or not all(f.is_file() for f in files):
@@ -194,17 +196,17 @@ class ExpertTransitionDataset:
                 raw[:, 12:] = np.unwrap(raw[:, 12:], axis=0)
                 grid = np.arange(int((times[-1] + 1e-7) / cfg.sample_dt) + 1) * cfg.sample_dt
                 sampled = np.stack([np.interp(grid, times, raw[:, i]) for i in range(20)], axis=1)
-                # Map recorded active rod to physical red midfield. Other rods
+                # Map the recorded active rod to physical red attack. Other rods
                 # retain their table index (full remapping requires calibration).
                 active_index = 7 - cfg.rod_index if cfg.rotate_table_180 else cfg.rod_index
-                if active_index != 3:
-                    sampled[:, [7, 4 + active_index]] = sampled[:, [4 + active_index, 7]]
-                    sampled[:, [15, 12 + active_index]] = sampled[:, [12 + active_index, 15]]
+                if active_index != 5:
+                    sampled[:, [9, 4 + active_index]] = sampled[:, [4 + active_index, 9]]
+                    sampled[:, [17, 12 + active_index]] = sampled[:, [12 + active_index, 17]]
                 motion = RodMotionObservation(cfg.sample_dt)
                 states = np.stack([
                     motion.update(
-                        observation(*v[:4], v[7], v[15] * 32 / np.pi, self.rod_info),
-                        v[7], v[15],
+                        observation(*v[:4], v[9], v[17] * 32 / np.pi, self.rod_info),
+                        v[9], v[17],
                     ) for v in sampled
                 ])
                 self.episodes.append(states)
