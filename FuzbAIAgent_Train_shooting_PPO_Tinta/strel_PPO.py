@@ -32,6 +32,7 @@ from reward.single_bar_shoting import (
     predictive_player_alignment_reward,
     forward_backward_kick_reward,
     shot_heading_goal_reward,
+    passer_calm_reward,
 )
 
 
@@ -135,11 +136,11 @@ class PPOAgent:
                  train_iters=4,
                  target_kl=0.01,
                  delay_step=2,
-                 save_model_every=1500,   # save every N episodes
+                 save_model_every=500,   # save every N episodes
                  model_save_path="./trained_models/STAGE_1_shooting_still_ball_a_bit_bigger_ball_spawn_area_MODEL#6.pth",   # Path for loading the model from
                  training_log_export_every=10,
                  l2_lambda=5e-4,
-                 controlled_rod_id=4,
+                 controlled_rod_id=1,
                  training_enabeled=True,
                  load_model=False,
                  pretrained_actor_path=None,
@@ -600,6 +601,9 @@ class PPOAgent:
 
         # Extract the current observation
         obs, bxy, vxy, rod_angle, active_rod = self.extract_observation(camera)
+
+        #print(f"Rod angle: {rod_angle:.3f}")
+
         self.latest_env_metrics = {
             "curriculum_round": int(camera.get("curriculum_round", -1)),
             "curriculum_y_min": float(camera.get("curriculum_y_min", float("nan"))),
@@ -637,6 +641,7 @@ class PPOAgent:
             controlled_rod_x = float(active_rod["info"]["position"])
             ball_past_rod = float(bxy[0]) < (controlled_rod_x - 10.0)
 
+
             allignment_quality_reward = closest_player_alignment_reward(
                 ball_y=bxy[1],
                 rod_pos_calib=float(active_rod["pos_calib"]),
@@ -653,9 +658,11 @@ class PPOAgent:
                 rod_pos_calib=float(active_rod["pos_calib"]),
                 rod_info=active_rod["info"],
                 vx_threshold=0.05,
-                t_max=0.5,
+                t_max=3.0,
                 reward_scale=1.0,
             )
+
+            print(f"Ball x: {bxy[0]:.3f}, Ball y: {bxy[1]:.3f}, Ball vx: {vxy[0]:.3f}, Ball vy: {vxy[1]:.3f}")
 
             rod_angle_reward = calculate_rod_angle_reward(
                 rod_angle=float(active_rod["angle"]),
@@ -664,13 +671,14 @@ class PPOAgent:
                 rotation_buffer_def=3
                 )
 
-            #print(f"allignment: {allignment_quality_reward}, angle:{rod_angle_reward}" )
-            
+            print(f"predicted allignment reward: {predictive_allignment_reward:.3f}")
+
+
             reward_breakdown = {
                 #"allignment": allignment_quality_reward,
                 "predictive_allignment": predictive_allignment_reward*0.5,
-                "rod_angle": rod_angle_reward * 0.15,
-                "past_rod": -1.0 if ball_past_rod else 0.0,
+                #"rod_angle": rod_angle_reward * 0.15,
+                #"past_rod": -1.0 if ball_past_rod else 0.0,
             }
 
             reward = sum(reward_breakdown.values())
@@ -814,7 +822,7 @@ class PPOAgent:
         # to simulator drive 4.
 
         cmd = {
-            "driveID": 4,
+            "driveID": 2,
             "rotationTargetPosition": rot_target,
             "rotationVelocity": rot_velocity,
             "translationTargetPosition": trans_target,
@@ -824,7 +832,7 @@ class PPOAgent:
         # Idle commands for the other rods - RED RODS
         idle_commands = [
             {
-                "driveID": 2,
+                "driveID": 4,
                 "rotationTargetPosition": 5,
                 "rotationVelocity": 0.5,
                 "translationTargetPosition": 0.5,
@@ -832,15 +840,15 @@ class PPOAgent:
             },
             {
                 "driveID": 3,
-                "rotationTargetPosition": 0.5,
-                "rotationVelocity": 0.0,
+                "rotationTargetPosition": 0.2,
+                "rotationVelocity": 0.5,
                 "translationTargetPosition": 0.5,
                 "translationVelocity": 0.0
             },
             {
                 "driveID": 1,
-                "rotationTargetPosition": 0.5,
-                "rotationVelocity": 0.0,
+                "rotationTargetPosition": -0.3,
+                "rotationVelocity": 0.5,
                 "translationTargetPosition": 0.5,
                 "translationVelocity": 0.0
             }
@@ -1099,8 +1107,6 @@ class ImitationFineTunePPOAgent(PPOAgent):
         self.buf.ptr = self.buf.path_start_idx = 0
         self.pending_train = False
         self.reset_observation_history()
-
-
 class TwoRodPPOAgent(PPOAgent):
     """
     PPO agent for one controlled rod with one observed opponent rod.
@@ -1140,7 +1146,7 @@ class TwoRodPPOAgent(PPOAgent):
         opponent_active=True,
         target_rod_angle=0.085,
         desired_kick_force=12.0,
-        kick_force_sigma=8.0,
+        kick_force_sigma=5.0,
         kick_force_reward_scale=0.35,
         training_enabeled=True,
         load_model=False,
@@ -1566,7 +1572,7 @@ class PassPPOAgent(PPOAgent):
         lr=1e-4,
         train_iters=4,
         target_kl=0.01,
-        save_model_every=1000,
+        save_model_every=5000,
         model_save_path="./trained_models/pass_ppo_no_std_override.pth",
         backbone_model_path="./trained_models/pass_backbone_aux.pth",
         load_model=False,
@@ -1582,9 +1588,15 @@ class PassPPOAgent(PPOAgent):
         action_std_override=(0.3, 0.3, 0.30, 0.30, 0.3, 0.3, 0.30, 0.30),
         target_rod_angle=0.085,
         desired_kick_force=12.0,
-        kick_force_sigma=8.0,
-        kick_force_reward_scale=0.35,
+        kick_force_sigma=5.0,
+        kick_force_reward_scale=0.5,
         no_kick_timeout_penalty=-1.0,
+        passer_calm_motion_scale=0.05,
+        passer_calm_command_change_scale=0.01,
+        passer_release_distance_mm=50.0,
+        passer_release_grace_seconds=0.1,
+        post_pass_settle_seconds=0.5,
+        kick_hesitation_penalty_rate=1.0,
     ):
         self.passer_rod_id = int(passer_rod_id)
         self.receiver_rod_id = int(receiver_rod_id)
@@ -1595,6 +1607,22 @@ class PassPPOAgent(PPOAgent):
         self.kick_force_sigma = float(kick_force_sigma)
         self.kick_force_reward_scale = float(kick_force_reward_scale)
         self.no_kick_timeout_penalty = float(no_kick_timeout_penalty)
+        self.kick_hesitation_penalty_rate = float(kick_hesitation_penalty_rate)
+        if not math.isfinite(self.kick_hesitation_penalty_rate) or self.kick_hesitation_penalty_rate < 0:
+            raise ValueError("kick_hesitation_penalty_rate must be finite and non-negative")
+        self.previous_kick_reward_time = None
+        self.passer_calm_motion_scale = float(passer_calm_motion_scale)
+        self.passer_calm_command_change_scale = float(passer_calm_command_change_scale)
+        self.passer_release_distance_mm = float(passer_release_distance_mm)
+        self.passer_release_grace_seconds = float(passer_release_grace_seconds)
+        self.post_pass_settle_seconds = float(post_pass_settle_seconds)
+        for value in (self.passer_calm_motion_scale, self.passer_calm_command_change_scale,
+                      self.passer_release_distance_mm, self.passer_release_grace_seconds,
+                      self.post_pass_settle_seconds):
+            if not math.isfinite(value) or value < 0:
+                raise ValueError("Passer calm settings must be finite and non-negative")
+        self.passer_calm_state = {}
+        self.pass_received_time = None
         if not math.isfinite(self.no_kick_timeout_penalty) or self.no_kick_timeout_penalty > 0:
             raise ValueError("no_kick_timeout_penalty must be finite and non-positive")
 
@@ -1771,7 +1799,6 @@ class PassPPOAgent(PPOAgent):
             dtype=np.float32,
         )
 
-        #assert len(obs) == self.obs_dim, f"Expected obs_dim={self.obs_dim}, got {len(obs)}"
         return obs, (ball_x, ball_y), (ball_vx, ball_vy), passer, receiver, opponent
 
     def scale_to_motor_commands(self, action):
@@ -1873,12 +1900,32 @@ class PassPPOAgent(PPOAgent):
                 #"rod_angle": angle_reward * 0.25,
             }"""
 
-            """### --- STEP 2 -> Kicking forward with a certain speed --- ###
+
+            # temporarely
+            angle_reward = calculate_rod_angle_reward(
+                            rod_angle=float(passer["angle"]),
+                            reward_scale=1.0,
+                            target_rod_angle=0.0,
+                            rotation_buffer_def=2
+                
+                        )
+
+            #print(f"ball x pos: {bxy[0]:.2f}")
+
+            ### --- STEP 2 -> Kicking forward with a certain speed --- ###
             first_kick = ball_kicked and self.current_episode_ball_kicks == 0
+            reward_time = float(camera["simulation_time"])
+            reward_dt = max(0.0, reward_time - self.previous_kick_reward_time) if self.previous_kick_reward_time is not None else 0.0
+            # Charge the interval leading up to the kick, then stop charging.
+            hesitation_penalty = (
+                -self.kick_hesitation_penalty_rate * reward_dt
+                if not self.forward_kick_paid else 0.0
+            )
+            if ball_kicked and vxy[0] > 0.08:
+                self.forward_kick_paid = True
             no_kick_timeout = bool(
                 camera.get("terminated_by_timeout", False)
-                and not (ball_kicked or terminated_by_kick or terminated_by_x_threshold)
-                and self.current_episode_ball_kicks == 0
+                and not self.forward_kick_paid
             )
             forward = first_kick and vxy[0] > 0
             backward = first_kick and vxy[0] < 0
@@ -1910,10 +1957,12 @@ class PassPPOAgent(PPOAgent):
             reward_breakdown = {
                 "forward_kick": forward_reward,
                 "backward_kick": backward_penalty,
-                "kick_force": force_reward,
-                "alignment": allignment_quality * 0.015,
+                "kick_force": force_reward * 3,
+                "kick_hesitation": hesitation_penalty,
+                "angle": angle_reward * 0.05 if bxy[0] > 610 else 0.0,
+                #"alignment": allignment_quality * 0.015,
                 "no_kick_timeout": self.no_kick_timeout_penalty if no_kick_timeout else 0.0,
-            }"""
+            }
 
             """### --- STEP 3 (2.1) -> Reward for kicking with a certain force --- ###
 
@@ -1981,7 +2030,7 @@ class PassPPOAgent(PPOAgent):
             ### --- STEP 6 -> END TO END training --- ###
 
 
-            # Pay for a forward launch once; repeated contacts cannot farm bonuses.
+            """# Pay for a forward launch once; repeated contacts cannot farm bonuses.
             forward = ball_kicked and vxy[0] > 0.08
             backward = ball_kicked and vxy[0] < -0.08
             forward_reward = 2.0 if forward and not self.forward_kick_paid else 0.0
@@ -2017,8 +2066,24 @@ class PassPPOAgent(PPOAgent):
                 "alignment": alignment,
                 **stopping_breakdown,
             }
-            self.pass_completed = bool(self.receiving_control_state.get("hold_paid", False))
-
+            reward_breakdown.update(passer_calm_reward(
+                control_state=self.passer_calm_state, sample_time=reward_time,
+                rod_angle_radians=float(passer["angle"]) * math.pi / 32.0,
+                rotation_target=float(self.last_action[0]),
+                ball_x=bxy[0], ball_vx=vxy[0], passer_x=float(passer["info"]["position"]),
+                ball_kicked=ball_kicked,
+                release_distance_mm=self.passer_release_distance_mm,
+                release_grace_seconds=self.passer_release_grace_seconds,
+                motion_scale=self.passer_calm_motion_scale,
+                command_change_scale=self.passer_calm_command_change_scale,
+            ))
+            if self.receiving_control_state.get("hold_paid", False) and self.pass_received_time is None:
+                self.pass_received_time = reward_time
+            self.pass_completed = (
+                self.pass_received_time is not None
+                and reward_time - self.pass_received_time + 1e-9 >= self.post_pass_settle_seconds
+            )
+            """
             reward = sum(reward_breakdown.values())
 
             for key, value in reward_breakdown.items():
@@ -2055,6 +2120,7 @@ class PassPPOAgent(PPOAgent):
             return []
 
         self.episode_steps += 1
+        self.previous_kick_reward_time = float(camera["simulation_time"])
 
         action, value, logp = self.compute_action(obs, deterministic=self.inference)
 
@@ -2106,7 +2172,10 @@ class PassPPOAgent(PPOAgent):
         self.prev_ball_vxy = None
         self.receiving_control_state = {}
         self.kick_latch = False
+        self.passer_calm_state = {}
+        self.pass_received_time = None
         self.forward_kick_paid = False
+        self.previous_kick_reward_time = None
         self.current_episode_goals = 0
         self.current_episode_opponent_goals = 0
         self.current_episode_ball_kicks = 0

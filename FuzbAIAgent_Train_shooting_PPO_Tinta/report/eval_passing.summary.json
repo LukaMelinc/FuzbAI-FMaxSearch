@@ -1,0 +1,29 @@
+{
+  "task": "passing",
+  "episodes": 250,
+  "success": 183,
+  "partial_success": 0,
+  "failure": 67,
+  "success_rate": 0.732,
+  "parameters": {
+    "checkpoint": "/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Passing/PASSING_FINAL.pth",
+    "episodes": 250,
+    "episode_seconds": 5.0,
+    "output": "report/eval_passing.csv",
+    "gui": true,
+    "rod_id": 4,
+    "observed_rod_id": 5,
+    "receiver_rod_id": 6,
+    "seed": 42,
+    "agent_kwargs": "{}",
+    "spawn_x1": 0.66,
+    "spawn_x2": 0.661,
+    "spawn_speed": null,
+    "x1": 800.0,
+    "x2": 920.0,
+    "failure_x": 330.0,
+    "overshoot_x": 980.0,
+    "stop_speed": 0.05,
+    "stop_duration": 0.5
+  }
+}

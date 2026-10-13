@@ -27,11 +27,12 @@ class FuzbAISim:
         self,
         episode_end_ball_x_threshold_mm: float = 1.0,       # Threshold for terminating episodes
         kick_observed_rod_id: int = 2,      # NOTE: Determine, for which rod the bal kicking is set
-        render_gui: bool = False,
+        render_gui: bool = True,
         self_play_config: bool = False,
-        agent1_mode: str = "pass_ppo",
+        agent1_mode: str = "single_rod_ppo",
         agent1_kwargs: dict = None,
         max_agent_steps: int = 0,
+        evaluator=None,
     ):
         print(" ______         _             _____ ")
         print("|  ____|       | |      /\   |_   _|")
@@ -44,6 +45,7 @@ class FuzbAISim:
 
         self.recorded_imitation = agent1_mode in {"state_imitation", "hybrid_imitation_ppo", "imitation_finetune_ppo"}
         self.max_agent_steps = max_agent_steps
+        self.evaluator = evaluator
         self.run_error = None
         self.ballPos = None
         self.ballVel = None
@@ -94,7 +96,7 @@ class FuzbAISim:
         self._end_episode_armed = False
 
         # Threshold of num of steps to end the iteration
-        self.max_num_steps = 40
+        self.max_num_steps = 3100
         self.current_step = 0
 
         # Control loop period (seconds). One "step" for the agent completes when this time has elapsed.
@@ -112,7 +114,7 @@ class FuzbAISim:
 
 
         self.stepDisp = None
-        self.layer_freezing = False#True
+        self.layer_freezing = True
 
         # Player object indices in the URDF tree model
         self.redPlayers = [ 2, 5, 6, 14, 15, 16, 17, 18, 28, 29, 30 ]
@@ -150,18 +152,20 @@ class FuzbAISim:
             
             if self.agent1_mode == "pass_ppo":
                 
-                self.p1 = PassPPOAgent(
+                self.p1 = PassPPOAgent(**agent1_kwargs) if agent1_kwargs else PassPPOAgent(
                     passer_rod_id=4,
                     receiver_rod_id=6,
                     opponent_rod_id=5,
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Passing/PASSING_FINAL.pth",     # Funkcijonira bolje kot 5.4M
+                    #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Passing/PASSING_FINAL.pth",     # Funkcijonira bolje kot 5.4M
                     #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_end_to_end/pass_ppo_steps_5481636.pth",
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_end_to_end/pass_ppo_steps_551932.pth",
                     load_model=True,
                     inference=True,
                     training_enabeled=True,
                 )
+                self.kick_observed_rod_id = self.p1.passer_rod_id
             elif self.agent1_mode == "two_rod_ppo":
-                self.p1 = TwoRodPPOAgent(
+                self.p1 = TwoRodPPOAgent(**agent1_kwargs) if agent1_kwargs else TwoRodPPOAgent(
                     controlled_rod_id=6,
                     observed_rod_id=7,
                     training_task="shooting",
@@ -174,8 +178,9 @@ class FuzbAISim:
                 )
             elif self.agent1_mode == "single_rod_ppo":
                 self.p1 = PPOAgent(
-                    controller_rod_id=4,
-                    model_save_path="",
+                    #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#18_steps_310645.pth",
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#6.pth",
+                    controlled_rod_id=2,
                     load_model=False,
                     inference=False,
                     training_enabeled=True
@@ -213,15 +218,15 @@ class FuzbAISim:
                         module.reset_parameters()"""
             
             #self.p1.learning_action_slice = slice(6, 8) # Receiving rod translation
-            self.p1.learning_action_slice = slice(4, 8) # Receiving rod rotation head
+            #self.p1.learning_action_slice = slice(4, 8) # Receiving rod rotation head
             #self.p1.learning_action_slice = slice(0, 4)
             #self.p1.learning_action_slice = slice(2, 4)    # Passer translation
             #self.p1.learning_action_slice = slice(0, 2)    # Passer rotation
 
             self.p1.freeze_layers(self.p1.ac, {
-                "receiver_encoder",
-                "receiver_rotation_head",
-                "receiver_translation_head",
+                #"receiver_encoder",
+                #"receiver_rotation_head",
+                #"receiver_translation_head",
                 #"passer_encoder",
                 #"passer_rotation_head",
                 #"passer_translation_head",
@@ -279,14 +284,15 @@ class FuzbAISim:
             # Za podajo: (0.63, 0.66)
             # Za strel: 
               
-            "behind": (0.63, 0.66),#(0.95, 0.97),
+            "behind": (1.09, 1.1),#(0.95, 0.97),
             #"ahead": (1.02, 1.16),
         }
 
         # Za podajo in strel: (0.0, 0.0)
         # Za prestrezanje: 
+        #self.ball_spawn_speed_range = (0.7, 0.71) # <- (0.44, 0.445)
         self.ball_spawn_speed_range = (0.0, 0.0) # <- (0.44, 0.445)
-        
+
         if self.recorded_imitation:
             dataset = self.p1.expert_dataset
             self.recorded_starts = dataset.starts if dataset is not None else self.p1.episode_starts
@@ -451,7 +457,7 @@ class FuzbAISim:
         """if ball_x_mm < self.episode_end_ball_x_threshold_mm or ball_x_mm > self.episode_end_ball_other_x_threshold_mm:  # Threshold behind one rod and ahead of the other
         #if ball_x_mm > self.episode_end_ball_other_x_threshold_mm:  # Threshold ahead of the rod 
             self._x_threshold_terminated_latch = True
-            if self.recorded_imitation or self.agent1_mode == "pass_ppo":
+            if self.evaluator is not None or self.recorded_imitation or self.agent1_mode == "pass_ppo":
                 self.end_episode_latch = True
                 return
             self.ResetBallToLocation()
@@ -593,16 +599,23 @@ class FuzbAISim:
         """Straight-line crossing in world metres; ignores collisions/acceleration."""
         x, y = position[:2]
         vx, vy = velocity[:2]
-        if vx <= 1e-6 or x >= target_x:
+        if abs(vx) <= 1e-6:
             return None
         time_to_rod = (target_x - x) / vx
+        if time_to_rod <= 0:
+            return None
         return y + vy * time_to_rod
 
     def showBallTrajectory(self):
-        target_x = self.rod6_x
+
+        target_x = self.rod2_x      # Important - set the correct rod as the target x
         self.rod6_crossing_y = self.predict_crossing_y(
             self.ballPos, self.ballVel[0], target_x,
         ) if self.ballPos[2] >= 0.1 else None
+
+
+        #print(f"self ball: {self.ballPos}")
+
         if not self.render_gui:
             return
         if self.rod6_crossing_y is None:
@@ -610,7 +623,7 @@ class FuzbAISim:
                 p.removeUserDebugItem(item)
             self._trajectory_debug_ids = []
             return
-
+        
         y = self.rod6_crossing_y
         z = self.ballPos[2] + 0.025  # Draw above the ball/table surface.
         color = [0, 0.8, 1]
@@ -689,8 +702,13 @@ class FuzbAISim:
         # Ožja širina za streljanje: (0.16, 0.58)
 
         #y_range = (0.091, 0.67)    # Celotna širina
+        #y_range = (0.091, 0.67)    # Širina za evaluacijo s širino 1 - cela širina
+        #y_range = (0.15, 0.6)       # Širina za evaluacijo s širino 2
+        #y_range = (0.21, 0.54)    # Širina za evaluacijo s širino 3
+        #y_range = (0.19, 0.58)     # Širina za spawn žoge za lateralno obrabo 
         #y_range = (0.16, 0.58)     # Ožja širina -> Strel
-        y_range = (0.092, 0.166)  # Širina za podajanje
+        y_range = (0.15, 0.17)        # Širina za imitacijsko in imitacijsko+RL učenje
+        #y_range = (0.092, 0.166)  # Širina za podajanje # IMPORATNT: Nastavi na to širino, ko se testira podajanje
         spawn_side, x_range = random.choice(list(self.ball_spawn_areas.items()))
 
         custom_x = random.uniform(*x_range)
@@ -705,11 +723,12 @@ class FuzbAISim:
 
         # Send the ball toward rod 6 from either side.
         x_sign = 1.0 if spawn_side == "behind" else -1.0
-        #rnd_vector_x = random.uniform(0.3, 0.31)
-        rnd_vector_x = random.uniform(1.0, 0.3)
+        rnd_vector_x = random.uniform(-0.90, -0.55)
+        #rnd_vector_x = random.uniform(-1.0, -1.0)
         
-        #rnd_vector_y = random.uniform(-0.05, -0.051)
-        rnd_vector_y = random.uniform(-0.05, 0.05)
+        #rnd_vector_y = random.uniform(-0.07, -0.07)
+        rnd_vector_y = random.uniform(-0.07, 0.07)
+        #rnd_vector_y = random.uniform(-0.075, 0.075)
         velocity_vector = [x_sign * rnd_vector_x, rnd_vector_y, 0.0]
         norm = (velocity_vector[0]**2 + velocity_vector[1]**2) ** 0.5
         velocity = [v / norm * speed for v in velocity_vector]
@@ -813,6 +832,11 @@ class FuzbAISim:
         self.mizaId = p.loadURDF("urdf/miza_garlando.urdf",mizaStartPos, mizaStartOrientation, useFixedBase=1)
         # Use rod 6's actual world-frame X from the loaded model.
         self.rod6_x = p.getLinkState(self.mizaId, self.revJoints[5])[4][0]
+        self.rod5_x = p.getLinkState(self.mizaId, self.revJoints[4])[4][0]
+        self.rod4_x = p.getLinkState(self.mizaId, self.revJoints[3])[4][0]
+        self.rod3_x = p.getLinkState(self.mizaId, self.revJoints[2])[4][0]
+        self.rod2_x = p.getLinkState(self.mizaId, self.revJoints[1])[4][0]
+
 
         # Resolve link indices for kick detection on the controlled rod
         self._init_kick_player_links()
@@ -917,7 +941,7 @@ class FuzbAISim:
                         self.showRound()
 
                     # Safe drop coordinates within table limits
-                    if self.recorded_imitation or self.agent1_mode == "pass_ppo":
+                    if self.evaluator is not None or self.recorded_imitation or self.agent1_mode == "pass_ppo":
                         self.end_episode_latch = True
                     else:
                         self.ResetBallToLocation()
@@ -957,6 +981,18 @@ class FuzbAISim:
                         self._timeout_terminated_latch = True
                         self.end_episode_latch = True
 
+
+                    if self.evaluator is not None:
+                        snapshot = self.getCameraDict(1)
+                        snapshot["camData"][0].update(
+                            ball_x=self._ball_x_mm_camera(),
+                            ball_vx=float(self.ballVel[0][0]),
+                            ball_vy=-float(self.ballVel[0][1]),
+                        )
+                        if self.evaluator.observe(snapshot):
+                            self.end_episode_latch = True
+                        if self.evaluator.completed:
+                            self.isRunning = False
 
                     try:     
                         if self.self_play_manager is not None:
@@ -999,7 +1035,7 @@ class FuzbAISim:
                     except:
                         print("Exception in agent 1")
                         traceback.print_exc()
-                        if self.recorded_imitation or self.agent1_mode == "pass_ppo":
+                        if self.evaluator is not None or self.recorded_imitation or self.agent1_mode == "pass_ppo":
                             raise
 
                     try:
@@ -1026,10 +1062,12 @@ class FuzbAISim:
 
                     pass_completed = self.agent1_mode == "pass_ppo" and self.p1.pass_completed
                     reset_after_episode = (
-                        (self.recorded_imitation or self.agent1_mode == "pass_ppo")
+                        (self.evaluator is not None or self.recorded_imitation or self.agent1_mode == "pass_ppo")
                         and self.end_episode_latch
                     ) or pass_completed
                     if pass_completed:
+                        if self.evaluator is not None:
+                            self.evaluator.finish_external()
                         self.p1.pass_completed = False
                     reset_after_kick = bool(self._kick_terminated_latch)
                     reset_after_timeout = bool(self._timeout_terminated_latch)
@@ -1117,7 +1155,7 @@ class FuzbAISim:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a red midfield agent from table recordings")
     parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--mode", choices=("single_rod_ppo", "state_imitation", "hybrid_imitation_ppo", "imitation_finetune_ppo"), default="state_imitation")
+    parser.add_argument("--mode", choices=("single_rod_ppo", "state_imitation", "hybrid_imitation_ppo", "imitation_finetune_ppo"), default="single_rod_ppo")
     parser.add_argument("--expert-data", default="kick_imitation_smol", help="Directory of semicolon-separated table recordings")
     parser.add_argument("--recording-config", help="Calibration JSON; fresh runs default to recording_config.json beside this script, resumes use checkpoint calibration")
     parser.add_argument("--steps-per-env", type=int, default=512)
@@ -1211,8 +1249,8 @@ if __name__ == "__main__":
         raise RuntimeError("Simulation/training failed") from sim.run_error
 
 
-
 """
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -1377,5 +1415,4 @@ if __name__ == "__main__":
             sim.p1.save_model()
             sim.p1.training_export.export_csv()
     if sim.run_error is not None:
-        raise RuntimeError("Simulation/training failed") from sim.run_error
-"""
+        raise RuntimeError("Simulation/training failed") from sim.run_error"""

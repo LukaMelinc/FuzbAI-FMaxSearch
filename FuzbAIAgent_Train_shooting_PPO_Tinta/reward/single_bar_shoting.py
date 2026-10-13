@@ -1,6 +1,40 @@
 import math
 
 
+def passer_calm_reward(*, control_state, sample_time, rod_angle_radians,
+                       rotation_target, ball_x, ball_vx, passer_x,
+                       ball_kicked, release_distance_mm=50.0,
+                       release_grace_seconds=0.1, motion_scale=0.05,
+                       command_change_scale=0.01):
+    """Penalize post-release motion and changes of the executed rotation target.
+
+    Angles are unwrapped physical radians; rotation_target is the policy's
+    [-1, 1] action (mapped to [-pi, pi] by the motor controller). The mutable
+    state belongs to one episode. Integrate squared rates over elapsed time.
+    """
+    components = {"passer_rotation_motion": 0.0, "passer_rotation_command_change": 0.0}
+    previous = control_state.get("previous")
+    control_state["previous"] = (sample_time, rod_angle_radians, rotation_target)
+    if ball_kicked and ball_vx > 0.08:
+        control_state["forward_contact"] = True
+    if (control_state.get("forward_contact") and "active_after" not in control_state
+            and ball_x >= passer_x + release_distance_mm and ball_vx > 0.08):
+        control_state["active_after"] = sample_time + release_grace_seconds
+    if previous is None or "active_after" not in control_state:
+        return components
+    old_time, old_angle, old_target = previous
+    dt = sample_time - old_time
+    active_dt = max(0.0, sample_time - max(old_time, control_state["active_after"]))
+    if dt <= 0 or active_dt <= 0:
+        return components
+    angular_rate = (rod_angle_radians - old_angle) / dt / math.pi
+    components["passer_rotation_motion"] = -motion_scale * angular_rate ** 2 * active_dt
+    if rotation_target is not None and old_target is not None:
+        target_rate = (rotation_target - old_target) / dt
+        components["passer_rotation_command_change"] = -command_change_scale * target_rate ** 2 * active_dt
+    return components
+
+
 def player_alignment_target(*, ball_y: float, rod_info: dict):
     """Return the player and rod position that can best cover ``ball_y``.
 
@@ -28,7 +62,7 @@ def kick_force_reward(
     ball_kicked: bool,
     kick_normal_force: float | None,
     desired_kick_force: float = 5.0,
-    force_sigma: float = 8.0,
+    force_sigma: float = 5.0,
     reward_scale: float = 0.35,
 ):
     """Reward a kick based on how close the measured contact force is to target."""
@@ -415,7 +449,7 @@ def predictive_player_alignment_reward(
     rod_pos_calib: float,
     rod_info: dict,
     vx_threshold: float = 0.02,
-    t_max: float = 1.0,
+    t_max: float = 3.0,
     reward_scale: float = 0.03,
 ):
     """Simple predictive alignment reward.
@@ -453,6 +487,7 @@ def predictive_player_alignment_reward(
     # Predict crossing y in mm
     vy_mm_s = float(ball_vy) * 1000.0
     predicted_y = float(ball_y) + vy_mm_s * t_cross
+    print(F"predicted y crossing: {predicted_y:.3f}, preditcet t of crossing: {t_cross:.3f}")
 
     #print(f"Predicted y: {predicted_y:.3f}")
 
