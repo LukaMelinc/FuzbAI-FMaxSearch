@@ -32,6 +32,7 @@ class FuzbAISim:
         agent1_mode: str = "pass_ppo",
         agent1_kwargs: dict = None,
         max_agent_steps: int = 0,
+        evaluator=None,
     ):
         print(" ______         _             _____ ")
         print("|  ____|       | |      /\   |_   _|")
@@ -44,6 +45,7 @@ class FuzbAISim:
 
         self.recorded_imitation = agent1_mode in {"state_imitation", "hybrid_imitation_ppo", "imitation_finetune_ppo"}
         self.max_agent_steps = max_agent_steps
+        self.evaluator = evaluator
         self.run_error = None
         self.ballPos = None
         self.ballVel = None
@@ -654,10 +656,14 @@ class FuzbAISim:
 
     def ResetBallToLocation(self, mark_episode_end=True):
         self._goal_counted_latch = False
+        if self.evaluator is not None:
+            self.evaluator.begin_episode(self.t, self.score)
         if self.recorded_imitation:
             start = random.choice(self.recorded_starts)
             state = start["state"]
-            self.max_num_steps = max(2, int(round(start["duration"] / self.control_dt)) + 1)
+            self.max_num_steps = (max(1, math.ceil(self.evaluator.args.episode_seconds / self.control_dt))
+                                  if self.evaluator is not None else
+                                  max(2, int(round(start["duration"] / self.control_dt)) + 1))
             for i in range(8):
                 pos = self.travels[i] * (1 - state[4 + i]) / 1000
                 angle = state[12 + i]
@@ -917,7 +923,7 @@ class FuzbAISim:
                         self.showRound()
 
                     # Safe drop coordinates within table limits
-                    if self.recorded_imitation or self.agent1_mode == "pass_ppo":
+                    if self.evaluator is not None or self.recorded_imitation or self.agent1_mode == "pass_ppo":
                         self.end_episode_latch = True
                     else:
                         self.ResetBallToLocation()
@@ -957,6 +963,20 @@ class FuzbAISim:
                         self._timeout_terminated_latch = True
                         self.end_episode_latch = True
 
+
+                    if self.evaluator is not None:
+                        snapshot = self.getCameraDict(1)
+                        # Evaluate physical coordinates, without camera noise/parallax.
+                        snapshot["camData"][0].update(
+                            ball_x=self._ball_x_mm_camera(),
+                            ball_vx=float(self.ballVel[0][0]),
+                            ball_vy=-float(self.ballVel[0][1]),
+                        )
+                        if self.evaluator.observe(snapshot):
+                            self.end_episode_latch = True
+                        if self.evaluator.completed:
+                            self.isRunning = False
+                            break
 
                     try:     
                         if self.self_play_manager is not None:
@@ -999,7 +1019,7 @@ class FuzbAISim:
                     except:
                         print("Exception in agent 1")
                         traceback.print_exc()
-                        if self.recorded_imitation or self.agent1_mode == "pass_ppo":
+                        if self.evaluator is not None or self.recorded_imitation or self.agent1_mode == "pass_ppo":
                             raise
 
                     try:
@@ -1026,7 +1046,7 @@ class FuzbAISim:
 
                     pass_completed = self.agent1_mode == "pass_ppo" and self.p1.pass_completed
                     reset_after_episode = (
-                        (self.recorded_imitation or self.agent1_mode == "pass_ppo")
+                        (self.evaluator is not None or self.recorded_imitation or self.agent1_mode == "pass_ppo")
                         and self.end_episode_latch
                     ) or pass_completed
                     if pass_completed:

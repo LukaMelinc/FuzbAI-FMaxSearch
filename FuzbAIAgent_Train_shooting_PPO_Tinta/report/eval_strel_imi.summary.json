@@ -1,0 +1,27 @@
+{
+  "task": "shooting",
+  "episodes": 1,
+  "success": 0,
+  "partial_success": 0,
+  "failure": 1,
+  "success_rate": 0.0,
+  "parameters": {
+    "checkpoint": "Final_models/Imitacija-strelNaGol/state_imitation_steps_823225.pth",
+    "inference": false,
+    "agent_mode": "state_imitation",
+    "episodes": 250,
+    "episode_seconds": 7.0,
+    "output": "report/eval_strel_imi.csv",
+    "gui": true,
+    "rod_id": 6,
+    "observed_rod_id": 7,
+    "receiver_rod_id": 6,
+    "seed": 42,
+    "agent_kwargs": "{}",
+    "spawn_x1": 0.95,
+    "spawn_x2": 0.951,
+    "spawn_speed": null,
+    "negative_speed": 0.05,
+    "negative_duration": 5.0
+  }
+}
