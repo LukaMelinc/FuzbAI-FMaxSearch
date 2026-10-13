@@ -1,0 +1,31 @@
+{
+  "episodes": 250,
+  "requested_episodes": 250,
+  "completed": true,
+  "outcomes": {
+    "success": 196,
+    "missed-shot": 0,
+    "agent-missed-ball": 35,
+    "timeout": 19,
+    "failure": 0
+  },
+  "success_rate": 0.784,
+  "goal_kick_force_n": {
+    "count": 196,
+    "mean": 11.495946765832606,
+    "min": 4.450937872993536,
+    "max": 15.676284494075157
+  },
+  "parameters": {
+    "checkpoint": "/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Imitacija-strelNaGol/state_imitation_steps_823225.pth",
+    "agent_mode": "state_imitation",
+    "episodes": 250,
+    "episode_seconds": 5.0,
+    "negative_speed": 0.5,
+    "negative_duration": 0.3,
+    "failure_x": 750.0,
+    "output": "report/imitation_shooting.csv",
+    "seed": 42,
+    "gui": false
+  }
+}

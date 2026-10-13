@@ -52,6 +52,19 @@ final position/velocity, peak speed, and contact events. The companion
 requested number of episodes completed. Ctrl+C saves completed episodes; an
 interrupted partial episode is omitted. Model files are not written.
 
+`goal_kick_force_n` reports the peak simulated normal contact force in newtons
+for the last detected kick by the controlled rod before a successful goal.
+Simultaneous player/ball contact forces are summed at each physics tick; the
+peak is retained between control observations, including during kick cooldown.
+Continuing contact measurements update the last kick until the next kick event.
+This measures contact force at the player, rather than ball speed at the goal.
+It is a simulation measurement, not a calibrated real-world sensor reading.
+Failed episodes and goals without a measured kick leave this CSV field empty.
+The console prints the force for measured successful shots, and the summary's
+`goal_kick_force_n` contains `count`, `mean`, `min`, and `max` for those shots
+only (statistics are null when none were measured). Existing outcome criteria
+and rewards are unchanged.
+
 The observer/reset/report approach follows `evaluate_shooting.py` and
 `evaluation_common.py` from the repository's `single_rod_training` branch:
 https://github.com/LukaMelinc/FuzbAI-FMaxSearch/tree/single_rod_training/FuzbAIAgent_Train_shooting_PPO_Tinta

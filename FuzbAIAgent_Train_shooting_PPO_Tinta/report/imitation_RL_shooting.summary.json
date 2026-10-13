@@ -1,0 +1,25 @@
+{
+  "episodes": 250,
+  "requested_episodes": 250,
+  "completed": true,
+  "outcomes": {
+    "success": 212,
+    "missed-shot": 4,
+    "agent-missed-ball": 22,
+    "timeout": 12,
+    "failure": 0
+  },
+  "success_rate": 0.848,
+  "parameters": {
+    "checkpoint": "Final_models/Imitacija+RLfinetune-strel/imitation_finetune_ppo_steps_892513.pth",
+    "agent_mode": "imitation_finetune_ppo",
+    "episodes": 250,
+    "episode_seconds": 5.0,
+    "negative_speed": 0.5,
+    "negative_duration": 0.3,
+    "failure_x": 750.0,
+    "output": "report/imitation_shooting.csv",
+    "seed": 42,
+    "gui": false
+  }
+}

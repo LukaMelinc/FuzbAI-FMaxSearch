@@ -62,6 +62,40 @@ class EvaluationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.e.observe(self.sample(0, vx=float('nan')))
 
+    def test_goal_uses_last_kick_and_cooldown_peak(self):
+        self.e.observe(self.sample(0, ball_kicked=True, kick_normal_force=12))
+        self.e.observe(self.sample(.1, kick_normal_force=18))
+        self.e.observe(self.sample(.2, ball_kicked=True, kick_normal_force=7))
+        self.e.observe(self.sample(.3, score=[1, 0], kick_normal_force=9))
+        self.assertEqual(self.e.rows[0]['goal_kick_force_n'], 9)
+        kicks = json.loads(self.e.rows[0]['kicks_json'])
+        self.assertEqual([kick['force_n'] for kick in kicks], [18, 9])
+        with Path(self.args.output).open() as stream:
+            self.assertEqual(next(csv.DictReader(stream))['goal_kick_force_n'], '9.0')
+        summary = json.loads(Path(self.args.output).with_suffix('.summary.json').read_text())
+        self.assertEqual(summary['goal_kick_force_n'], dict(count=1, mean=9, min=9, max=9))
+
+    def test_failure_force_is_excluded_and_reset_clears_force(self):
+        self.e.observe(self.sample(0, ball_kicked=True, kick_normal_force=20))
+        self.e.observe(self.sample(.1, x=449))
+        self.assertIsNone(self.e.rows[0]['goal_kick_force_n'])
+        self.e.begin_episode(.1, [0, 0])
+        self.e.observe(self.sample(.2, score=[1, 0]))
+        self.assertIsNone(self.e.rows[1]['goal_kick_force_n'])
+        summary = json.loads(Path(self.args.output).with_suffix('.summary.json').read_text())
+        self.assertEqual(summary['goal_kick_force_n']['count'], 0)
+        self.assertIsNone(summary['goal_kick_force_n']['mean'])
+
+    def test_same_sample_kick_and_goal(self):
+        self.e.observe(self.sample(0, score=[1, 0], ball_kicked=True, kick_normal_force=6))
+        self.assertEqual(self.e.rows[0]['goal_kick_force_n'], 6)
+
+    def test_invalid_force_rejected(self):
+        for force in (float('nan'), float('inf'), -1):
+            self.e.begin_episode(0, [0, 0])
+            with self.assertRaises(ValueError):
+                self.e.observe(self.sample(0, ball_kicked=True, kick_normal_force=force))
+
 
 if __name__ == '__main__':
     unittest.main()

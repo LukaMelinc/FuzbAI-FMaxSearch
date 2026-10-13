@@ -22,6 +22,7 @@ class Evaluator:
         self.last_sample_time = None
         self.peak_speed = 0.0
         self.kicks = []
+        self.last_kick_force = None
         self.active = not self.completed
 
     def observe(self, camera):
@@ -45,7 +46,18 @@ class Evaluator:
         self.peak_speed = max(self.peak_speed, speed)
         if camera.get('ball_kicked', False):
             self.kicks.append(dict(time_s=t-self.start, speed_m_s=speed,
-                                   force_n=float(camera.get('kick_normal_force', 0))))
+                                   force_n=camera.get('kick_normal_force')))
+            self.last_kick_force = None
+        force = camera.get('kick_normal_force')
+        if force is not None:
+            force = float(force)
+            if not math.isfinite(force) or force < 0:
+                raise ValueError('Kick force must be finite and non-negative')
+            if self.kicks:
+                # A contact can continue into subsequent control intervals even
+                # when the simulator suppresses another event during cooldown.
+                self.last_kick_force = max(self.last_kick_force or 0.0, force)
+                self.kicks[-1]['force_n'] = self.last_kick_force
         if vx < -self.args.negative_speed:
             if self.negative_since is None:
                 self.negative_since = t
@@ -70,11 +82,14 @@ class Evaluator:
         self.rows.append(dict(episode=len(self.rows)+1, outcome=outcome, reason=reason,
                               duration_s=t-self.start, final_x_mm=x, final_vx_m_s=vx,
                               kick_count=len(self.kicks), peak_ball_speed_m_s=self.peak_speed,
+                              goal_kick_force_n=self.last_kick_force if goal else None,
                               kicks_json=json.dumps(self.kicks)))
         self.active = False
         self.completed = len(self.rows) >= self.args.episodes
         self.write()
-        print(f'[Evaluation] {len(self.rows)}/{self.args.episodes}: {outcome} ({reason})')
+        force_text = (f', kick force={self.last_kick_force:.3f} N'
+                      if goal and self.last_kick_force is not None else '')
+        print(f'[Evaluation] {len(self.rows)}/{self.args.episodes}: {outcome} ({reason}){force_text}')
         return True
 
     def write(self):
@@ -86,11 +101,17 @@ class Evaluator:
                 writer.writeheader()
                 writer.writerows(self.rows)
         counts = Counter(row['outcome'] for row in self.rows)
+        goal_forces = [row['goal_kick_force_n'] for row in self.rows
+                       if row['goal_kick_force_n'] is not None]
         summary = dict(episodes=len(self.rows), requested_episodes=self.args.episodes,
                        completed=self.completed,
                        outcomes={key: counts[key] for key in
                                  ('success', 'missed-shot', 'agent-missed-ball', 'timeout', 'failure')},
                        success_rate=counts['success']/len(self.rows) if self.rows else 0,
+                       goal_kick_force_n=dict(count=len(goal_forces),
+                                             mean=sum(goal_forces)/len(goal_forces) if goal_forces else None,
+                                             min=min(goal_forces) if goal_forces else None,
+                                             max=max(goal_forces) if goal_forces else None),
                        parameters=vars(self.args))
         path.with_suffix('.summary.json').write_text(json.dumps(summary, indent=2))
 

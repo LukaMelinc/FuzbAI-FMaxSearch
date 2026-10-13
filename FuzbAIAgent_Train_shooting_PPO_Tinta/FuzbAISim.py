@@ -374,8 +374,15 @@ class FuzbAISim:
     def _update_kick_latch(self):
         """Latch True if the ball contacts the observed rod's player links in this interval."""
 
+        cps = p.getContactPoints(bodyA=self.ball, bodyB=self.mizaId)
+        # Measure every physics tick, including cooldown ticks. Sum simultaneous
+        # contact points, then retain the peak normal force until consumption.
+        observed_force = sum(max(0.0, float(cp[9])) for cp in cps
+                             if cp[4] in self._kick_player_links)
+        self._kick_normal_force = max(self._kick_normal_force, observed_force)
+
         # Gentle receiver contacts must also be detected during kick cooldown.
-        for cp in p.getContactPoints(bodyA=self.ball, bodyB=self.mizaId):
+        for cp in cps:
             if cp[4] in self._receiver_player_links and cp[9] > 0.0:
                 self._receiver_contact_latch = True
 
@@ -396,7 +403,6 @@ class FuzbAISim:
         # Query only contacts between the ball and the table URDF. The players are
         # links on self.mizaId, while the separate concave table mesh is
         # self.mizaCollisionId. This avoids counting wall/table contacts as kicks.
-        cps = p.getContactPoints(bodyA=self.ball, bodyB=self.mizaId)
         if not cps:
             return
 
@@ -413,7 +419,6 @@ class FuzbAISim:
                 continue
 
             self._ball_kicked_latch = True
-            self._kick_normal_force = float(normal_force)
             if self.terminate_episode_on_kick:
                 self._kick_terminated_latch = True
                 self.end_episode_latch = True
