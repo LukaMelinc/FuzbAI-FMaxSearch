@@ -17,7 +17,7 @@ from actor_critic.main import ActorCriticNet, TwoRodActorCriticNet, ThreeRodActo
 from export.main import Export
 from memory.main import PPOBuffer
 from recorded_expert import (
-    observation, MOTION_OBS_COLUMNS, MOTION_SCHEMA, RecordingConfig,
+    MOTION_OBS_COLUMNS, MOTION_SCHEMA, RecordingConfig,
     RodMotionObservation,
 )
 from reward.single_bar_shoting import (
@@ -29,6 +29,7 @@ from reward.single_bar_shoting import (
     maintaining_ball,
     receiving_reward,
     calculate_rod_angle_reward,
+    predictive_alignment_target_y,
     predictive_player_alignment_reward,
     forward_backward_kick_reward,
     shot_heading_goal_reward,
@@ -124,6 +125,8 @@ class PPOAgent:
       - On each call to `process_data(camera)`, picks an action in [-1,1] for each rod.
       - Uses a buffer to accumulate experiences for PPO updates.
     """
+    _projected_alignment_observation = True
+
     def __init__(self,
                  obs_dim=8, #ball(4) + controlled rod rot and trans(2) + 2 engineered features (TODO: Keep them or change to 6)    #10, # ball(4) + rod(5) + ball_kicked(1)
                  act_dim=4, #act_dim=4,          # 1 rod × 4 numbers each
@@ -601,6 +604,7 @@ class PPOAgent:
 
         # Extract the current observation
         obs, bxy, vxy, rod_angle, active_rod = self.extract_observation(camera)
+        held_projection_options = active_rod["projection_options"]
 
         #print(f"Rod angle: {rod_angle:.3f}")
 
@@ -650,6 +654,8 @@ class PPOAgent:
             )
 
             predictive_allignment_reward = predictive_player_alignment_reward(
+                debug=os.environ.get("FUZBAI_DEBUG_ALIGNMENT", "0") == "1",
+                **held_projection_options,
                 ball_x=bxy[0],
                 ball_y=bxy[1],
                 ball_vx=vxy[0],
@@ -662,7 +668,6 @@ class PPOAgent:
                 reward_scale=1.0,
             )
 
-            print(f"Ball x: {bxy[0]:.3f}, Ball y: {bxy[1]:.3f}, Ball vx: {vxy[0]:.3f}, Ball vy: {vxy[1]:.3f}")
 
             rod_angle_reward = calculate_rod_angle_reward(
                 rod_angle=float(active_rod["angle"]),
@@ -676,7 +681,7 @@ class PPOAgent:
 
             reward_breakdown = {
                 #"allignment": allignment_quality_reward,
-                "predictive_allignment": predictive_allignment_reward*0.5,
+                "predictive_allignment": predictive_allignment_reward,
                 #"rod_angle": rod_angle_reward * 0.15,
                 #"past_rod": -1.0 if ball_past_rod else 0.0,
             }
@@ -769,6 +774,26 @@ class PPOAgent:
         commands = self.scale_to_motor_commands(action)
         return commands
 
+    def _held_projection_options(self, camera, ball_xy, ball_vxy, rod, vx_threshold, t_max):
+        """Calculate the current sample target shared by observation and reward.
+
+        The historical method name is retained for caller compatibility.
+        """
+        if "episode_samples" not in camera:
+            return {}
+        if self.last_obs is None or not hasattr(self, "held_projection_state"):
+            self.held_projection_state = {}
+        options = dict(projection_state=self.held_projection_state,
+                       episode_sample=self.episode_steps,
+                       episode_samples=int(camera["episode_samples"]))
+        predictive_alignment_target_y(
+            ball_x=ball_xy[0], ball_y=ball_xy[1],
+            ball_vx=ball_vxy[0], ball_vy=ball_vxy[1],
+            rod_x=float(rod["info"]["position"]),
+            vx_threshold=vx_threshold, t_max=t_max, **options,
+        )
+        return options
+
     def _camera_data(self, camera):
         return camera["camData"][0] if camera["camData"][0] is not None else camera["camData"][1]
 
@@ -794,13 +819,43 @@ class PPOAgent:
         }
 
     def extract_observation(self, camera):
-        """Use the same eight features for simulator observations and table logs."""
+        """Read eight camera features, using projected alignment for single-rod PPO."""
         cd = self._camera_data(camera)
         active_rod = self._rod_state(cd, self.controlled_rod_id)
-        obs = observation(
-            cd["ball_x"], cd["ball_y"], cd["ball_vx"], cd["ball_vy"],
-            active_rod["pos_calib"], active_rod["angle"], active_rod["info"],
-        )
+        if self._projected_alignment_observation:
+            options = self._held_projection_options(
+                camera, (cd["ball_x"], cd["ball_y"]),
+                (cd["ball_vx"], cd["ball_vy"]), active_rod, 0.05, 3.0,
+            )
+            active_rod["projection_options"] = options
+            if options:
+                target_y = options["projection_state"]["target_y"]
+            else:
+                target_y = predictive_alignment_target_y(
+                    ball_x=cd["ball_x"], ball_y=cd["ball_y"],
+                    ball_vx=cd["ball_vx"], ball_vy=cd["ball_vy"],
+                    rod_x=float(active_rod["info"]["position"]),
+                    vx_threshold=0.05, t_max=3.0,
+                )
+            _, target_pos, unavoidable_dist = player_alignment_target(
+                ball_y=target_y, rod_info=active_rod["info"],
+            )
+            active_rod.update(
+                target_pos=target_pos,
+                target_error=target_pos - active_rod["pos_calib"],
+                unavoidable_dist=unavoidable_dist,
+                target_y=float(target_y),
+            )
+        obs = np.array([
+            (cd["ball_x"] - 605) / 605,
+            (cd["ball_y"] - 350) / 350,
+            np.clip(cd["ball_vx"] / 5.0, -2, 2),
+            np.clip(cd["ball_vy"] / 5.0, -2, 2),
+            (cd["ball_x"] - active_rod["info"]["position"]) / 605,
+            active_rod["target_error"],
+            active_rod["pos_calib"],
+            active_rod["angle_normalized"],
+        ], dtype=np.float32)
         return (obs, (cd["ball_x"], cd["ball_y"]), (cd["ball_vx"], cd["ball_vy"]),
                 active_rod["angle_normalized"], active_rod)
 
@@ -924,6 +979,8 @@ class ImitationFineTunePPOAgent(PPOAgent):
     RL checkpoint. Override calculate_task_reward to define another objective.
     Episode durations are finite task horizons, including timeout terminals.
     """
+
+    _projected_alignment_observation = False
 
     def __init__(self, pretrained_actor_path=None, resume_checkpoint=None,
                  recording_config=None, load_pretrained_log_std=True, **ppo_kwargs):
@@ -1850,6 +1907,7 @@ class PassPPOAgent(PPOAgent):
             )
 
         obs, bxy, vxy, passer, receiver, opponent = self.extract_observation(camera)
+        held_projection_options = self._held_projection_options(camera, bxy, vxy, receiver, 0.1, 7.0)
         self.latest_env_metrics = {
             "curriculum_round": int(camera.get("curriculum_round", -1)),
             "curriculum_y_min": float(camera.get("curriculum_y_min", float("nan"))),
@@ -1983,6 +2041,7 @@ class PassPPOAgent(PPOAgent):
             """### --- STEP 4 -> Alligning the receiving rod with the ball trajectory --- ###
             
             allignment = predictive_player_alignment_reward(
+                **held_projection_options,
                 ball_x=bxy[0],
                 ball_y=bxy[1],
                 ball_vx=vxy[0],
@@ -2017,6 +2076,7 @@ class PassPPOAgent(PPOAgent):
                 episode_timeout=bool(end_episode and not terminated_by_x_threshold),
             )
             alignment = predictive_player_alignment_reward(
+                **held_projection_options,
                 ball_x=bxy[0], ball_y=bxy[1], ball_vx=vxy[0], ball_vy=vxy[1],
                 rod_x=float(receiver["info"]["position"]),
                 rod_pos_calib=float(receiver["pos_calib"]), rod_info=receiver["info"],
@@ -2054,6 +2114,7 @@ class PassPPOAgent(PPOAgent):
                 episode_timeout=bool(end_episode and not terminated_by_x_threshold),
             )
             alignment = predictive_player_alignment_reward(
+                **held_projection_options,
                 ball_x=bxy[0], ball_y=bxy[1], ball_vx=vxy[0], ball_vy=vxy[1],
                 rod_x=float(receiver["info"]["position"]),
                 rod_pos_calib=float(receiver["pos_calib"]), rod_info=receiver["info"],

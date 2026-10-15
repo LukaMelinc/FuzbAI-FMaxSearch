@@ -439,6 +439,44 @@ def closest_player_alignment_reward(
 
     return float(reward_scale * y_alignment)
 
+def predictive_alignment_target_y(
+    *,
+    ball_x: float,
+    ball_y: float,
+    ball_vx: float,
+    ball_vy: float,
+    rod_x: float,
+    vx_threshold: float = 0.02,
+    t_max: float = 3.0,
+    projection_state: dict | None = None,
+    episode_sample: int = 0,
+    episode_samples: int | None = None,
+):
+    """Return the crossing target shared by predictive observations and reward.
+
+    - Uses a linear extrapolation of the ball to predict its y when it crosses
+      the rod x position. Units: `ball_x`/`rod_x` are millimetres, `ball_vx`/
+      `ball_vy` are metres/second (consistent with other helpers here).
+    - If lateral (x) speed is small or predicted crossing time is negative or
+      beyond `t_max`, falls back to the current `ball_y`.
+    - Optional projection_state records the latest result for observations and
+      diagnostics; it never holds a target across samples. Episode arguments
+      remain accepted for compatibility with existing callers.
+    """
+    target_y = float(ball_y)
+    vx = float(ball_vx)
+    if math.isfinite(vx) and abs(vx) >= float(vx_threshold) and abs(vx) > 1e-12:
+        t_cross = (float(rod_x) - float(ball_x)) / (vx * 1000.0)
+        if 0.0 < t_cross <= float(t_max):
+            candidate = float(ball_y) + float(ball_vy) * 1000.0 * t_cross
+            if math.isfinite(candidate):
+                target_y = candidate
+    if projection_state is not None:
+        projection_state.pop("refreshed", None)
+        projection_state.update(target_y=target_y, last_sample=episode_sample)
+    return target_y
+
+
 def predictive_player_alignment_reward(
     *,
     ball_x: float,
@@ -451,50 +489,51 @@ def predictive_player_alignment_reward(
     vx_threshold: float = 0.02,
     t_max: float = 3.0,
     reward_scale: float = 0.03,
+    projection_state: dict | None = None,
+    episode_sample: int = 0,
+    episode_samples: int | None = None,
+    debug: bool = False,
 ):
-    """Simple predictive alignment reward.
-
-    - Uses a linear extrapolation of the ball to predict its y when it crosses
-      the rod x position. Units: `ball_x`/`rod_x` are millimetres, `ball_vx`/
-      `ball_vy` are metres/second (consistent with other helpers here).
-    - If lateral (x) speed is small or predicted crossing time is negative or
-      beyond `t_max`, falls back to `closest_player_alignment_reward` using
-      the current `ball_y`.
-    - Keeps the same reward scale semantics as `closest_player_alignment_reward`.
-    """
-    try:
-        vx_mm_s = float(ball_vx) * 1000.0
-    except Exception:
-        return closest_player_alignment_reward(
-            ball_y=ball_y, rod_pos_calib=rod_pos_calib, rod_info=rod_info, reward_scale=reward_scale
-        )
-
-    # If lateral velocity is too small, use the instantaneous alignment reward
-    if abs(vx_mm_s) < float(vx_threshold) * 1000.0:
-        return closest_player_alignment_reward(
-            ball_y=ball_y, rod_pos_calib=rod_pos_calib, rod_info=rod_info, reward_scale=reward_scale
-        )
-
-    # Predict time to cross rod x (mm / (mm/s) = s)
-    t_cross = (float(rod_x) - float(ball_x)) / vx_mm_s
-
-    # If crossing is in the past or too far in the future, fall back
-    if t_cross <= 0.0 or abs(t_cross) > float(t_max):
-        return closest_player_alignment_reward(
-            ball_y=ball_y, rod_pos_calib=rod_pos_calib, rod_info=rod_info, reward_scale=reward_scale
-        )
-
-    # Predict crossing y in mm
-    vy_mm_s = float(ball_vy) * 1000.0
-    predicted_y = float(ball_y) + vy_mm_s * t_cross
-    print(F"predicted y crossing: {predicted_y:.3f}, preditcet t of crossing: {t_cross:.3f}")
-
-    #print(f"Predicted y: {predicted_y:.3f}")
-
-    # Reuse the existing closest-player calculation on the predicted y
-    return closest_player_alignment_reward(
-        ball_y=predicted_y, rod_pos_calib=rod_pos_calib, rod_info=rod_info, reward_scale=reward_scale
+    """Reward player alignment with the crossing Y recalculated from the current ball state."""
+    target_y = predictive_alignment_target_y(
+        ball_x=ball_x, ball_y=ball_y, ball_vx=ball_vx, ball_vy=ball_vy,
+        rod_x=rod_x, vx_threshold=vx_threshold, t_max=t_max,
+        projection_state=projection_state, episode_sample=episode_sample,
+        episode_samples=episode_samples,
     )
+    reward = closest_player_alignment_reward(
+        ball_y=target_y, rod_pos_calib=rod_pos_calib, rod_info=rod_info, reward_scale=reward_scale
+    )
+    if debug:
+        # Inspect the exact target used above without updating held state again.
+        travel = float(rod_info["travel"])
+        selected, target_pos, unavoidable = player_alignment_target(
+            ball_y=target_y, rod_info=rod_info,
+        )
+        positions = [float(rod_pos_calib) * travel + float(rod_info["first_offset"])
+                     + i * float(rod_info["spacing"])
+                     for i in range(int(rod_info["players"]))]
+        errors = [abs(target_y - y) for y in positions]
+        crossing_time = ((float(rod_x) - float(ball_x)) / (float(ball_vx) * 1000.0)
+                         if abs(float(ball_vx)) > 1e-12 else None)
+        live_y = (float(ball_y) + float(ball_vy) * 1000.0 * crossing_time
+                  if crossing_time is not None and crossing_time > 0 else None)
+        def fmt(value):
+            return "none" if value is None else f"{value:.3f}"
+        players = "; ".join(
+            f"P{i + 1}:y={y:.2f},error={errors[i]:.2f}mm"
+            for i, y in enumerate(positions))
+        print(
+            f"[alignment-debug]  "
+            f"ball=({ball_x:.2f},{ball_y:.2f})mm "
+            f"velocity=({ball_vx:.3f},{ball_vy:.3f})m/s "
+            f"crossing_time={fmt(crossing_time)}s live_y={fmt(live_y)}mm "
+            f"reward_target_y={target_y:.3f}mm held={projection_state is not None} "
+            f"rod_pos={rod_pos_calib:.5f} target_pos={target_pos:.5f} "
+            f"selected=P{selected + 1} unavoidable={unavoidable:.2f}mm "
+            f"[{players}] reward={reward:.6f} "
+        )
+    return reward
 
 def calculate_rod_angle_reward(
     *,

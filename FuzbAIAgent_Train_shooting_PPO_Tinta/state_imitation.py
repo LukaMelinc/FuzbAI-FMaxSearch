@@ -42,6 +42,8 @@ class TransitionDiscriminator(nn.Module):
 class StateImitationPPOAgent(PPOAgent):
     """PPO whose reward is learned from state-only expert transitions."""
 
+    _projected_alignment_observation = False
+
     def __init__(
         self,
         expert_data=None,

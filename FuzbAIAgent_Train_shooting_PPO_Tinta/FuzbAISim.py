@@ -96,7 +96,7 @@ class FuzbAISim:
         self._end_episode_armed = False
 
         # Threshold of num of steps to end the iteration
-        self.max_num_steps = 3100
+        self.max_num_steps = 17#39#3100
         self.current_step = 0
 
         # Control loop period (seconds). One "step" for the agent completes when this time has elapsed.
@@ -158,9 +158,9 @@ class FuzbAISim:
                     opponent_rod_id=5,
                     #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Passing/PASSING_FINAL.pth",     # Funkcijonira bolje kot 5.4M
                     #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_end_to_end/pass_ppo_steps_5481636.pth",
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/trained_models/pass_end_to_end/pass_ppo_steps_551932.pth",
-                    load_model=True,
-                    inference=True,
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#18_steps_401922.pth",
+                    load_model=False,
+                    inference=False,
                     training_enabeled=True,
                 )
                 self.kick_observed_rod_id = self.p1.passer_rod_id
@@ -178,12 +178,12 @@ class FuzbAISim:
                 )
             elif self.agent1_mode == "single_rod_ppo":
                 self.p1 = PPOAgent(
-                    #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#18_steps_310645.pth",
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#6.pth",
+                    #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#18_steps_498090.pth",
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#18_steps_760588.pth",
                     controlled_rod_id=2,
-                    load_model=False,
+                    load_model=True,
                     inference=False,
-                    training_enabeled=True
+                    training_enabeled=False
                 )
 
             elif self.agent1_mode == "state_imitation":
@@ -203,6 +203,7 @@ class FuzbAISim:
 
 
         if self.agent1_mode == "pass_ppo" and self.p1.training_enabled and self.layer_freezing:
+
 
             # For reseting the networks
             """modules_to_reinitialize = [
@@ -290,8 +291,8 @@ class FuzbAISim:
 
         # Za podajo in strel: (0.0, 0.0)
         # Za prestrezanje: 
-        #self.ball_spawn_speed_range = (0.7, 0.71) # <- (0.44, 0.445)
-        self.ball_spawn_speed_range = (0.0, 0.0) # <- (0.44, 0.445)
+        self.ball_spawn_speed_range = (1.2, 1.2)#(0.7, 0.71) # <- (0.44, 0.445)   # For learning defence
+        #self.ball_spawn_speed_range = (0.0, 0.0) # <- (0.44, 0.445)
 
         if self.recorded_imitation:
             dataset = self.p1.expert_dataset
@@ -518,6 +519,7 @@ class FuzbAISim:
             "camData": [cam1, cam2],
             "camDataOK": [True, True],
             "simulation_time": float(self.t),
+            "episode_samples": int(self.max_num_steps),
             "score": score,
             "curriculum_round": int(self.round),
             "curriculum_y_min": float(self._get_curriculum_y_range()[0]),
@@ -702,12 +704,12 @@ class FuzbAISim:
         # Ožja širina za streljanje: (0.16, 0.58)
 
         #y_range = (0.091, 0.67)    # Celotna širina
-        #y_range = (0.091, 0.67)    # Širina za evaluacijo s širino 1 - cela širina
+        y_range = (0.091, 0.67)    # Širina za evaluacijo s širino 1 - cela širina
         #y_range = (0.15, 0.6)       # Širina za evaluacijo s širino 2
         #y_range = (0.21, 0.54)    # Širina za evaluacijo s širino 3
         #y_range = (0.19, 0.58)     # Širina za spawn žoge za lateralno obrabo 
         #y_range = (0.16, 0.58)     # Ožja širina -> Strel
-        y_range = (0.15, 0.17)        # Širina za imitacijsko in imitacijsko+RL učenje
+        #y_range = (0.15, 0.17)        # Širina za imitacijsko in imitacijsko+RL učenje
         #y_range = (0.092, 0.166)  # Širina za podajanje # IMPORATNT: Nastavi na to širino, ko se testira podajanje
         spawn_side, x_range = random.choice(list(self.ball_spawn_areas.items()))
 
@@ -918,7 +920,7 @@ class FuzbAISim:
 
                 self.ballPos, ballOrn = p.getBasePositionAndOrientation(self.ball)        
                 self.ballVel = p.getBaseVelocity(self.ball)
-                #self.showBallTrajectory()
+                self.showBallTrajectory()
 
 
                 if self.ballPos[2] < 0.1 and not self._goal_counted_latch:
