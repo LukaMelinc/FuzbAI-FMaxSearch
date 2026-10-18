@@ -37,10 +37,11 @@ položajev in nasprotnika uporablja simulator.
   `vx < -negative_speed` vsaj `negative_duration` pomeni zgrešen strel.
   Pozitivna ali dovolj majhna negativna hitrost ponastavi časovnik.
   Nasprotnikov gol ali iztek epizode brez zadetka pomeni neuspeh.
-- **Obramba:** za uspeh mora žoga ostati v zaprtem pasu `[x1, x2]` ob vseh
-  vzorcih do konca epizode. Ko `x < failure_x`, se epizoda takoj zaključi:
+- **Obramba:** uspeh določa končni X žoge v zaprtem pasu `[x1, x2]` ob
+  koncu epizode; začetni položaj in predhodni izleti iz pasu ne vplivajo na uspeh.
+  Ko `x < failure_x`, se epizoda takoj zaključi:
   predhodni ali v istem vzorcu zaznan kontakt izbrane palice pomeni delni
-  uspeh, odsotnost kontakta pomeni neuspeh. Odhod iz pasu brez prestopa
+  uspeh, odsotnost kontakta pomeni neuspeh. Končni X zunaj pasu brez prestopa
   spodnje meje pomeni neuspeh ob koncu epizode.
 - **Podaja:** `x < failure_x` pomeni napačno smer; `x > overshoot_x` pomeni
   neuspešno zaustavljanje. Uspeh zahteva skupno ravninsko hitrost
@@ -60,6 +61,9 @@ simulator zaznava med fizikalnimi koraki. Zelo kratki izleti iz pasu med
 kontrolnimi vzorci niso zajeti.
 
 Privzeto strel in obramba uporabljata `TwoRodPPOAgent`, podaja `PassPPOAgent`.
+Za starejše modele `PPOAgent` z osmimi vhodnimi značilkami uporabi
+`--agent-mode single_rod_ppo --rod-id 2` (palico nastavi tako kot pri učenju).
+`eval_obramba.sh` uporablja ta način za `Final_models/Defence/#6.pth`.
 Checkpoint mora ustrezati arhitekturi. Dodatne konstrukcijske nastavitve,
 npr. velikost mreže, podaj kot `--agent-kwargs '{"hidden_size": 512}'`.
 Inferenca in izklop učenja sta obvezna in ju ta možnost ne more prepisati.

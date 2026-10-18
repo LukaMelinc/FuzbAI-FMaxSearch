@@ -96,7 +96,7 @@ class FuzbAISim:
         self._end_episode_armed = False
 
         # Threshold of num of steps to end the iteration
-        self.max_num_steps = 17#39#3100
+        self.max_num_steps = 20#39#3100
         self.current_step = 0
 
         # Control loop period (seconds). One "step" for the agent completes when this time has elapsed.
@@ -110,11 +110,11 @@ class FuzbAISim:
         self._warned_empty_kick_links = False
         self.physics_timestep = 1.0 / 240.0
         self.physics_steps_per_loop = 4
-        self.gui_sleep_s = 0.0
+        self.gui_sleep_s = 0.02
 
 
         self.stepDisp = None
-        self.layer_freezing = True
+        self.layer_freezing = False
 
         # Player object indices in the URDF tree model
         self.redPlayers = [ 2, 5, 6, 14, 15, 16, 17, 18, 28, 29, 30 ]
@@ -177,12 +177,12 @@ class FuzbAISim:
                     training_enabeled=False,
                 )
             elif self.agent1_mode == "single_rod_ppo":
-                self.p1 = PPOAgent(
+                self.p1 = PPOAgent(**agent1_kwargs) if agent1_kwargs else PPOAgent(
                     #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#18_steps_498090.pth",
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#18_steps_760588.pth",
+                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#6.pth",
                     controlled_rod_id=2,
                     load_model=True,
-                    inference=False,
+                    inference=True,
                     training_enabeled=False
                 )
 
@@ -202,11 +202,15 @@ class FuzbAISim:
             self.p2 = PlayerAgent()
 
 
-        if self.agent1_mode == "pass_ppo" and self.p1.training_enabled and self.layer_freezing:
+        if self.p1.training_enabled and self.layer_freezing:
+
+            #for name, module in self.p1.ac.named_children():
+            #    print(f"{name}: {type(module).__name__}")
+            #print(f"self p1 ac")
 
 
             # For reseting the networks
-            """modules_to_reinitialize = [
+            modules_to_reinitialize = [
                 self.p1.ac.critic,
                 self.p1.ac.receiver_encoder,
                 self.p1.ac.receiver_translation_head,
@@ -216,7 +220,7 @@ class FuzbAISim:
             for root_module in modules_to_reinitialize:
                 for module in root_module.modules():
                     if hasattr(module, "reset_parameters"):
-                        module.reset_parameters()"""
+                        module.reset_parameters()
             
             #self.p1.learning_action_slice = slice(6, 8) # Receiving rod translation
             #self.p1.learning_action_slice = slice(4, 8) # Receiving rod rotation head
@@ -291,7 +295,7 @@ class FuzbAISim:
 
         # Za podajo in strel: (0.0, 0.0)
         # Za prestrezanje: 
-        self.ball_spawn_speed_range = (1.2, 1.2)#(0.7, 0.71) # <- (0.44, 0.445)   # For learning defence
+        self.ball_spawn_speed_range = (2.0, 2.0)#(1.2, 1.2)#(0.7, 0.71) # <- (0.44, 0.445)   # For learning defence
         #self.ball_spawn_speed_range = (0.0, 0.0) # <- (0.44, 0.445)
 
         if self.recorded_imitation:
@@ -362,7 +366,7 @@ class FuzbAISim:
                 except Exception:
                     link_name = str(jinfo[12])
                 self._link_names_by_index[ji] = link_name
-                if jname.lower().startswith(f"rod{getattr(self.p1, 'receiver_rod_id', 6)}_rigid"):
+                if jname.lower().startswith(f"rod{getattr(self.p1, 'receiver_rod_id', getattr(self.p1, 'controlled_rod_id', 6))}_rigid"):
                     self._receiver_player_links.add(ji)
                 if jname.lower().startswith(rod_prefix):
                     # In PyBullet, the joint index corresponds to the child link index.
@@ -920,7 +924,7 @@ class FuzbAISim:
 
                 self.ballPos, ballOrn = p.getBasePositionAndOrientation(self.ball)        
                 self.ballVel = p.getBaseVelocity(self.ball)
-                self.showBallTrajectory()
+                #self.showBallTrajectory()
 
 
                 if self.ballPos[2] < 0.1 and not self._goal_counted_latch:

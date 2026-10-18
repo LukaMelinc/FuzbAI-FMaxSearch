@@ -40,7 +40,6 @@ class Evaluator:
             self.active = True
             self.start = t
             self.contact = False
-            self.in_band = True
             self.negative_since = self.stopped_since = None
             self.kicks = []
             self.peak_speed = 0.0
@@ -68,13 +67,13 @@ class Evaluator:
             elif self.negative_since is not None and t-self.negative_since + 1e-9 >= a.negative_duration:
                 outcome, reason = 'failure', 'negative_velocity'
         elif self.task == 'defense':
-            self.in_band = self.in_band and a.x1 <= x <= a.x2
             if x < a.failure_x:
                 outcome = 'partial_success' if self.contact else 'failure'
                 reason = 'escaped_after_contact' if self.contact else 'escaped_without_contact'
             elif terminal:
-                outcome = 'success' if self.in_band else 'failure'
-                reason = 'held_in_band' if self.in_band else 'left_band'
+                in_band = a.x1 <= x <= a.x2
+                outcome = 'success' if in_band else 'failure'
+                reason = 'ended_in_band' if in_band else 'ended_outside_band'
         else:
             if x < a.failure_x:
                 outcome, reason = 'failure', 'wrong_direction'
@@ -138,6 +137,9 @@ def main(task):
     p.add_argument('--receiver-rod-id', type=int, default=6)
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--agent-kwargs', default='{}', help='Extra constructor kwargs as JSON')
+    if task != 'passing':
+        p.add_argument('--agent-mode', choices=('single_rod_ppo', 'two_rod_ppo'),
+                       default='two_rod_ppo', help='Agent architecture used to train the checkpoint')
     p.add_argument('--spawn-x1', type=float, help='Ball spawn world X minimum in metres')
     p.add_argument('--spawn-x2', type=float, help='Ball spawn world X maximum in metres')
     p.add_argument('--spawn-speed', type=float, help='Initial ball speed in m/s')
@@ -182,6 +184,9 @@ def main(task):
         kwargs.update(passer_rod_id=a.rod_id, receiver_rod_id=a.receiver_rod_id,
                       opponent_rod_id=a.observed_rod_id, load_backbone=False)
         mode = 'pass_ppo'
+    elif a.agent_mode == 'single_rod_ppo':
+        kwargs.update(controlled_rod_id=a.rod_id)
+        mode = 'single_rod_ppo'
     else:
         kwargs.update(controlled_rod_id=a.rod_id, observed_rod_id=a.observed_rod_id,
                       training_task='shooting' if task == 'shooting' else 'defending')

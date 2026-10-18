@@ -234,6 +234,7 @@ class PPOAgent:
         self.current_episode_opponent_goals = 0
         self.current_episode_ball_kicks = 0
         self.current_episode_x_threshold_terminations = 0
+        self.receiving_control_state = {}
         self.current_episode_step_rewards = []  # Track reward at each step
         self.episodes_with_kick = 0
         self.episodes_with_goal = 0
@@ -642,16 +643,29 @@ class PPOAgent:
         # Training: collect the step
         episode_finished_this_sample = False
         if self.last_obs is not None:
-            controlled_rod_x = float(active_rod["info"]["position"])
-            ball_past_rod = float(bxy[0]) < (controlled_rod_x - 10.0)
-
-
-            allignment_quality_reward = closest_player_alignment_reward(
-                ball_y=bxy[1],
-                rod_pos_calib=float(active_rod["pos_calib"]),
-                rod_info=active_rod["info"],
-                reward_scale=1.0,
+            reward_time = float(camera["simulation_time"])
+            previous_time = self.receiving_control_state.get("last_time", reward_time)
+            reward_dt = max(0.0, reward_time - previous_time)
+            _, stopping_breakdown = receiving_reward(
+                ball_x=bxy[0], ball_y=bxy[1], ball_vx=vxy[0], ball_vy=vxy[1],
+                rod_info=active_rod["info"], rod_pos_calib=active_rod["pos_calib"],
+                receiver_contact=bool(camera.get("receiver_contact", False)),
+                control_state=self.receiving_control_state, sample_time=reward_time,
+                threshold_crossed=terminated_by_x_threshold,
+                episode_timeout=bool(end_episode and not terminated_by_x_threshold),
             )
+
+            angle_reward = calculate_rod_angle_reward(
+                rod_angle=float(active_rod["angle"]),
+                target_rod_angle=4.0,
+                reward_scale=1.0,
+                rotation_buffer_def=2.0,
+                angle_sigma=8.0
+            )
+
+            print(f"ball x: {bxy[0]}")
+
+            #print(f"Angle reward: {angle_reward:.3f}, rod_angle: {active_rod['angle']}, target rod angle: {0.0}")
 
             predictive_allignment_reward = predictive_player_alignment_reward(
                 debug=os.environ.get("FUZBAI_DEBUG_ALIGNMENT", "0") == "1",
@@ -668,23 +682,18 @@ class PPOAgent:
                 reward_scale=1.0,
             )
 
-
-            rod_angle_reward = calculate_rod_angle_reward(
-                rod_angle=float(active_rod["angle"]),
-                reward_scale=1,
-                target_rod_angle=0.0,
-                rotation_buffer_def=3
-                )
-
-            print(f"predicted allignment reward: {predictive_allignment_reward:.3f}")
-
-
             reward_breakdown = {
-                #"allignment": allignment_quality_reward,
-                "predictive_allignment": predictive_allignment_reward,
-                #"rod_angle": rod_angle_reward * 0.15,
-                #"past_rod": -1.0 if ball_past_rod else 0.0,
+                **{f"ball_control_{key}": value for key, value in stopping_breakdown.items()},
+                "predictive_alignment": predictive_allignment_reward * 0.1,
+                "angle_reward": 0.1 * angle_reward,
             }
+
+
+            #reward_breakdown = {
+            #    **stopping_breakdown,
+            #    "predictive_allignment": predictive_allignment_reward * 0.02 * reward_dt,
+            #    "behind_rod": -1.0 * reward_dt if bxy[0] < 190.0 else 0.0,
+            #}
 
             reward = sum(reward_breakdown.values())
 
@@ -708,8 +717,6 @@ class PPOAgent:
             if terminated_by_x_threshold:
                 self.current_episode_x_threshold_terminations += 1
 
-            if ball_past_rod:
-                self.current_episode_x_threshold_terminations += 1
 
             # Shranitev celotne tranzicije (s_t-1, a_t-1, r_t, V_t-1)
             stored = self.buf.store(self.last_obs, self.last_action, reward, self.last_val, self.last_logp)
@@ -744,14 +751,16 @@ class PPOAgent:
                 self.episode_steps = 0
                 episode_finished_this_sample = True
 
-            if (not episode_finished_this_sample) and ball_past_rod:
-                self.finish_episode(last_value=0)
-                self.episode_steps = 0
-                episode_finished_this_sample = True
 
         else:
-            print(f"=====First step, no reward yet =====")
+            # Prime timing and speed for the first reception transition.
+            self.receiving_control_state = {
+                "last_time": float(camera["simulation_time"]),
+                "speed": math.hypot(*vxy),
+            }
 
+        if episode_finished_this_sample:
+            self.receiving_control_state = {}
         if not episode_finished_this_sample:
             self.episode_steps += 1
 
@@ -878,7 +887,7 @@ class PPOAgent:
 
         cmd = {
             "driveID": 2,
-            "rotationTargetPosition": rot_target,
+            "rotationTargetPosition": 0.0,
             "rotationVelocity": rot_velocity,
             "translationTargetPosition": trans_target,
             "translationVelocity": trans_velocity
@@ -954,6 +963,7 @@ class PPOAgent:
         self.ep_reward = 0.0
         self.last_obs = None
         self.prev_ball_vxy = None
+        self.receiving_control_state = {}
         # Reset episode-specific variables
         self.last_action = None
         self.last_val = None

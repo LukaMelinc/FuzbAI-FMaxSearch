@@ -33,11 +33,28 @@ class EvaluationTests(unittest.TestCase):
         e.observe(self.sample(.3, x=400))
         self.assertEqual(e.rows[1]['outcome'], 'failure')
 
-    def test_defense_requires_whole_episode_in_band(self):
+    def test_defense_uses_final_position_after_incoming_ball(self):
         e = Evaluator('defense', self.args)
         e.observe(self.sample(0, x=720))
         e.observe(self.sample(1, end_episode=True))
-        self.assertEqual(e.rows[0]['reason'], 'left_band')
+        self.assertEqual(e.rows[0]['outcome'], 'success')
+        self.assertEqual(e.rows[0]['reason'], 'ended_in_band')
+
+    def test_defense_final_position_outside_band_fails(self):
+        e = Evaluator('defense', self.args)
+        e.observe(self.sample(0))
+        e.observe(self.sample(1, x=720, end_episode=True))
+        self.assertEqual(e.rows[0]['outcome'], 'failure')
+        self.assertEqual(e.rows[0]['reason'], 'ended_outside_band')
+
+    def test_defense_can_return_to_band_and_includes_boundaries(self):
+        for final_x in (500, 700):
+            with self.subTest(final_x=final_x):
+                e = Evaluator('defense', self.args)
+                e.observe(self.sample(0))
+                e.observe(self.sample(.5, x=720))
+                e.observe(self.sample(1, x=final_x, end_episode=True))
+                self.assertEqual(e.rows[0]['outcome'], 'success')
 
     def test_pass_uses_total_speed_and_continuous_hold(self):
         e = Evaluator('passing', self.args)
