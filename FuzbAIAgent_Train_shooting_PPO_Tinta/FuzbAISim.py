@@ -46,6 +46,7 @@ class FuzbAISim:
         self.recorded_imitation = agent1_mode in {"state_imitation", "hybrid_imitation_ppo", "imitation_finetune_ppo"}
         self.max_agent_steps = max_agent_steps
         self.evaluator = evaluator
+        self.episode_pause_seconds = 0.0
         self.run_error = None
         self.ballPos = None
         self.ballVel = None
@@ -110,7 +111,7 @@ class FuzbAISim:
         self._warned_empty_kick_links = False
         self.physics_timestep = 1.0 / 240.0
         self.physics_steps_per_loop = 4
-        self.gui_sleep_s = 0.02
+        self.gui_sleep_s = 0.0
 
 
         self.stepDisp = None
@@ -295,7 +296,7 @@ class FuzbAISim:
 
         # Za podajo in strel: (0.0, 0.0)
         # Za prestrezanje: 
-        self.ball_spawn_speed_range = (2.0, 2.0)#(1.2, 1.2)#(0.7, 0.71) # <- (0.44, 0.445)   # For learning defence
+        self.ball_spawn_speed_range = (1.0, 1.0)#(1.2, 1.2)#(0.7, 0.71) # <- (0.44, 0.445)   # For learning defence
         #self.ball_spawn_speed_range = (0.0, 0.0) # <- (0.44, 0.445)
 
         if self.recorded_imitation:
@@ -1088,6 +1089,12 @@ class FuzbAISim:
                     self._timeout_terminated_latch = False
 
                     if reset_after_episode or reset_after_kick:
+                        # Freeze the terminal state for review without advancing physics.
+                        pause_until = time.monotonic() + self.episode_pause_seconds
+                        while self.isRunning and time.monotonic() < pause_until:
+                            time.sleep(min(0.05, max(0.0, pause_until - time.monotonic())))
+                        if not self.isRunning:
+                            break
                         self.ResetBallToLocation(mark_episode_end=False)
                         self.round += 1
                         self.reset_step_counter()

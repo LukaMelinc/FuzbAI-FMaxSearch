@@ -1,16 +1,17 @@
 {
   "task": "defense",
-  "episodes": 18,
-  "success": 5,
-  "partial_success": 7,
-  "failure": 6,
-  "success_rate": 0.2777777777777778,
+  "episodes": 250,
+  "success": 85,
+  "partial_success": 62,
+  "failure": 103,
+  "success_rate": 0.34,
   "parameters": {
     "checkpoint": "/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#6.pth",
     "episodes": 250,
-    "episode_seconds": 2.0,
+    "episode_seconds": 1.5,
+    "episode_pause": 1.0,
     "output": "report/eval_obramba_linearno_v1.csv",
-    "gui": true,
+    "gui": false,
     "rod_id": 2,
     "observed_rod_id": 5,
     "receiver_rod_id": 6,
@@ -20,8 +21,8 @@
     "spawn_x1": null,
     "spawn_x2": null,
     "spawn_speed": null,
-    "x1": 215.0,
+    "x1": 200.0,
     "x2": 545.0,
-    "failure_x": 180.0
+    "failure_x": 150.0
   }
 }

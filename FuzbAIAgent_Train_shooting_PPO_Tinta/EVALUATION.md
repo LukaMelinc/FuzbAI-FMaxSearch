@@ -23,6 +23,9 @@ shranijo po vsaki zaključeni epizodi. Prekinitev s Ctrl+C shrani zaključene
 epizode; nedokončane ne vključuje v delež uspešnosti. Ponoven zagon prepiše
 izbrani izhod, zato za ločene evalvacije uporabi različne `--output` poti.
 
+`--episode-pause 1` zamrzne končno stanje za eno sekundo pred začetkom naslednje
+epizode. Premor je v realnem času in ne šteje v trajanje simulacije; privzeto je 0.
+
 Položaji in pragovi X so v **mm**, hitrost v **m/s**, trajanje v **sekundah
 simulacije**. Koordinate so iz perspektive igralca 1; pozitivni vx pomeni
 strel proti nasprotnikovemu golu. Meritve uporabljajo pravo stanje simulacije,

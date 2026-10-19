@@ -130,6 +130,8 @@ def main(task):
     p.add_argument('--checkpoint', required=True)
     p.add_argument('--episodes', type=int, default=100)
     p.add_argument('--episode-seconds', type=float, default=5)
+    p.add_argument('--episode-pause', type=float, default=0,
+                   help='Wall-clock seconds to pause before resetting between episodes')
     p.add_argument('--output', default=f'report/evaluation_{task}.csv')
     p.add_argument('--gui', action='store_true')
     p.add_argument('--rod-id', type=int, default=4 if task == 'passing' else 6)
@@ -155,6 +157,8 @@ def main(task):
             p.add_argument('--stop-speed', type=float, default=0.05)
             p.add_argument('--stop-duration', type=float, default=0.2)
     a = p.parse_args()
+    if not math.isfinite(a.episode_pause) or a.episode_pause < 0:
+        p.error('episode-pause must be finite and nonnegative')
     if a.episodes <= 0 or a.episode_seconds <= 0 or not 1 <= a.rod_id <= 8:
         p.error('episodes and episode-seconds must be positive; rod-id must be 1..8')
     if task != 'shooting' and not a.failure_x <= a.x1 < a.x2:
@@ -197,6 +201,7 @@ def main(task):
     sim = FuzbAISim(agent1_mode=mode, agent1_kwargs=kwargs, evaluator=evaluator,
                    kick_observed_rod_id=a.rod_id, render_gui=a.gui)
     sim.max_num_steps = max(1, math.ceil(a.episode_seconds/sim.control_dt))
+    sim.episode_pause_seconds = a.episode_pause
     sim.debug_print_red_kicks = False
     if a.spawn_x1 is not None:
         sim.ball_spawn_areas = {'evaluation': (a.spawn_x1, a.spawn_x2)}
