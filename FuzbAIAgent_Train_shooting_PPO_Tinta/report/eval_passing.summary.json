@@ -1,9 +1,10 @@
 {
+  "name": "Podajanje žogice naprej",
   "task": "passing",
   "episodes": 250,
   "success": 183,
-  "partial_success": 0,
-  "failure": 67,
+  "partial_success": 22,
+  "failure": 45,
   "success_rate": 0.732,
   "parameters": {
     "checkpoint": "/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Passing/PASSING_FINAL.pth",

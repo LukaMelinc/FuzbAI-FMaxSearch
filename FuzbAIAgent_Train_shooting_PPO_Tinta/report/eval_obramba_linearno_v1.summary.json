@@ -1,4 +1,5 @@
 {
+  "name": "Visoka hitrost - 2 m/s",
   "task": "defense",
   "episodes": 250,
   "success": 85,

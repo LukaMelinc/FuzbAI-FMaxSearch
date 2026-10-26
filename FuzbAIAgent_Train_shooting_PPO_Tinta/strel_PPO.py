@@ -897,21 +897,21 @@ class PPOAgent:
         idle_commands = [
             {
                 "driveID": 4,
-                "rotationTargetPosition": 5,
+                "rotationTargetPosition": 0.0,
                 "rotationVelocity": 0.5,
                 "translationTargetPosition": 0.5,
                 "translationVelocity": 0.0
             },
             {
                 "driveID": 3,
-                "rotationTargetPosition": 0.2,
+                "rotationTargetPosition": 0.0,
                 "rotationVelocity": 0.5,
                 "translationTargetPosition": 0.5,
                 "translationVelocity": 0.0
             },
             {
                 "driveID": 1,
-                "rotationTargetPosition": -0.3,
+                "rotationTargetPosition": 0.0,
                 "rotationVelocity": 0.5,
                 "translationTargetPosition": 0.5,
                 "translationVelocity": 0.0

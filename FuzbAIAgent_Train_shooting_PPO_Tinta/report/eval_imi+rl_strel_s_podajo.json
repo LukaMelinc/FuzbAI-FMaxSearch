@@ -1,0 +1,31 @@
+{
+    "name": "Imitacija in RL",
+  "episodes": 250,
+  "requested_episodes": 250,
+  "completed": true,
+
+    "success": 212,
+    "failure": 4,
+    "partial_success": 34,
+
+  
+  "success_rate": 0.848,
+
+    "count": 212,
+    "mean": 21.262867379766874,
+    "min": 17.80230313584193,
+    "max": 26.74094913433814,
+
+  "parameters": {
+    "checkpoint": "/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Imitacija+RLfinetune-strel/imitation_finetune_ppo_steps_892513.pth",
+    "agent_mode": "imitation_finetune_ppo",
+    "episodes": 250,
+    "episode_seconds": 5.0,
+    "negative_speed": 0.5,
+    "negative_duration": 0.3,
+    "failure_x": 750.0,
+    "output": "report/imitation_shooting_rl_Posttraining.csv",
+    "seed": 42,
+    "gui": false
+  }
+}

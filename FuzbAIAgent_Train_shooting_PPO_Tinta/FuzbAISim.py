@@ -180,11 +180,11 @@ class FuzbAISim:
             elif self.agent1_mode == "single_rod_ppo":
                 self.p1 = PPOAgent(**agent1_kwargs) if agent1_kwargs else PPOAgent(
                     #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#18_steps_498090.pth",
-                    model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#6.pth",
+                    #model_save_path="/home/tinta/Desktop/FuzbAI-FMaxSearch/FuzbAIAgent_Train_shooting_PPO_Tinta/Final_models/Defence/#6.pth",
                     controlled_rod_id=2,
-                    load_model=True,
-                    inference=True,
-                    training_enabeled=False
+                    load_model=False,
+                    inference=False,
+                    training_enabeled=True
                 )
 
             elif self.agent1_mode == "state_imitation":
@@ -296,8 +296,8 @@ class FuzbAISim:
 
         # Za podajo in strel: (0.0, 0.0)
         # Za prestrezanje: 
-        self.ball_spawn_speed_range = (1.0, 1.0)#(1.2, 1.2)#(0.7, 0.71) # <- (0.44, 0.445)   # For learning defence
-        #self.ball_spawn_speed_range = (0.0, 0.0) # <- (0.44, 0.445)
+        #self.ball_spawn_speed_range = (1.6, 1.6)#(1.2, 1.2)#(0.7, 0.71) # <- (0.44, 0.445)   # For learning defence
+        self.ball_spawn_speed_range = (0.0, 0.0) # <- (0.44, 0.445)
 
         if self.recorded_imitation:
             dataset = self.p1.expert_dataset
@@ -709,9 +709,9 @@ class FuzbAISim:
         # Ožja širina za streljanje: (0.16, 0.58)
 
         #y_range = (0.091, 0.67)    # Celotna širina
-        y_range = (0.091, 0.67)    # Širina za evaluacijo s širino 1 - cela širina
+        #y_range = (0.091, 0.67)    # Širina za evaluacijo s širino 1 - cela širina
         #y_range = (0.15, 0.6)       # Širina za evaluacijo s širino 2
-        #y_range = (0.21, 0.54)    # Širina za evaluacijo s širino 3
+        y_range = (0.21, 0.54)    # Širina za evaluacijo s širino 3
         #y_range = (0.19, 0.58)     # Širina za spawn žoge za lateralno obrabo 
         #y_range = (0.16, 0.58)     # Ožja širina -> Strel
         #y_range = (0.15, 0.17)        # Širina za imitacijsko in imitacijsko+RL učenje

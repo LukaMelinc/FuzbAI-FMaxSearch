@@ -76,3 +76,36 @@ Preverjanje pravil:
 ```bash
 python3 -m unittest discover -s tests -p test_evaluation.py
 ```
+
+## Grafi za poročilo (matplotlib)
+
+Za primerjavo več evalvacij in pripravo grafov za poročilo sta na voljo skripti:
+
+- `report/plot_eval_summary.py`:
+  - prebere `*.summary.json` datoteke,
+  - nariše primerjalne grafe uspešnosti med eksperimenti.
+- `report/plot_eval_details.py`:
+  - prebere evalvacijske CSV (`episode,outcome,reason,...`),
+  - za vsako datoteko nariše podroben pregled epizod.
+
+Primer uporabe:
+
+```bash
+# 1) Primerjalni summary grafi (več eksperimentov skupaj)
+python3 report/plot_eval_summary.py \
+  --summary-glob 'report/*.summary.json' \
+  --summary-glob 'evaluacije/*.summary*.json' \
+  --output-dir report/figures \
+  --title 'Primerjava evalvacij'
+
+# 2) Podrobni grafi po epizodah (vsaka eval CSV dobi svojo sliko)
+python3 report/plot_eval_details.py \
+  --csv-glob 'report/*.csv' \
+  --csv-glob 'evaluacije/*.csv' \
+  --output-dir report/figures \
+  --rolling-window 25
+```
+
+Izhodni grafi se shranijo v `report/figures`.
+Skripta za podrobne grafe preskoči datoteke, ki niso evalvacijske ali nimajo
+zahtevanih stolpcev.

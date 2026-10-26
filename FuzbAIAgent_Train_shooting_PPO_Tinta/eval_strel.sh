@@ -13,5 +13,5 @@ python3 evaluate_shooting.py \
     --negative-duration 0.3 \
     --output report/eval_strel-sirina3.csv \
     --gui \
-    --spawn-x1 0.960 \
-    --spawn-x2 0.961
+    --spawn-x1 0.969 \
+    --spawn-x2 0.9691

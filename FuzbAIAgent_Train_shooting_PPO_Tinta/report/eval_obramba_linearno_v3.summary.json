@@ -1,4 +1,5 @@
 {
+  "name": "Nizka hitrost - 1 m/s",
   "task": "defense",
   "episodes": 250,
   "success": 171,
